@@ -23,7 +23,7 @@ def get_gdrive_service():
         return None
 
 drive_service = get_gdrive_service()
-FOLDER_ID = 'ID_THU_MUC_CUA_BAN' # <--- THAY ID THƯ MỤC PNC_PDF VÀO ĐÂY
+FOLDER_ID = '1e3d8vkZ5i_URK0Y-_K-6ZD2rEFJOkuV' # <--- THAY ID THƯ MỤC PNC_PDF VÀO ĐÂY
 DB_LOCAL_PATH = 'db_v12.pkl'
 device = torch.device("cpu") # Streamlit Cloud dùng CPU là đủ nhanh
 
