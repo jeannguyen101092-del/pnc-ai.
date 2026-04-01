@@ -1,0 +1,7 @@
+streamlit
+pdfplumber
+pyMuPDF
+torch
+torchvision
+pillow
+scikit-learn
