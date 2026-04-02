@@ -1,11 +1,10 @@
 streamlit
-pymupdf
 pdfplumber
+pyMuPDF
 torch
 torchvision
-scikit-learn
 pillow
-pandas
-numpy
+scikit-learn
 google-api-python-client
-google-auth
+google-auth-httplib2
+google-auth-oauthlib
