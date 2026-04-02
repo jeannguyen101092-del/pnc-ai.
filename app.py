@@ -10,7 +10,7 @@ from google.oauth2 import service_account
 
 # --- 1. KẾT NỐI GOOGLE DRIVE ---
 # Lấy ID thư mục từ link bạn gửi
-FOLDER_ID = '1e3d8vkZ5i_URK0Y-_K-6ZD2rEFJOku9X'
+FOLDER_ID = '1YSyE8b8TLJ5_RgMLFfAm8zJB5Egp-e5F'
 DB_PATH = 'database_ai.pkl'
 
 # Lấy "chìa khóa" JSON từ Secrets bạn đã dán
