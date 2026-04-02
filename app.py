@@ -86,19 +86,34 @@ with st.sidebar:
     
     st.divider()
     up_bulk = st.file_uploader("📥 Nạp kho hàng loạt (PDF)", type="pdf", accept_multiple_files=True)
-    if up_bulk and st.button("🚀 BẮT ĐẦU NẠP KHO"):
-        bar = st.progress(0)
-        for i, f in enumerate(up_bulk):
-            with open("temp.pdf", "wb") as tmp: tmp.write(f.getbuffer())
-            d = get_data("temp.pdf")
-            if d:
-                tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-                with torch.no_grad():
-                    v = ai_brain(tf(Image.open(io.BytesIO(d['img'])).convert('RGB')).unsqueeze(0)).flatten().numpy()
-                supabase.table("ai_data").upsert({"file_name": f.name, "vector": v.tolist(), "spec_json": d['spec'], "category": d['cat']}).execute()
-            bar.progress((i+1)/len(up_bulk))
-        st.success("Đã nạp xong!")
-        st.rerun()
+# --- PHẦN NẠP KHO (ĐÃ SỬA LỖI API) ---
+if up_bulk and st.button("🚀 BẮT ĐẦU NẠP KHO"):
+    bar = st.progress(0)
+    status = st.empty()
+    for i, f in enumerate(up_bulk):
+        status.text(f"⏳ Đang xử lý: {f.name}")
+        with open("temp.pdf", "wb") as tmp: tmp.write(f.getbuffer())
+        d = get_data("temp.pdf")
+        if d:
+            tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+            with torch.no_grad():
+                # Chuyển ảnh sang vector và ép kiểu về list chuẩn
+                v = ai_brain(tf(Image.open(io.BytesIO(d['img'])).convert('RGB')).unsqueeze(0)).flatten().numpy().tolist()
+            
+            # Gửi dữ liệu lên Supabase
+            try:
+                supabase.table("ai_data").upsert({
+                    "file_name": f.name, 
+                    "vector": v, 
+                    "spec_json": d['spec'], 
+                    "category": d['cat']
+                }).execute()
+            except Exception as e:
+                st.error(f"Lỗi tại file {f.name}: {e}")
+        bar.progress((i+1)/len(up_bulk))
+    status.success("✅ Đã nạp kho thành công!")
+    st.rerun()
+
 
 # --- PHẦN SO SÁNH ---
 st.subheader("🔍 SO SÁNH MẪU MỚI")
