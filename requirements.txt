@@ -1,9 +1,10 @@
 streamlit
+supabase
+pdfplumber
+PyMuPDF
 torch
 torchvision
-pdfplumber
-pymupdf
 scikit-learn
-pandas
 pillow
-supabase
+numpy
+pandas
