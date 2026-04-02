@@ -5,6 +5,6 @@ PyMuPDF
 torch
 torchvision
 scikit-learn
-pillow
-numpy
 pandas
+xlsxwriter
+pillow
