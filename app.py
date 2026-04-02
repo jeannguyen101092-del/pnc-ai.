@@ -26,20 +26,20 @@ def load_ai():
     return model.eval()
 ai_brain = load_ai()
 
-def detect_category(text_list, file_name):
+dedef detect_category(text_list, file_name):
     txt = (" ".join(text_list) + " " + file_name).upper()
-    # Định nghĩa bộ từ khóa phân loại
-    cats = {
-        "JACKET/COAT": ['JACKET', 'COAT', 'BOMBER', 'PARKA', 'HOODIE'],
-        "VEST/BLAZER": ['VEST', 'BLAZER', 'SUIT'],
-        "VÁY/ĐẦM": ['DRESS', 'SKIRT', 'GOWN'],
-        "QUẦN": ['PANT', 'TROUSER', 'JEAN', 'SHORT', 'LEGGIN', 'BOTTOM'],
-        "ÁO (TEE/SHIRT)": ['TEE', 'SHIRT', 'TOP', 'POLO', 'SWEATER', 'CHEST', 'BUST']
-    }
-    for cat, keys in cats.items():
-        if any(k in txt for k in keys): return cat
+    
+    # Ưu tiên nhận diện QUẦN trước để tránh nhầm với Jacket (vì quần hay có từ khóa đặc thù)
+    pant_keys = ['PANT', 'TROUSER', 'JEAN', 'SHORT', 'LEGGIN', 'BOTTOM', 'INSEAM', 'OUTSEAM', 'CROTCH', 'THIGH', 'HIP']
+    if any(k in txt for k in pant_keys): return "QUẦN"
+    
+    # Tiếp theo là các loại đồ khác
+    if any(k in txt for k in ['JACKET', 'COAT', 'BOMBER', 'PARKA', 'HOODIE']): return "JACKET/COAT"
+    if any(k in txt for k in ['VEST', 'BLAZER', 'SUIT']): return "VEST/BLAZER"
+    if any(k in txt for k in ['DRESS', 'SKIRT', 'GOWN']): return "VÁY/ĐẦM"
+    if any(k in txt for k in ['TEE', 'SHIRT', 'TOP', 'POLO', 'SWEATER', 'CHEST', 'BUST']): return "ÁO (TEE/SHIRT)"
+    
     return "KHÁC"
-
 def parse_val(t):
     try:
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
