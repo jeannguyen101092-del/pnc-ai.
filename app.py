@@ -9,7 +9,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
 
 # --- 1. KẾT NỐI GOOGLE DRIVE ---
-FOLDER_ID ='1P9EL2-BC0du_im533bsv1KSzr6vsvKr-'
+FOLDER_ID = "1P9EL2-BC0du_im533bsv1KSzr6vsvKr-"
 DB_PATH = 'database_ai.pkl'
 
 # ✅ FIX 1: đúng tên key trong TOML
