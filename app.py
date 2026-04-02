@@ -1,190 +1,125 @@
 import streamlit as st
-import os, io, pickle, torch, pdfplumber, re, fitz
+import io, torch, pdfplumber, fitz
 import numpy as np
 from PIL import Image
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
-from google.oauth2 import service_account
+import pandas as pd
+from supabase import create_client
 
-# --- 1. KẾT NỐI GOOGLE DRIVE ---
-FOLDER_ID = "1P9EL2-BC0du_im533bsv1KSzr6vsvKr-"
-DB_PATH = 'database_ai.pkl'
+# ====== CONFIG ======
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
-# ✅ FIX 1: đúng tên key trong TOML
-info = st.secrets["gcp_service_account"]
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-creds = service_account.Credentials.from_service_account_info(info)
-drive_service = build('drive', 'v3', credentials=creds)
+st.set_page_config(layout="wide", page_title="AI CLOUD PRO", page_icon="🛡️")
 
-st.set_page_config(layout="wide", page_title="AI MASTER PRO - DRIVE CLOUD", page_icon="🛡️")
-
-# --- 2. BỘ NÃO AI ---
+# ====== AI ======
 @st.cache_resource
 def load_ai():
-    model = models.resnet50(weights='DEFAULT')
+    model = models.resnet18(weights='DEFAULT')
     model = torch.nn.Sequential(*(list(model.children())[:-1]))
     return model.eval()
 
 ai_brain = load_ai()
 
-KEY_GROUPS = {
-    "Waist": ["Waist Width", "Waist At Edge", "Waist At Top"],
-    "Hip/Seat": ["Hip Width", "Hip 3\"", "Hip 4\"", "Seat Width"],
-    "Inseam": ["Inseam", "Inner Leg"],
-    "Leg Opening": ["Leg Opening", "Bottom Opening"],
-    "Chest/Bust": ["Chest Width", "Across Bust", "Bust Width"],
-    "Length": ["Body Length", "HPS to hem", "Total Length"],
-    "Shoulder": ["Shoulder Width", "Across Shoulder"],
-    "Sleeve": ["Sleeve Length"]
-}
+tf = transforms.Compose([
+    transforms.Resize(224),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485,0.456,0.406],
+                         [0.229,0.224,0.225])
+])
 
+# ====== PARSE ======
 def parse_val(t):
     try:
-        if ' ' in t: 
-            p = t.split()
-            return float(p[0]) + eval(p[1])
-        if '/' in t: return eval(t)
         return float(t)
-    except: return None
-
-def get_data(pdf_content):
-    specs = {}; category = "UNKNOWN"
-    try:
-        with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
-            txt = "\n".join([p.extract_text() or "" for p in pdf.pages]).lower()
-            if any(x in txt for x in ["jacket", "shirt", "top", "hoodie", "tee"]): category = "TOP"
-            elif any(x in txt for x in ["pant", "jean", "short", "bottom"]): category = "BOTTOM"
-            
-            all_rows = []
-            for p in pdf.pages:
-                if p.extract_table(): all_rows.extend(p.extract_table())
-            
-            for r in all_rows:
-                r_c = [str(x).strip() for x in r if x]
-                r_s = " ".join(r_c)
-                for std, keys in KEY_GROUPS.items():
-                    if any(k.lower() in r_s.lower() for k in keys):
-                        val = parse_val(r_c[-1]) if r_c else None
-                        if val and val > 4:
-                            specs[std] = val
-
-        doc = fitz.open(stream=pdf_content, filetype="pdf")
-        img = Image.open(io.BytesIO(doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2,2)).tobytes("png")))
-        w,h = img.size
-        crop = img.crop((int(w*0.05), int(h*0.15), int(w*0.58), int(h*0.85)))
-        return {"spec": specs, "img": crop, "cat": category}
     except:
         return None
 
-# --- 3. ĐỒNG BỘ DRIVE ---
-def sync_drive():
-    db = {}
-    if os.path.exists(DB_PATH):
-        with open(DB_PATH, "rb") as f:
-            db = pickle.load(f)
-    
-    # ✅ FIX 2: thêm supportsAllDrives
-    results = drive_service.files().list(
-        q=f"'{FOLDER_ID}' in parents and mimeType='application/pdf' and trashed=false",
-        fields="files(id, name)",
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True
-    ).execute()
+def get_data(pdf):
+    specs = {}
+    try:
+        with pdfplumber.open(io.BytesIO(pdf)) as p:
+            for page in p.pages:
+                table = page.extract_table()
+                if table:
+                    for r in table:
+                        r = [str(x) for x in r if x]
+                        if len(r) >= 2:
+                            val = parse_val(r[-1])
+                            if val:
+                                specs[r[0]] = val
 
-    items = results.get('files', [])
-    new_items = [i for i in items if i['name'] not in db]
-    
-    if new_items:
-        st.info(f"🆕 Phát hiện {len(new_items)} file mới trên Drive. Đang quét...")
-        tf = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406],
-                                 [0.229, 0.224, 0.225])
-        ])
-        
-        for item in new_items:
-            request = drive_service.files().get_media(fileId=item['id'])
-            fh = io.BytesIO()
-            downloader = MediaIoBaseDownload(fh, request)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
-            
-            data = get_data(fh.getvalue())
-            if data:
-                with torch.no_grad():
-                    vec = ai_brain(tf(data['img'].convert('RGB')).unsqueeze(0)).flatten().detach().cpu().numpy()
-                
-                db[item['name']] = {
-                    "vector": vec,
-                    "img": data['img'],
-                    "spec": data['spec'],
-                    "cat": data['cat']
-                }
-        
-        with open(DB_PATH, "wb") as f:
-            pickle.dump(db, f)
-    
-    return db
+        doc = fitz.open(stream=pdf, filetype="pdf")
+        img = Image.open(io.BytesIO(doc.load_page(0).get_pixmap().tobytes("png")))
 
-# --- 4. GIAO DIỆN ---
-st.title("🛡️ AI MASTER PRO - DRIVE CONNECT")
+        return {"spec": specs, "img": img}
+    except:
+        return None
 
-# ✅ FIX 3: chống crash app
-try:
-    db = sync_drive()
-except Exception as e:
-    st.error(f"Lỗi Drive: {e}")
-    db = {}
+# ====== LOAD DB ======
+@st.cache_data(ttl=60)
+def load_db():
+    data = supabase.table("ai_data").select("*").execute()
+    return data.data
 
-st.sidebar.metric("📦 TỔNG MẪU TRONG KHO", len(db))
+# ====== UI ======
+st.title("🛡️ AI MASTER PRO CLOUD")
 
-up = st.file_uploader("📤 Thả PDF mẫu vào đây", type="pdf")
+# ===== Upload =====
+files = st.file_uploader("📤 Upload dữ liệu", type="pdf", accept_multiple_files=True)
+
+if files:
+    for f in files:
+        data = get_data(f.read())
+        if data:
+            with torch.no_grad():
+                vec = ai_brain(tf(data['img'].convert('RGB')).unsqueeze(0)).flatten().cpu().numpy()
+
+            supabase.table("ai_data").insert({
+                "name": f.name,
+                "vector": vec.tolist(),
+                "spec": data['spec']
+            }).execute()
+
+    st.success("✅ Đã lưu cloud")
+
+db = load_db()
+st.write(f"📦 Tổng mẫu: {len(db)}")
+
+# ===== Compare =====
+up = st.file_uploader("🔍 File so sánh", type="pdf")
+
 if up:
     target = get_data(up.read())
+
     if target:
-        tf = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406],
-                                 [0.229, 0.224, 0.225])
-        ])
-        
         with torch.no_grad():
-            t_vec = ai_brain(tf(target['img'].convert('RGB')).unsqueeze(0)).flatten().detach().cpu().numpy()
-        
-        c1, c2 = st.columns([1, 2.3])
-        
-        with c1:
-            st.subheader("🔍 Mẫu Gốc")
-            st.image(target['img'], use_container_width=True)
-            st.json(target['spec'])
-        
-        with c2:
-            st.subheader("✅ Top Tương Đồng")
-            res = []
-            
-            for name, data in db.items():
-                sim = float(cosine_similarity(t_vec.reshape(1,-1), data['vector'].reshape(1,-1))) * 100
-                if sim > 70:
-                    diff = [
-                        f"**{k}**: {target['spec'][k]} vs {data['spec'][k]}"
-                        for k in set(target['spec']) & set(data['spec'])
-                    ]
-                    res.append({
-                        "name": name,
-                        "sim": sim,
-                        "diff": diff,
-                        "img": data['img']
-                    })
-            
-            for r in sorted(res, key=lambda x: x['sim'], reverse=True)[:10]:
-                with st.expander(f"📌 {r['name']} - Giống {round(r['sim'],1)}%"):
-                    st.image(r['img'], width=300)
-                    for line in r['diff']:
-                        st.markdown(line)
+            t_vec = ai_brain(tf(target['img'].convert('RGB')).unsqueeze(0)).flatten().cpu().numpy()
+
+        results = []
+        excel = []
+
+        for d in db:
+            sim = float(cosine_similarity(
+                t_vec.reshape(1,-1),
+                np.array(d["vector"]).reshape(1,-1)
+            )) * 100
+
+            if sim > 60:
+                results.append((d["name"], sim))
+                excel.append({"File": d["name"], "Similarity": sim})
+
+        for r in sorted(results, key=lambda x: x[1], reverse=True):
+            st.write(f"{r[0]} - {round(r[1],1)}%")
+
+        if excel:
+            df = pd.DataFrame(excel)
+            st.download_button(
+                "📥 Xuất Excel",
+                df.to_csv(index=False).encode(),
+                "result.csv"
+            )
