@@ -126,17 +126,17 @@ if up_test:
     if target:
         st.success(f"🎯 Hệ thống nhận diện đây là: **{target['cat']}**")
         
-        # SỬA LỖI ĐỎ: Kiểm tra dữ liệu trước khi so sánh
-        db_res = supabase.table("ai_data").select("*").eq("category", target['cat']).execute()
+        # 1. Tìm tất cả mẫu trong kho (không phân biệt loại để đảm bảo LUÔN HIỆN BẢNG)
+        db_res = supabase.table("ai_data").select("*").execute()
         
         if not db_res.data:
-            st.warning(f"Chưa có mẫu nào thuộc loại '{target['cat']}' trong kho để so sánh.")
+            st.warning("⚠️ Kho dữ liệu đang trống. Hãy nạp mẫu vào menu bên trái trước!")
         else:
             tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
             with torch.no_grad():
                 v_test = ai_brain(tf(Image.open(io.BytesIO(target['img'])).convert('RGB')).unsqueeze(0)).flatten().numpy()
             
-            # Tính toán so sánh an toàn hơn
+            # 2. Tính toán độ tương đồng với TOÀN BỘ KHO
             sim_list = []
             for item in db_res.data:
                 try:
@@ -145,43 +145,35 @@ if up_test:
                     sim_list.append({"name": item['file_name'], "sim": sim, "spec": item['spec_json']})
                 except: continue
             
-            sim_list = sorted(sim_list, key=lambda x: x['sim'], reverse=True)[:4]
+            # Sắp xếp mã giống nhất lên đầu
+            sim_list = sorted(sim_list, key=lambda x: x['sim'], reverse=True)
             
             if sim_list:
-                if st.session_state.sel_code is None: st.session_state.sel_code = sim_list[0]['name']
-
-                cols = st.columns(4)
-                for i, item in enumerate(sim_list):
-                    with cols[i]:
-                        st.info(f"📄 {item['name']}")
-                        st.write(f"Khớp: **{item['sim']:.1f}%**")
-                        if st.button("CHỌN MÃ", key=f"btn_{item['name']}"):
-                            st.session_state.sel_code = item['name']
-                            st.rerun()
-
-                # Bảng so sánh
-                st.divider()
-                ref = next((x for x in sim_list if x['name'] == st.session_state.sel_code), sim_list[0])
-                st.subheader(f"📊 BẢNG SO SÁNH VỚI: {st.session_state.sel_code}")
+                # Mặc định chọn mã giống nhất (100% nếu cùng 1 file)
+                top_match = sim_list[0]
                 
+                st.info(f"📊 Đang so sánh với mã khớp nhất: **{top_match['name']}** (Độ khớp: {top_match['sim']:.1f}%)")
+                
+                # 3. HIỂN THỊ BẢNG SO SÁNH CHI TIẾT
                 diffs = []
-                all_poms = sorted(list(set(target['spec'].keys()) | set(ref['spec'].keys())))
-                for p in all_poms:
-                    v1, v2 = target['spec'].get(p, 0), ref['spec'].get(p, 0)
-                    diff = round(v1 - v2, 3)
-                    status = "✅ KHỚP" if abs(diff) < 0.2 else ("⚠️ LỆCH" if abs(diff) < 1 else "❌ SAI BIỆT")
-                    diffs.append({"POM": p, "File Mới": v1, "Mẫu Kho": v2, "Chênh lệch": diff, "Kết quả": status})
+                # Lấy tất cả tên thông số (POM) từ cả 2 file
+                all_poms = sorted(list(set(target['spec'].keys()) | set(top_match['spec'].keys())))
                 
-                df = pd.DataFrame(diffs)
-                def color_row(row):
-                    if row['Kết quả'] == "✅ KHỚP": return ['background-color: #d4edda']*len(row)
-                    if row['Kết quả'] == "⚠️ LỆCH": return ['background-color: #fff3cd']*len(row)
-                    return ['background-color: #f8d7da']*len(row)
+                for p in all_poms:
+                    v1 = target['spec'].get(p, 0)
+                    v2 = top_match['spec'].get(p, 0)
+                    diff = round(v1 - v2, 3)
+                    status = "✅ KHỚP" if abs(diff) < 0.01 else "❌ LỆCH"
+                    diffs.append({"Thông số (POM)": p, "Mẫu Mới": v1, "Mẫu Kho": v2, "Chênh lệch": diff, "Kết quả": status})
+                
+                df_result = pd.DataFrame(diffs)
+                
+                # Hiển thị bảng ra màn hình
+                st.subheader("Bảng đối chiếu thông số chi tiết")
+                st.table(df_result) 
 
-                st.table(df.style.apply(color_row, axis=1))
-
-                # Xuất Excel
+                # Nút tải Excel
                 out = io.BytesIO()
                 with pd.ExcelWriter(out, engine='xlsxwriter') as wr:
-                    df.to_excel(wr, index=False, sheet_name='Result')
+                    df_result.to_excel(wr, index=False)
                 st.download_button("📥 TẢI EXCEL SO SÁNH", out.getvalue(), f"So_sanh_{up_test.name}.xlsx")
