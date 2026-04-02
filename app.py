@@ -10,8 +10,8 @@ from supabase import create_client, Client
 # ==========================================
 # 1. CẤU HÌNH SUPABASE (Thay bằng thông tin từ ảnh của bạn)
 # ==========================================
-SUPABASE_URL = "https://supabase.co" 
-SUPABASE_KEY = "your-anon-key"
+SUPABASE_URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
+SUPABASE_KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(layout="wide", page_title="AI SMART SPEC V60", page_icon="📊")
