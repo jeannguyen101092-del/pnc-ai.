@@ -3,6 +3,7 @@ import os, fitz, io, pdfplumber, re, pandas as pd
 import numpy as np
 from PIL import Image
 import torch
+import base64
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
@@ -14,9 +15,9 @@ URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion - Nhận diện hình vẽ", page_icon="👗")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro", page_icon="👔")
 
-# --- HÀM HỖ TRỢ ---
+# --- HÀM HỖ TRỢ AI & ĐỌC PDF ---
 @st.cache_resource
 def load_ai():
     model = models.resnet18(weights='DEFAULT')
@@ -27,82 +28,109 @@ ai_brain = load_ai()
 def get_data(pdf_path):
     try:
         doc = fitz.open(pdf_path)
-        # Lấy trang đầu làm hình vẽ chính (Soi)
-        pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2))
-        main_img = pix.tobytes("png")
+        pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+        img_bytes = pix.tobytes("png")
+        img_base64 = base64.b64encode(img_bytes).decode()
         
-        # Lấy các hình ảnh nhỏ khác (nếu có ở các trang sau) làm Gallery
-        gallery = []
-        for i in range(min(len(doc), 3)):
-            p = doc.load_page(i).get_pixmap(matrix=fitz.Matrix(0.5, 0.5))
-            gallery.append(p.tobytes("png"))
-            
-        # Đọc thông số (POM)
         specs = {}
         with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
-                tables = page.extract_tables()
+            for p in pdf.pages:
+                tables = p.extract_tables()
                 for table in tables:
                     for r in table:
                         if r and len(r) >= 2:
-                            val = re.findall(r'\d+\.?\d*', str(r[-1]))
-                            if val: specs[str(r[0]).upper()] = float(val[0])
-        
-        return {"main_img": main_img, "gallery": gallery, "spec": specs}
+                            val_str = str(r[-1]).replace(',', '.')
+                            nums = re.findall(r'\d+\.?\d*', val_str)
+                            pom = " ".join([str(x) for x in r[:-1] if x]).strip().upper()
+                            if nums and len(pom) > 3: specs[pom] = float(nums[0])
+        return {"img_bytes": img_bytes, "img_b64": img_base64, "spec": specs}
     except: return None
 
-# --- GIAO DIỆN CHÍNH ---
-st.title("👗 AI Fashion - Nhận diện hình vẽ (Bản hiển thị ảnh)")
-
+# --- SIDEBAR: QUẢN TRỊ KHO ---
 with st.sidebar:
-    st.header("⚙️ QUẢN TRỊ KHO")
-    if st.button("♻️ Cập nhật dữ liệu"): st.rerun()
-    up_bulk = st.file_uploader("Nạp kho PDF", accept_multiple_files=True)
+    st.header("📦 QUẢN TRỊ KHO")
+    res = supabase.table("ai_data").select("file_name", count="exact").execute()
+    st.metric("Tổng mẫu trong kho", res.count if res.count else 0)
+    
+    up_bulk = st.file_uploader("Nạp file mẫu PDF", accept_multiple_files=True)
     if up_bulk and st.button("🚀 BẮT ĐẦU NẠP"):
         for f in up_bulk:
-            with open("temp.pdf", "wb") as t: t.write(f.getbuffer())
+            with open("temp.pdf", "wb") as tmp: tmp.write(f.getbuffer())
             d = get_data("temp.pdf")
             if d:
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
                 with torch.no_grad():
-                    v = ai_brain(tf(Image.open(io.BytesIO(d['main_img'])).convert('RGB')).unsqueeze(0)).flatten().numpy().tolist()
-                supabase.table("ai_data").upsert({"file_name": f.name, "vector": v, "spec_json": d['spec'], "category": "KHO"}).execute()
-        st.success("Đã nạp kho!")
+                    v = ai_brain(tf(Image.open(io.BytesIO(d['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy().tolist()
+                supabase.table("ai_data").upsert({"file_name": f.name, "vector": v, "spec_json": d['spec'], "img_base64": d['img_b64']}).execute()
+        st.success("Đã nạp xong!")
+        st.rerun()
 
-# --- PHẦN HIỂN THỊ KẾT QUẢ ---
-up = st.file_uploader("📥 Drag and drop file here", type="pdf")
+# --- GIAO DIỆN CHÍNH ---
+st.title("👔 AI Fashion - So sánh & Đối chiếu thông số")
+up_test = st.file_uploader("📥 Tải file cần kiểm tra", type="pdf")
 
-if up:
-    with open("test.pdf", "wb") as f: f.write(up.getbuffer())
+if up_test:
+    with open("test.pdf", "wb") as f: f.write(up_test.getbuffer())
     target = get_data("test.pdf")
     
     if target:
-        col1, col2 = st.columns([1, 2])
+        # Tìm kiếm trong kho
+        db = supabase.table("ai_data").select("*").execute()
         
-        with col1:
-            st.subheader("🔍 Hình vẽ đang soi")
-            st.image(target['main_img'], use_container_width=True)
-            # Hiển thị Gallery nhỏ bên dưới
-            g_cols = st.columns(3)
-            for i, g_img in enumerate(target['gallery']):
-                with g_cols[i % 3]: st.image(g_img, use_container_width=True)
+        if not db.data:
+            st.warning("Kho đang trống, không có gì để so sánh!")
+            st.image(target['img_bytes'], caption="Ảnh file vừa tải lên", width=500)
+        else:
+            # Tính AI Similarity
+            tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+            with torch.no_grad():
+                v_test = ai_brain(tf(Image.open(io.BytesIO(target['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy()
+            
+            sims = []
+            for i in db.data:
+                s = float(cosine_similarity([v_test], [np.array(i['vector'])])) * 100
+                sims.append({"name": i['file_name'], "sim": s, "spec": i['spec_json'], "img": i.get('img_base64', '')})
+            
+            best = sorted(sims, key=lambda x: x['sim'], reverse=True)[0]
 
-        with col2:
-            st.subheader("✅ Kết quả (Dựa trên hình vẽ thực tế)")
-            # Tìm kiếm trong kho
-            db = supabase.table("ai_data").select("*").execute()
-            if db.data:
-                # (Logic tính toán độ tương đồng sim_list giữ nguyên như bản trước)
-                # Giả sử lấy mã khớp nhất là 'best_match'
-                best_match = db.data[0] # Ví dụ mã đầu tiên
-                
-                res_cols = st.columns(2)
-                with res_cols[0]:
-                    st.write(f"🔴 **{best_match['file_name']}**")
-                    # Ở đây bạn cần lưu thêm hình ảnh vào Supabase nếu muốn hiện ảnh của mẫu trong kho
-                    st.image(target['main_img'], caption="Ảnh tương đồng", use_container_width=True) 
-                
-                # Bảng thông số (POM) hiển thị bên cạnh ảnh
-                st.write("---")
-                st.write("**Bảng đối chiếu thông số:**")
-                st.table(pd.DataFrame(list(target['spec'].items()), columns=['Thông số', 'Giá trị']))
+            # HIỂN THỊ 2 ẢNH SONG SONG
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.subheader("🔍 Mẫu đang soi")
+                st.image(target['img_bytes'], use_container_width=True)
+            with col_b:
+                st.subheader(f"✅ Mẫu khớp nhất: {best['name']} ({best['sim']:.1f}%)")
+                if best['img']:
+                    st.image(base64.b64decode(best['img']), use_container_width=True)
+                else:
+                    st.info("Mẫu này trong kho chưa có ảnh hiển thị.")
+
+            # BẢNG SO SÁNH CHI TIẾT (4 CỘT)
+            st.markdown("### 📊 Bảng đối chiếu thông số & Chênh lệch")
+            diff_list = []
+            all_poms = sorted(list(set(target['spec'].keys()) | set(best['spec'].keys())))
+            
+            for p in all_poms:
+                v_new = target['spec'].get(p, 0)
+                v_old = best['spec'].get(p, 0)
+                diff = round(v_new - v_old, 3)
+                diff_list.append({
+                    "Thông số (POM)": p,
+                    "Mẫu Mới": v_new,
+                    "Mẫu Kho": v_old,
+                    "Chênh lệch (+/-)": diff
+                })
+            
+            df = pd.DataFrame(diff_list)
+            st.dataframe(df, use_container_width=True) # Hiện bảng đầy đủ cột
+
+            # NÚT XUẤT EXCEL
+            out = io.BytesIO()
+            with pd.ExcelWriter(out, engine='xlsxwriter') as wr:
+                df.to_excel(wr, index=False, sheet_name='SoSanh')
+            st.download_button(
+                label="📥 TẢI BÁO CÁO EXCEL CHÊNH LỆCH",
+                data=out.getvalue(),
+                file_name=f"So_sanh_{up_test.name}.xlsx",
+                mime="application/vnd.ms-excel"
+            )
