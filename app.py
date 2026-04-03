@@ -140,6 +140,9 @@ with st.sidebar:
     up_bulk = st.file_uploader("Nạp PDF", accept_multiple_files=True)
 
     if up_bulk and st.button("🚀 NẠP KHO"):
+        skipped = 0
+        success = 0
+
         for f in up_bulk:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 tmp.write(f.getbuffer())
@@ -147,29 +150,52 @@ with st.sidebar:
 
             d = get_data(path)
 
-            if d:
-                tf = transforms.Compose([
-                    transforms.Resize(224),
-                    transforms.CenterCrop(224),
-                    transforms.ToTensor(),
-                    transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
-                ])
+            # ===== KIỂM TRA ĐIỀU KIỆN =====
+            if not d or not d.get('img_bytes') or not d.get('spec') or len(d['spec']) == 0:
+                skipped += 1
+                os.remove(path)
+                continue
 
+            tf = transforms.Compose([
+                transforms.Resize(224),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
+            ])
+
+            try:
                 with torch.no_grad():
                     vec = ai_brain(tf(Image.open(io.BytesIO(d['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy().tolist()
 
-                try:
-                    supabase.table("ai_data").upsert({
-                        "file_name": f.name,
-                        "vector": vec,
-                        "spec_json": d['spec'],
-                        "img_base64": d['img_b64'],
-                        "category": d['cat']
-                    }).execute()
-                except Exception as e:
-                    st.error(f"Lỗi insert DB: {e}")
+                # kiểm tra vector
+                if not vec or len(vec) == 0:
+                    skipped += 1
+                    os.remove(path)
+                    continue
 
-        st.success("Xong!")
+                # ===== INSERT DB =====
+                supabase.table("ai_data").upsert({
+                    "file_name": f.name,
+                    "vector": vec,
+                    "spec_json": d['spec'],
+                    "img_base64": d['img_b64'],
+                    "category": d['cat']
+                }).execute()
+
+                success += 1
+
+            except Exception as e:
+                st.error(f"Lỗi xử lý {f.name}: {e}")
+                skipped += 1
+
+            # ===== XOÁ FILE SAU KHI XỬ LÝ =====
+            try:
+                os.remove(path)
+            except:
+                pass
+
+        st.success(f"✅ Nạp thành công: {success} file")
+        st.warning(f"⚠️ Bỏ qua: {skipped} file (thiếu ảnh / thiếu spec)")
         st.rerun()
 
 # ==========================================
