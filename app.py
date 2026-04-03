@@ -17,7 +17,7 @@ try:
 except:
     st.error("❌ Lỗi kết nối Supabase!")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.4", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.5", page_icon="👔")
 
 # ================= AI ENGINE =================
 @st.cache_resource
@@ -46,7 +46,7 @@ def upload_to_storage(img_bytes, filename):
 
 def parse_val(t):
     try:
-        # Lọc lấy số, phân số hoặc số thập phân
+        # Xử lý phân số phức tạp như "30 1/2" hoặc "1/4"
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
         if not found: return 0
         v = found[0]
@@ -58,20 +58,14 @@ def parse_val(t):
 
 def classify_logic(specs, text, name):
     txt = (text + name).upper()
-    # Tìm Inseam hoặc Length trong các key của specs
-    inseam = 0
-    length = 0
-    for k, v in specs.items():
-        if 'INSEAM' in k: inseam = max(inseam, v)
-        if 'LENGTH' in k or 'OUTSEAM' in k: length = max(length, v)
+    inseam = specs.get('INSEAM', 0)
+    length = specs.get('LENGTH', 0)
 
-    # LOGIC CẢI TIẾN: Ưu tiên Quần Dài nếu Length > 30 hoặc Inseam > 20
-    if 'CARGO' in txt or 'PANT' in txt:
-        if length > 0 and length < 25: return "QUẦN SHORT"
+    # Nếu có từ khóa Pant/Cargo hoặc chiều dài thực sự lớn
+    if 'CARGO' in txt or 'PANT' in txt or length > 30 or inseam > 20:
         return "QUẦN DÀI"
-        
-    if inseam >= 22 or length >= 32: return "QUẦN DÀI"
-    if 0 < inseam <= 15 or 0 < length <= 23: return "QUẦN SHORT"
+    if 0 < length <= 22 or 0 < inseam <= 15:
+        return "QUẦN SHORT"
     if 'SHORT' in txt: return "QUẦN SHORT"
     return "ÁO"
 
@@ -87,18 +81,30 @@ def get_data(pdf_path):
                         if not r: continue
                         txt_r = " | ".join([str(x) for x in r if x]).upper()
                         key_found = None
-                        for k in ['INSEAM','WAIST','HIP','THIGH','LENGTH','CHEST','SHOULDER']:
-                            if k in txt_r: key_found = k; break
+                        # Ưu tiên các từ khóa thông số chính
+                        for k in ['WAIST','HIP','INSEAM','LENGTH','THIGH','KNEE','LEG OPEN','CHEST','SHOULDER']:
+                            if k in txt_r: 
+                                key_found = k
+                                break
+                        
                         if key_found:
-                            vals = [parse_val(x) for x in r if x and parse_val(x) > 0]
-                            if vals: specs[key_found] = round(float(np.median(vals)), 2)
+                            # LẤY SỐ: Bỏ qua các số nhỏ < 3 (thường là dung sai +/-)
+                            vals = [parse_val(x) for x in r if x]
+                            valid_vals = [v for v in vals if v >= 3] # Chỉ lấy thông số thực > 3 inch
+                            
+                            if valid_vals:
+                                # Lấy giá trị lớn nhất (thường là size lớn nhất hoặc base size)
+                                specs[key_found] = round(float(max(valid_vals)), 2)
+        
         doc = fitz.open(pdf_path)
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
         doc.close()
         return {"spec": specs, "img": img_bytes, "cat": classify_logic(specs, text, os.path.basename(pdf_path)), "name": os.path.basename(pdf_path)}
     except: return None
 
-# ================= SIDEBAR =================
+# ================= GIAO DIỆN =================
+st.title("👔 AI Fashion Pro V11.5 - Fix Specification")
+
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     try:
@@ -130,20 +136,15 @@ with st.sidebar:
         st.rerun()
 
 # ================= CHÍNH: SO SÁNH =================
-st.title("👔 AI Fashion Pro V11.4")
-test_file = st.file_uploader("Tải file PDF Test (Đối chứng)", type="pdf")
-
+test_file = st.file_uploader("Tải file PDF Test", type="pdf")
 if test_file:
     with open("test.pdf", "wb") as f: f.write(test_file.getbuffer())
     target = get_data("test.pdf")
     if target:
         st.subheader(f"Nhận diện loại: {target['cat']}")
         
-        # Tìm trong DB mẫu cùng loại
         db = supabase.table("ai_data").select("*").eq("category", target['cat']).execute()
-        
         if db.data:
-            # AI Vector Test
             tf = transforms.Compose([
                 transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(),
                 transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
@@ -153,41 +154,36 @@ if test_file:
             
             matches = []
             for item in db.data:
-                # FIX LỖI ĐỎ: Kiểm tra vector có tồn tại không và ép kiểu chuẩn
                 if item.get('vector'):
                     v_db = np.array(item['vector'], dtype=np.float32)
-                    # Tính toán Similarity an toàn
-                    sim = float(cosine_similarity(v_test.reshape(1,-1), v_db.reshape(1,-1))[0][0]) * 100
+                    sim = float(cosine_similarity(v_test.reshape(1,-1), v_db.reshape(1,-1))) * 100
                     matches.append({"name": item['file_name'], "sim": sim, "url": item['img_url'], "spec": item['spec_json']})
             
-            if matches:
-                top_matches = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
-                
-                # Nút xuất Excel
-                export_data = []
-                for m in top_matches:
-                    keys = set(target['spec'].keys()).union(set(m['spec'].keys()))
-                    for k in sorted(keys):
-                        v_t, v_d = target['spec'].get(k, 0), m['spec'].get(k, 0)
-                        export_data.append({"Mẫu": m['name'], "Thông số": k, "Test": v_t, "Kho": v_d, "Lệch": round(v_t-v_d, 2)})
-                
+            top_matches = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
+            
+            # Xuất Excel
+            export_data = []
+            for m in top_matches:
+                keys = set(target['spec'].keys()).union(set(m['spec'].keys()))
+                for k in sorted(keys):
+                    v_t, v_d = target['spec'].get(k, 0), m['spec'].get(k, 0)
+                    export_data.append({"Mẫu": m['name'], "Thông số": k, "Test": v_t, "Kho": v_d, "Lệch": round(v_t-v_d, 2)})
+            
+            if export_data:
                 df_ex = pd.DataFrame(export_data)
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine='xlsxwriter') as wr: df_ex.to_excel(wr, index=False)
-                st.download_button("📥 TẢI BÁO CÁO EXCEL", data=buf.getvalue(), file_name="So_Sanh.xlsx")
+                st.download_button("📥 TẢI BÁO CÁO EXCEL", data=buf.getvalue(), file_name="So_Sanh_Fashion.xlsx")
 
-                # Hiện bảng so sánh
-                for m in top_matches:
-                    with st.expander(f"Mẫu: {m['name']} (Khớp {m['sim']:.1f}%)", expanded=True):
-                        c1, c2, c3 = st.columns([1,1,2])
-                        with c1: st.image(target['img'], caption="Test")
-                        with c2: st.image(m['url'], caption="Kho")
-                        with c3:
-                            comp = []
-                            keys = set(target['spec'].keys()).union(set(m['spec'].keys()))
-                            for k in sorted(keys):
-                                v_t, v_d = target['spec'].get(k, 0), m['spec'].get(k, 0)
-                                comp.append({"Thông số": k, "Test": v_t, "Kho": v_d, "Lệch": round(v_t-v_d, 2)})
-                            st.table(pd.DataFrame(comp))
-            else: st.warning("Mẫu trong kho bị lỗi dữ liệu vector.")
-        else: st.warning(f"Chưa có mẫu nào thuộc loại '{target['cat']}' để đối chiếu.")
+            for m in top_matches:
+                with st.expander(f"Mẫu: {m['name']} (Khớp {m['sim']:.1f}%)", expanded=True):
+                    c1, c2, c3 = st.columns()
+                    with c1: st.image(target['img'], caption="Test")
+                    with c2: st.image(m['url'], caption="Kho")
+                    with c3:
+                        comp = []
+                        keys = set(target['spec'].keys()).union(set(m['spec'].keys()))
+                        for k in sorted(keys):
+                            v_t, v_d = target['spec'].get(k, 0), m['spec'].get(k, 0)
+                            comp.append({"Thông số": k, "Test": v_t, "Kho": v_d, "Lệch": round(v_t-v_d, 2)})
+                        st.table(pd.DataFrame(comp))
