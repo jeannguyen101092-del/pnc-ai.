@@ -14,7 +14,7 @@ URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V4.4", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V4.5", page_icon="👔")
 
 if 'sel_code' not in st.session_state: st.session_state.sel_code = None
 
@@ -63,10 +63,7 @@ with st.sidebar:
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
                 with torch.no_grad():
                     v = ai_brain(tf(Image.open(io.BytesIO(d['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy().tolist()
-                # Upsert dữ liệu sạch
-                supabase.table("ai_data").upsert({
-                    "file_name": f.name, "vector": v, "spec_json": d['spec'], "img_base64": d['img_b64']
-                }).execute()
+                supabase.table("ai_data").upsert({"file_name": f.name, "vector": v, "spec_json": d['spec'], "img_base64": d['img_b64']}).execute()
         st.success("Đã nạp xong!")
         st.rerun()
 
@@ -104,11 +101,10 @@ if up_test:
                 
                 sims = []
                 for i in db.data:
-                    # Kiểm tra vector có tồn tại và đúng định dạng list không
+                    # Kiểm tra vector có hợp lệ không
                     if i.get('vector') and isinstance(i['vector'], list) and len(i['vector']) > 0:
                         s = float(cosine_similarity([v_test], [np.array(i['vector'])])) * 100
                         sims.append({"name": i['file_name'], "sim": s, "spec": i['spec_json'], "img": i['img_base64']})
-                
                 if sims:
                     best = sorted(sims, key=lambda x: x['sim'], reverse=True)[0]
             else:
@@ -140,5 +136,3 @@ if up_test:
                 with pd.ExcelWriter(out, engine='xlsxwriter') as wr:
                     df.to_excel(wr, index=False)
                 st.download_button("📥 TẢI EXCEL SO SÁNH", out.getvalue(), f"So_sanh_{best['name']}.xlsx")
-            else:
-                st.error("❌ Không tìm thấy dữ liệu hợp lệ trong kho để so sánh. Hãy xóa và nạp lại mẫu!")
