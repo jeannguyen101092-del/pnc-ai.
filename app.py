@@ -7,7 +7,7 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# ================= CONFIG (HÃY ĐIỀN THÔNG TIN CỦA BẠN) =================
+# ================= CONFIG (ĐIỀN THÔNG TIN CỦA BẠN) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET_NAME = "fashion-imgs"
@@ -17,7 +17,7 @@ try:
 except:
     st.error("❌ Lỗi kết nối Supabase!")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.9", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.11", page_icon="👔")
 
 # ================= AI ENGINE =================
 @st.cache_resource
@@ -43,13 +43,24 @@ def classify_logic(specs, text, name):
     txt = (text + " " + name).upper()
     inseam = specs.get('INSEAM', 0)
     length = specs.get('LENGTH', specs.get('OUTSEAM', 0))
-    if any(k in txt for k in ['PANT', 'CARGO', 'TROUSER', 'JOGGER']) or length >= 25 or inseam >= 15:
-        if any(k in txt for k in ['ELASTIC', 'WAISTBAND', 'THUN', 'RIB']):
+    
+    # 1. Nhóm Quần
+    if any(k in txt for k in ['PANT', 'CARGO', 'TROUSER']) or length >= 25 or inseam >= 15:
+        # CHỈ nhận diện Lưng Thun nếu có từ khóa cực kỳ cụ thể về cạp quần
+        if any(k in txt for k in ['ELASTIC WAIST', 'RIB WAIST', 'FULL ELASTIC', 'LƯNG THUN']):
             return "QUẦN DÀI LƯNG THUN"
+        # Mặc định là Lưng Thường
         return "QUẦN DÀI LƯNG THƯỜNG"
-    if 0 < length <= 23 or 0 < inseam <= 13 or 'SHORT' in txt:
-        return "QUẦN SHORT"
-    return "ÁO"
+    
+    if 0 < length <= 23 or 0 < inseam <= 13 or 'SHORT' in txt: return "QUẦN SHORT"
+    
+    # 2. Nhóm Áo
+    if any(k in txt for k in ['VEST', 'BLAZER', 'JACKET']): return "ÁO VEST / JACKET"
+    sleeve = specs.get('SLEEVE', 0)
+    if sleeve >= 20: return "ÁO DÀI TAY"
+    if 0 < sleeve <= 12: return "ÁO NGẮN TAY"
+    
+    return "HÀNG KHÁC"
 
 def get_data(pdf_path):
     try:
@@ -62,52 +73,58 @@ def get_data(pdf_path):
                     for r in tb:
                         if not r: continue
                         txt_r = " | ".join([str(x) for x in r if x]).upper()
-                        key_found = None
+                        key_f = None
                         for k in ['INSEAM','WAIST','HIP','LENGTH','OUTSEAM','SLEEVE','SHOULDER','CHEST']:
-                            if k in txt_r: key_found = k; break
-                        if key_found:
+                            if k in txt_r: key_f = k; break
+                        if key_f:
                             vals = [parse_val(x) for x in r if x]
-                            valid_vals = [v for v in vals if v >= 4] # Bỏ qua dung sai nhỏ
-                            if valid_vals: specs[key_found] = round(float(max(valid_vals)), 2)
+                            valid = [v for v in vals if v >= 4] # Bỏ qua dung sai nhỏ
+                            if valid: specs[key_f] = round(float(max(valid)), 2)
         doc = fitz.open(pdf_path)
-        img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
+        img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
         doc.close()
-        return {"spec": specs, "img": img_bytes, "cat": classify_logic(specs, text, os.path.basename(pdf_path)), "name": os.path.basename(pdf_path)}
+        return {"spec": specs, "img": img, "cat": classify_logic(specs, text, os.path.basename(pdf_path)), "name": os.path.basename(pdf_path)}
     except: return None
 
-# ================= SIDEBAR & NẠP KHO =================
+# ================= SIDEBAR & QUẢN LÝ KHO =================
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     try:
-        db_all = supabase.table("ai_data").select("file_name, category, spec_json, img_url, vector").execute()
-        all_samples = db_all.data
+        db_res = supabase.table("ai_data").select("file_name, category, spec_json, img_url, vector").execute()
+        all_samples = db_res.data
         st.metric("Tổng mẫu trong kho", f"{len(all_samples)} mẫu")
     except: 
         all_samples = []
         st.metric("Tổng mẫu trong kho", "0 mẫu")
     
     st.divider()
-    files = st.file_uploader("Nạp PDF vào kho", accept_multiple_files=True)
+    files = st.file_uploader("Nạp PDF mới vào kho", accept_multiple_files=True)
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         for f in files:
             with open("tmp.pdf", "wb") as t: t.write(f.getbuffer())
             d = get_data("tmp.pdf")
             if d:
-                # Nén WebP
-                img_pil = Image.open(io.BytesIO(d['img'])).convert("RGB")
+                img_p = Image.open(io.BytesIO(d['img'])).convert("RGB")
                 buf = io.BytesIO()
-                img_pil.save(buf, format="WEBP", quality=75)
-                img_url = (supabase.storage.from_(BUCKET_NAME).upload(path=f.name+".webp", file=buf.getvalue(), file_options={"upsert":"true"}) and supabase.storage.from_(BUCKET_NAME).get_public_url(f.name+".webp"))
-                
+                img_p.save(buf, format="WEBP", quality=75)
+                fname = re.sub(r'[^a-zA-Z0-9]', '_', f.name) + ".webp"
+                supabase.storage.from_(BUCKET_NAME).upload(path=fname, file=buf.getvalue(), file_options={"upsert":"true"})
+                url = supabase.storage.from_(BUCKET_NAME).get_public_url(fname)
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
-                with torch.no_grad(): vec = ai_brain(tf(img_pil).unsqueeze(0)).flatten().numpy().tolist()
-                
-                supabase.table("ai_data").upsert({"file_name": f.name, "vector": vec, "spec_json": d['spec'], "img_url": img_url, "category": d['cat']}, on_conflict="file_name").execute()
-        st.success("🏁 Nạp xong!")
+                with torch.no_grad(): vec = ai_brain(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
+                supabase.table("ai_data").upsert({"file_name": f.name, "vector": vec, "spec_json": d['spec'], "img_url": url, "category": d['cat']}, on_conflict="file_name").execute()
+        st.success("🏁 Nạp kho thành công!")
         st.rerun()
 
-# ================= CHÍNH: SO SÁNH NÂNG CAO =================
-st.title("👔 AI Fashion Pro V11.9")
+    st.divider()
+    st.write("🗑️ Xóa mã hàng")
+    del_n = st.selectbox("Chọn mã cần xóa:", ["-- Chọn mã --"] + [i['file_name'] for i in all_samples])
+    if del_n != "-- Chọn mã --" and st.button("❌ XÓA VĨNH VIỄN"):
+        supabase.table("ai_data").delete().eq("file_name", del_n).execute()
+        st.rerun()
+
+# ================= CHÍNH: SO SÁNH =================
+st.title("👔 AI Fashion Pro V11.11")
 test_file = st.file_uploader("Tải file PDF Test (Đối chứng)", type="pdf")
 
 if test_file:
@@ -117,67 +134,41 @@ if test_file:
     if target:
         st.subheader(f"Nhận diện loại: {target['cat']}")
         
-        # --- TÍNH NĂNG CHỌN MÃ HÀNG THỦ CÔNG ---
-        st.divider()
-        col_sel, col_btn = st.columns([3, 1])
-        with col_sel:
-            list_names = [item['file_name'] for item in all_samples]
-            selected_name = st.selectbox("🎯 Chọn mã hàng cụ thể trong kho để so sánh (hoặc để trống để AI tự tìm):", ["-- Tự động tìm mẫu tương đồng --"] + list_names)
+        # CHỌN MÃ HÀNG ĐỂ SO SÁNH
+        list_n = [item['file_name'] for item in all_samples]
+        sel = st.selectbox("🎯 Chọn mã hàng cụ thể (hoặc AI tự tìm mẫu tương đồng):", ["-- Tự động tìm mẫu tương đồng --"] + list_n)
         
-        target_matches = []
-        
-        if selected_name == "-- Tự động tìm mẫu tương đồng --":
-            # AI Tự tìm dựa trên Vector và Category
+        matches = []
+        if sel == "-- Tự động tìm mẫu tương đồng --":
             if all_samples:
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
                 with torch.no_grad(): v_test = ai_brain(tf(Image.open(io.BytesIO(target['img']))).unsqueeze(0)).flatten().numpy()
-                
-                for item in all_samples:
-                    if item.get('vector'):
-                        sim = float(cosine_similarity(v_test.reshape(1,-1), np.array(item['vector']).reshape(1,-1))) * 100
-                        # Ưu tiên mẫu cùng loại
-                        if item['category'] == target['cat']: sim += 10 
-                        target_matches.append({"name": item['file_name'], "sim": sim, "url": item['img_url'], "spec": item['spec_json']})
-                target_matches = sorted(target_matches, key=lambda x: x['sim'], reverse=True)[:3]
+                for i in all_samples:
+                    if i.get('vector'):
+                        v_db = np.array(i['vector']).reshape(1, -1)
+                        # Sửa lỗi so sánh AI dòng 117
+                        sim_val = cosine_similarity(v_test.reshape(1, -1), v_db)[0][0] * 100
+                        if i['category'] == target['cat']: sim_val += 5
+                        matches.append({"name": i['file_name'], "sim": sim_val, "url": i['img_url'], "spec": i['spec_json']})
+                matches = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
         else:
-            # Lấy đúng mã người dùng chọn
-            for item in all_samples:
-                if item['file_name'] == selected_name:
-                    target_matches = [{"name": item['file_name'], "sim": 100, "url": item['img_url'], "spec": item['spec_json']}]
+            for i in all_samples:
+                if i['file_name'] == sel:
+                    matches = [{"name": i['file_name'], "sim": 100.0, "url": i['img_url'], "spec": i['spec_json']}]
                     break
 
-        # --- HIỂN THỊ SO SÁNH ---
-        if target_matches:
-            # Nút xuất Excel cho các mẫu đang hiện
-            export_data = []
-            for m in target_matches:
-                for k in set(target['spec'].keys()).union(set(m['spec'].keys())):
-                    v_t, v_d = target['spec'].get(k, 0), m['spec'].get(k, 0)
-                    export_data.append({"Mẫu so sánh": m['name'], "Thông số": k, "Test": v_t, "Kho": v_d, "Lệch": round(v_t-v_d, 2)})
-            
-            df_ex = pd.DataFrame(export_data)
-            buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine='xlsxwriter') as wr: df_ex.to_excel(wr, index=False)
-            st.download_button("📥 TẢI BÁO CÁO ĐỐI CHIẾU EXCEL", data=buf.getvalue(), file_name=f"SoSanh_{target['name']}.xlsx")
-
-            for m in target_matches:
-                with st.expander(f"📌 ĐỐI CHIẾU VỚI: {m['name']} (Độ tương đồng AI: {m['sim']:.1f}%)", expanded=True):
-                    c1, c2, c3 = st.columns([1, 1, 2])
-                    with c1: st.image(target['img'], caption="Ảnh File Test")
-                    with c2: st.image(m['url'], caption="Ảnh trong Kho")
+        if matches:
+            for m in matches:
+                with st.expander(f"📌 ĐỐI CHIẾU: {m['name']} (Độ tương đồng: {m['sim']:.1f}%)", expanded=True):
+                    c1, c2, c3 = st.columns()
+                    with c1: st.image(target['img'], caption="File Test")
+                    with c2: st.image(m['url'], caption="Mẫu Kho")
                     with c3:
                         comp = []
-                        all_keys = sorted(list(set(target['spec'].keys()).union(set(m['spec'].keys()))))
-                        for k in all_keys:
+                        all_k = sorted(list(set(target['spec'].keys()).union(set(m['spec'].keys()))))
+                        for k in all_k:
                             v_t, v_d = target['spec'].get(k, 0), m['spec'].get(k, 0)
                             diff = round(v_t - v_d, 2)
-                            comp.append({"Thông số": k, "File Test": v_t, "Trong Kho": v_d, "Chênh lệch": diff})
-                        
-                        # Hiển thị bảng với màu sắc cảnh báo lệch
-                        df_show = pd.DataFrame(comp)
-                        def color_diff(val):
-                            color = 'red' if abs(val) > 0.25 else 'green'
-                            return f'color: {color}'
-                        st.table(df_show.style.applymap(color_diff, subset=['Chênh lệch']))
-        else:
-            st.warning("Kho hàng trống hoặc không tìm thấy mẫu phù hợp.")
+                            comp.append({"Thông số": k, "Test": v_t, "Kho": v_d, "Lệch": diff})
+                        df = pd.DataFrame(comp)
+                        st.table(df.style.applymap(lambda x: 'color: red' if abs(x) > 0.25 else 'color: green', subset=['Lệch']))
