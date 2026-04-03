@@ -1,196 +1,304 @@
 # ==========================================================
-# AI FASHION PRO V8.5 - FINAL STABLE (GITHUB IMAGE FIXED)
+# AI FASHION PRO V8.3 (FIX ẢNH + TỐI ƯU NHẸ - GIỮ NGUYÊN UI)
 # ==========================================================
 
 import streamlit as st
 import os, fitz, io, pdfplumber, re, pandas as pd
 import numpy as np
 from PIL import Image
-import torch, base64, requests
+import torch, base64
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# ================= 1. CẤU HÌNH (THAY KEY CỦA BẠN) =================
+# ================= CONFIG =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
+supabase: Client = create_client(URL, KEY)
 
-GH_TOKEN = "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" 
-GH_REPO = "jeannguyen101092-del/fashion-storage"
-GH_BRANCH = "main" # Sửa thành "master" nếu GitHub của bạn hiện master
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V8", page_icon="👔")
 
-try:
-    supabase: Client = create_client(URL, KEY)
-except:
-    st.error("Lỗi cấu hình Supabase.")
-
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V8.5", page_icon="👔")
-
-# ================= 2. AI & GITHUB ENGINE =================
+# ================= AI =================
 @st.cache_resource
 def load_ai():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-    return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
+    model = torch.nn.Sequential(*(list(model.children())[:-1]))
+    return model.eval()
 
 ai_brain = load_ai()
 
-def upload_to_github(img_bytes, filename):
-    """Đẩy ảnh lên GitHub và lấy Link Raw chuẩn để hiển thị"""
+# ================= PARSE VALUE =================
+def parse_val(t):
     try:
-        # Làm sạch tên file để tránh lỗi URL
+        found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
+        if not found: return 0
+        v = found[0]
+        if ' ' in v:
+            p = v.split()
+            return float(p[0]) + eval(p[1])
+        return eval(v) if '/' in v else float(v)
+    except:
+        return 0
+
+# ================= FILTER KEY =================
+VALID_KEYS = [
+    'INSEAM','WAIST','HIP','THIGH','KNEE','LEG OPEN',
+    'CHEST','LENGTH','SLEEVE','SHOULDER','BOTTOM'
+]
+
+BLOCK_KEYS = [
+    'SIZE','SEASON','TECH','DATE','#','DEVELOPMENT',
+    'FABRIC','BODY','SHELL','LINING','MATERIAL',
+    'COTTON','POLYESTER','ELASTANE','NYLON',
+    '%','PFD','DYED','WASH','COLOR','PRINT'
+]
+
+# ================= PARSER =================
+def extract_specs(table):
+    specs = {}
+    for r in table:
+        if not r or len(r) < 2:
+            continue
+        row_text = " | ".join([str(x) for x in r if x]).upper()
+        if any(x in row_text for x in BLOCK_KEYS):
+            continue
+        if not any(k in row_text for k in VALID_KEYS):
+            continue
+        vals = [parse_val(x) for x in r if x]
+        vals = [v for v in vals if v > 0]
+        if len(vals) < 1:
+            continue
+        val = float(np.median(vals))
+        key = row_text[:120]
+        specs[key] = round(val, 2)
+    return specs
+
+# ================= CLASSIFY =================
+def advanced_classify(specs, text, file_name):
+    txt = (text + " " + file_name).upper()
+    inseam = specs.get('INSEAM', 0)
+
+    if 'BIB' in txt:
+        return "QUẦN YẾM"
+    if 'CARGO' in txt:
+        return "QUẦN CARGO"
+    if 'ELASTIC' in txt:
+        return "QUẦN LƯNG THUN"
+
+    if inseam > 0:
+        if inseam <= 11:
+            return "QUẦN SHORT"
+        if inseam >= 25:
+            return "QUẦN DÀI"
+
+    if 'DRESS' in txt:
+        return "ĐẦM"
+    if 'SKIRT' in txt:
+        return "VÁY"
+    if 'SHIRT' in txt:
+        return "ÁO SƠ MI"
+
+    return "ÁO"
+
+# ================= GET DATA =================
+def get_data(pdf_path):
+    try:
+        specs, all_texts = {}, ""
+
+        with pdfplumber.open(pdf_path) as pdf:
+            for p in pdf.pages:
+                t = p.extract_text()
+                if t:
+                    all_texts += t + " "
+                tables = p.extract_tables()
+                for table in tables:
+                    specs.update(extract_specs(table))
+
+        doc = fitz.open(pdf_path)
+        pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+        img_bytes = pix.tobytes("png")
+
+        # FIX: base64 chuẩn
+        img_b64 = base64.b64encode(img_bytes).decode('utf-8')
+
+        if len(specs) < 5:
+            return None
+
+        cat = advanced_classify(specs, all_texts, os.path.basename(pdf_path))
+
+        return {
+            "spec": specs,
+            "img_b64": img_b64,
+            "img_bytes": img_bytes,
+            "cat": cat
+        }
+
+    except Exception as e:
+        st.error(f"Lỗi PDF: {e}")
+        return None
+
+# ================= GITHUB CONFIG =================
+GH_REPO = "jeannguyen101092-del/fashion-storage"
+GH_BRANCH = "main"
+GH_TOKEN = "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"
+
+import requests
+
+# ================= UPLOAD IMG GITHUB =================
+def upload_to_github(img_bytes, filename):
+    try:
         clean_name = re.sub(r'[^a-zA-Z0-9]', '_', filename)
-        url = f"https://github.com{GH_REPO}/contents/imgs/{clean_name}.png"
-        headers = {"Authorization": f"token {GH_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-        content = base64.b64encode(img_bytes).decode()
-        
-        # Kiểm tra file tồn tại để lấy SHA
-        check = requests.get(url, headers=headers, timeout=10)
-        data = {"message": f"Upload {filename}", "content": content, "branch": GH_BRANCH}
+
+        url = f"https://api.github.com/repos/{GH_REPO}/contents/imgs/{clean_name}.png"
+
+        headers = {
+            "Authorization": f"token {GH_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+
+        content = base64.b64encode(img_bytes).decode('utf-8')
+
+        check = requests.get(url, headers=headers)
+
+        data = {
+            "message": f"upload {clean_name}",
+            "content": content,
+            "branch": GH_BRANCH
+        }
+
         if check.status_code == 200:
             data["sha"] = check.json()["sha"]
-            
-        res = requests.put(url, headers=headers, json=data, timeout=15)
+
+        res = requests.put(url, headers=headers, json=data)
+
         if res.status_code in [200, 201]:
-            # TRẢ VỀ LINK RAW CHUẨN ĐỂ STREAMLIT ĐỌC ĐƯỢC ẢNH
-            return f"https://githubusercontent.com{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.png"
+            return f"https://raw.githubusercontent.com/{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.png"
+
         return None
+
     except:
         return None
 
-# ================= 3. XỬ LÝ DỮ LIỆU PDF =================
-def parse_val(t):
-    try:
-        f = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
-        if not f: return 0
-        v = str(f[0])
-        return eval(v.replace(' ', '+')) if '/' in v else float(v)
-    except: return 0
-
-def get_data(pdf_path):
-    try:
-        specs, txt = {}, ""
-        with pdfplumber.open(pdf_path) as pdf:
-            for p in pdf.pages:
-                txt += (p.extract_text() or "") + " "
-                for tbl in p.extract_tables():
-                    for r in tbl:
-                        if not r or len(r) < 2: continue
-                        line = " | ".join([str(x) for x in r if x]).upper()
-                        if any(k in line for k in ['INSEAM','WAIST','HIP','THIGH','KNEE','LEG OPEN','CHEST','LENGTH','SLEEVE','SHOULDER']):
-                            vals = [parse_val(x) for x in r if parse_val(x) > 0]
-                            if vals: specs[line[:80]] = round(float(np.median(vals)), 2)
-        
-        if len(specs) < 3: return {"err": "Thiếu thông số (Dưới 3 dòng)"}
-        
-        doc = fitz.open(pdf_path)
-        img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
-        
-        cat = "ÁO"
-        ins = next((v for k, v in specs.items() if 'INSEAM' in k), 0)
-        if ins > 0: cat = "QUẦN SHORT" if ins <= 12 else "QUẦN DÀI"
-        elif any(x in txt.upper() for x in ['DRESS', 'ĐẦM', 'SKIRT', 'VÁY']): cat = "ĐẦM/VÁY"
-        
-        return {"spec": specs, "img": img, "cat": cat}
-    except Exception as e: return {"err": str(e)}
-
-# ================= 4. GIAO DIỆN SIDEBAR =================
+# ================= UPLOAD =================
 with st.sidebar:
-    st.header("📦 QUẢN LÝ KHO")
-    try:
-        count_res = supabase.table("ai_data").select("*", count="exact").execute()
-        st.metric("Tổng mẫu trong kho", f"{count_res.count if count_res.count else 0} mẫu")
-    except: st.metric("Tổng mẫu trong kho", "Lỗi kết nối...")
+    st.header("📦 NẠP KHO")
 
-    st.divider()
-    if "up_key" not in st.session_state: st.session_state.up_key = 0
-    files = st.file_uploader("Nạp PDF kho", accept_multiple_files=True, key=f"u_{st.session_state.up_key}")
+    files = st.file_uploader("Upload PDF", accept_multiple_files=True)
 
-    if files and st.button("🚀 BẮT ĐẦU NẠP"):
-        bar = st.progress(0)
-        msg = st.empty()
-        success = 0
-        
-        for idx, f in enumerate(files):
-            msg.text(f"Đang nạp: {f.name} ({idx+1}/{len(files)})")
-            bar.progress((idx + 1) / len(files))
-            
-            with open("tmp.pdf", "wb") as t: t.write(f.getbuffer())
-            d = get_data("tmp.pdf")
-            
-            if "err" in d:
-                st.warning(f"Bỏ qua {f.name}: {d['err']}")
-                continue
-            
-            # Đẩy ảnh lên GitHub
-            url_anh = upload_to_github(d['img'], f.name)
+    if files and st.button("🚀 NẠP"):
+        for f in files:
+            try:
+                name = re.sub(r'\s*\(\d+\)', '', f.name)
 
-            # AI Vector
-            tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-            with torch.no_grad():
-                vec = ai_brain(tf(Image.open(io.BytesIO(d['img'])).convert('RGB')).unsqueeze(0)).flatten().numpy().tolist()
+                with open("tmp.pdf", "wb") as t:
+                    t.write(f.getbuffer())
 
-            # Lưu Supabase
-            supabase.table("ai_data").upsert({
-                "file_name": f.name, "vector": vec, "spec_json": d['spec'], "img_url": url_anh, "category": d['cat']
-            }, on_conflict="file_name").execute()
-            
-            success += 1
-            os.remove("tmp.pdf")
+                d = get_data("tmp.pdf")
 
-        st.session_state.up_key += 1
-        st.success(f"✅ Đã nạp thành công {success} mẫu!")
+                if not d:
+                    continue
+
+                # 👉 upload ảnh lên GitHub
+                img_url = upload_to_github(d['img_bytes'], name)
+
+                tf = transforms.Compose([
+                    transforms.Resize(224),
+                    transforms.CenterCrop(224),
+                    transforms.ToTensor(),
+                    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+                ])
+
+                with torch.no_grad():
+                    vec = ai_brain(tf(Image.open(io.BytesIO(d['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy().tolist()
+
+                supabase.table("ai_data").upsert({
+                    "file_name": name,
+                    "vector": vec,
+                    "spec_json": d['spec'],
+                    "img_url": img_url,
+                    "category": d['cat']
+                }, on_conflict="file_name").execute()
+
+                os.remove("tmp.pdf")
+
+            except Exception as e:
+                st.warning(f"Lỗi {f.name}: {e}")
+
+        st.success("✅ Done")
         st.rerun()
 
-# ================= 5. GIAO DIỆN SO SÁNH =================
-st.title("👔 AI Fashion Pro V8.5")
-test_file = st.file_uploader("Tải file đối chứng (Test)", type="pdf")
+# ================= COMPARE =================
+st.title("👔 AI Fashion Pro V8")
 
-if test_file:
-    with open("test.pdf", "wb") as f: f.write(test_file.getbuffer())
+file = st.file_uploader("Upload test", type="pdf")
+
+if file:
+    with open("test.pdf", "wb") as f:
+        f.write(file.getbuffer())
+
     target = get_data("test.pdf")
 
-    if "err" in target:
-        st.error(f"Lỗi: {target['err']}")
-    else:
-        st.info(f"Loại sản phẩm: **{target['cat']}**")
+    if target:
+        st.success(f"Nhận diện: {target['cat']}")
+
         db = supabase.table("ai_data").select("*").eq("category", target['cat']).execute()
 
         if db.data:
-            tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+            tf = transforms.Compose([
+                transforms.Resize(224),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+
             with torch.no_grad():
-                v_test = ai_brain(tf(Image.open(io.BytesIO(target['img'])).convert('RGB')).unsqueeze(0)).flatten().numpy()
+                v_test = ai_brain(tf(Image.open(io.BytesIO(target['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy()
 
             results = []
+
             for i in db.data:
                 if i.get('vector'):
-                    v_t_2d = v_test.reshape(1, -1)
-                    v_db_2d = np.array(i['vector']).reshape(1, -1)
-                    sim = float(cosine_similarity(v_t_2d, v_db_2d)[0][0]) * 100
-                    results.append({"name": i['file_name'], "sim": sim, "spec": i['spec_json'], "img": i['img_url']})
+                    sim = float(cosine_similarity([v_test], [np.array(i['vector'])])[0][0]) * 100
+                    results.append({
+                        "name": i['file_name'],
+                        "sim": sim,
+                        "spec": i['spec_json'],
+                        "img": i['img_base64']
+                    })
 
-            for r in sorted(results, key=lambda x: x['sim'], reverse=True)[:5]:
-                with st.expander(f"🎯 ĐỘ GIỐNG: {r['sim']:.1f}% | {r['name']}"):
+            results = sorted(results, key=lambda x: x['sim'], reverse=True)[:10]
+
+            for r in results:
+                with st.expander(f"{r['name']} | {r['sim']:.1f}%"):
                     c1, c2 = st.columns(2)
-                    c1.image(target['img'], caption="Mẫu Test")
-                    # Hiện ảnh từ Link GitHub
-                    if r['img']: 
-                        st.image(r['img'], caption="Mẫu trong Kho (GitHub URL)")
-                    else: 
-                        st.warning("Không tìm thấy ảnh trên GitHub (Vui lòng kiểm tra lại Token/Repo)")
+
+                    with c1:
+                        st.image(target['img_bytes'], use_column_width=True)
+
+                    with c2:
+                        try:
+                            st.image(base64.b64decode(r['img']), use_column_width=True)
+                        except:
+                            st.warning("⚠️ Ảnh lỗi (DB cũ)")
 
                     diff = []
                     poms = set(target['spec']) | set(r['spec'])
+
                     for p in poms:
-                        v1, v2 = target['spec'].get(p, 0), r['spec'].get(p, 0)
-                        diff.append({"Thông số": p, "Mẫu Test": v1, "Mẫu Kho": v2, "Lệch": round(v1-v2, 2)})
-                    
-                    df_res = pd.DataFrame(diff)
-                    st.dataframe(df_res, use_container_width=True)
+                        v1 = target['spec'].get(p, 0)
+                        v2 = r['spec'].get(p, 0)
+                        diff.append({
+                            "POM": p,
+                            "NEW": v1,
+                            "OLD": v2,
+                            "DIFF": round(v1 - v2, 2)
+                        })
+
+                    df = pd.DataFrame(diff)
+                    st.dataframe(df)
 
                     out = io.BytesIO()
-                    with pd.ExcelWriter(out, engine='xlsxwriter') as wr: df_res.to_excel(wr, index=False)
-                    st.download_button(label="📥 Tải Excel So Sánh", data=out.getvalue(), file_name=f"SoSanh_{r['name']}.xlsx")
-        else:
-            st.warning(f"Chưa có mẫu nào thuộc loại {target['cat']} trong kho.")
+                    with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
+                        df.to_excel(writer, index=False)
 
-if os.path.exists("test.pdf"): os.remove("test.pdf")
+                    st.download_button("📥 Excel", out.getvalue(), f"{r['name']}.xlsx")
