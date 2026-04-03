@@ -11,7 +11,7 @@ from supabase import create_client, Client
 # ==========================================
 # 1. KẾT NỐI (TỰ ĐIỀN)
 # ==========================================
-URL =  "https://ewqqodsfvlvnrzsylawy.supabase.co"
+URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
@@ -33,39 +33,67 @@ ai_brain = load_ai()
 # ==========================================
 def advanced_classify(specs, text_content, file_name):
     txt = (text_content + " " + file_name).upper()
-    inseam = specs.get('INSEAM', 0)
 
-    # ===== ƯU TIÊN NHẬN DIỆN QUẦN =====
+    # ===== LẤY INSEAM THÔNG MINH =====
+    inseam = 0
+    for k, v in specs.items():
+        k_up = str(k).upper()
+        if any(x in k_up for x in ['INSEAM', 'INS', 'INSEAM LENGTH']):
+            inseam = v
+            break
+
+    # ===== KEYWORDS =====
+    has_cargo = ('CARGO' in txt) or ('FRONT CARGO POCKET' in txt)
+    has_bib = ('BIB' in txt) or ('FRONT BIB WIDTH' in txt)
+    has_elastic = any(x in txt for x in ['ELASTIC', 'ELASTIC WAIST', 'WAISTBAND ELASTIC', 'JOGGER'])
+    has_shirt = any(x in txt for x in ['SHIRT', 'PLACKET', 'COLLAR', 'CUFF'])
+
+    # ===== ƯU TIÊN QUẦN =====
 
     # QUẦN YẾM
-    if 'BIB' in txt or 'FRONT BIB WIDTH' in txt:
+    if has_bib:
         return "QUẦN YẾM"
 
     # QUẦN CARGO
-    if 'CARGO' in txt or 'FRONT CARGO POCKET' in txt:
-        if 'JOGGER' in txt or 'ELASTIC' in txt:
+    if has_cargo:
+        if has_elastic:
             return "QUẦN CARGO LƯNG THUN"
-        return "QUẦN TÚI CARGO"
+        return "QUẦN CARGO"
 
-    # QUẦN SHORT (ưu tiên trước)
-    if ('SHORT' in txt or 'SKORT' in txt) or (inseam > 0 and inseam <= 11):
-        return "QUẦN SHORT"
-
-    # QUẦN DÀI
-    if ('PANT' in txt or 'TROUSER' in txt) or (inseam >= 25):
+    # PHÂN LOẠI THEO INSEAM
+    if inseam >= 25:
+        if has_elastic:
+            return "QUẦN DÀI LƯNG THUN"
         return "QUẦN DÀI"
+
+    if inseam > 0 and inseam <= 11:
+        if has_elastic:
+            return "QUẦN SHORT LƯNG THUN"
+        return "QUẦN SHORT"
 
     # ===== KHÁC =====
 
+    # ĐẦM
     if 'DRESS' in txt:
         return "ĐẦM"
 
+    # VÁY
     if 'SKIRT' in txt:
         return "VÁY"
 
-    # ÁO (dựa vào thông số đặc trưng)
-    if 'CHEST WIDTH' in txt or 'FRONT LENGTH' in txt or 'HPS' in txt:
+    # ÁO SƠ MI
+    if has_shirt:
+        return "ÁO SƠ MI"
+
+    # ÁO THƯỜNG
+    if any(x in txt for x in ['CHEST WIDTH', 'HPS', 'FRONT LENGTH']):
         return "ÁO"
+
+    # FALLBACK QUẦN (nếu có dấu hiệu quần nhưng thiếu inseam)
+    if any(x in txt for x in ['PANT', 'TROUSER', 'WAIST', 'HIP', 'THIGH']):
+        if has_elastic:
+            return "QUẦN LƯNG THUN"
+        return "QUẦN"
 
     return "KHÁC"
 
