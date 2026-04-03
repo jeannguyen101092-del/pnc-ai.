@@ -8,3 +8,4 @@ scikit-learn
 pandas
 xlsxwriter
 pillow
+requests
