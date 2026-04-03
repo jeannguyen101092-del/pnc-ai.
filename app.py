@@ -40,7 +40,8 @@ def compress_image(img_bytes):
 def upload_to_github(img_bytes, filename):
     try:
         clean_name = re.sub(r'[^a-zA-Z0-9]', '_', filename)
-        url = f"https://api.github.com/repos/{GH_REPO}/contents/imgs/{clean_name}.jpg"
+        # 1. Đảm bảo dùng đuôi .png đồng nhất
+        url = f"https://github.com{GH_REPO}/contents/imgs/{clean_name}.png"
         headers = {"Authorization": f"token {GH_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         content = base64.b64encode(img_bytes).decode('utf-8')
 
@@ -52,10 +53,10 @@ def upload_to_github(img_bytes, filename):
 
         res = requests.put(url, headers=headers, json=data)
         if res.status_code in [200, 201]:
-            return f"https://raw.githubusercontent.com/{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.jpg"
+            # 2. Link trả về phải dùng ://githubusercontent.com
+            return f"https://://githubusercontent.com/{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.png"
         return None
-    except:
-        return None
+    except: return None
 
 # ================= TRÍCH XUẤT DỮ LIỆU =================
 def parse_val(t):
