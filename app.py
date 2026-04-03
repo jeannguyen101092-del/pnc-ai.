@@ -7,18 +7,14 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# ================= CONFIG (ĐIỀN LẠI THÔNG TIN CỦA BẠN) =================
+# ================= CONFIG (HÃY ĐIỀN THÔNG TIN CỦA BẠN) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 GH_TOKEN = "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"
 GH_REPO = "jeannguyen101092-del/pnc-ai"
 GH_BRANCH = "main"
 
-try:
-    supabase: Client = create_client(URL, KEY)
-except:
-    st.error("❌ Lỗi kết nối Supabase!")
-
+supabase: Client = create_client(URL, KEY)
 st.set_page_config(layout="wide", page_title="AI Fashion Pro V10", page_icon="👔")
 
 # ================= AI ENGINE =================
@@ -29,15 +25,12 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= HÀM UPLOAD GITHUB (ĐÃ FIX LỖI DÍNH CHỮ URL) =================
+# ================= GITHUB UPLOAD (ĐÃ FIX LỖI DÍNH CHỮ URL) =================
 def upload_to_github(img_bytes, filename):
     try:
-        # Làm sạch tên file và đảm bảo đường dẫn repo chuẩn
         clean_name = re.sub(r'[^a-zA-Z0-9]', '_', filename)
-        repo_path = GH_REPO.strip("/") # Xóa dấu / thừa nếu có
-        
-        # SỬA LỖI CHÍ MẠNG: Thêm dấu / sau ://github.com
-        url = f"https://://github.com{repo_path}/contents/imgs/{clean_name}.jpg"
+        # Fix lỗi dính chữ bằng cách đảm bảo có dấu / giữa các thành phần
+        url = f"https://github.com{GH_REPO}/contents/imgs/{clean_name}.jpg"
         
         headers = {
             "Authorization": f"token {GH_TOKEN}",
@@ -45,22 +38,20 @@ def upload_to_github(img_bytes, filename):
         }
         content = base64.b64encode(img_bytes).decode('utf-8')
         
-        # Kiểm tra file cũ để lấy SHA
         check = requests.get(url, headers=headers, timeout=10)
         data = {"message": f"Up {clean_name}", "content": content, "branch": GH_BRANCH}
         if check.status_code == 200:
             data["sha"] = check.json()["sha"]
             
         res = requests.put(url, headers=headers, json=data, timeout=15)
-        
         if res.status_code in [200, 201]:
-            # Link RAW chuẩn để Streamlit hiển thị được ảnh
-            return f"https://githubusercontent.com{repo_path}/{GH_BRANCH}/imgs/{clean_name}.jpg"
+            # Link RAW chuẩn để Streamlit hiển thị được ảnh trực tiếp
+            return f"https://githubusercontent.com{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.jpg"
         else:
-            st.error(f"❌ GitHub báo lỗi {res.status_code}: {res.text}")
+            st.error(f"Lỗi GitHub {res.status_code}: {res.text}")
             return None
     except Exception as e:
-        st.error(f"❌ Lỗi hệ thống GitHub: {e}")
+        st.error(f"Lỗi hệ thống: {e}")
         return None
 
 # ================= TRÍCH XUẤT & PHÂN LOẠI (SỬA LỖI QUẦN DÀI/SHORT) =================
@@ -77,14 +68,13 @@ def parse_val(t):
 
 def classify_logic(specs, text, name):
     txt = (text + name).upper()
-    inseam = 0
-    length = 0
+    inseam, length = 0, 0
     for k, v in specs.items():
         if 'INSEAM' in k: inseam = max(inseam, v)
         if 'LENGTH' in k: length = max(length, v)
 
-    # LOGIC MỚI: Ưu tiên Quần Dài nếu Inseam hoặc Length đủ lớn
     if 'CARGO' in txt: return "QUẦN CARGO"
+    # SỬA LỖI: Ưu tiên Quần Dài nếu Inseam >= 22 hoặc Length >= 30
     if inseam >= 22 or length >= 30: return "QUẦN DÀI"
     if 0 < inseam <= 15 or 0 < length <= 22: return "QUẦN SHORT"
     if 'SHIRT' in txt: return "ÁO SƠ MI"
@@ -111,27 +101,24 @@ def get_data(pdf_path):
         return {"spec": specs, "img": img_bytes, "cat": classify_logic(specs, text, os.path.basename(pdf_path))}
     except: return None
 
-# ================= GIAO DIỆN CHÍNH =================
+# ================= GIAO DIỆN STREAMLIT =================
 st.title("👔 AI Fashion Pro V10")
 
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     files = st.file_uploader("Upload PDF nạp kho", accept_multiple_files=True)
-    
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         for f in files:
             with open("tmp.pdf", "wb") as t: t.write(f.getbuffer())
             d = get_data("tmp.pdf")
             if d:
                 # Nén ảnh JPEG
-                img_pil = Image.open(io.BytesIO(d['img'])).convert("RGB")
+                img_p = Image.open(io.BytesIO(d['img'])).convert("RGB")
                 buf = io.BytesIO()
-                img_pil.save(buf, format="JPEG", quality=80)
+                img_p.save(buf, format="JPEG", quality=80)
                 img_small = buf.getvalue()
                 
-                # Upload
                 img_url = upload_to_github(img_small, f.name)
-                
                 if img_url:
                     # AI Vector
                     tf = transforms.Compose([
@@ -139,26 +126,25 @@ with st.sidebar:
                         transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
                     ])
                     with torch.no_grad():
-                        vec = ai_brain(tf(img_pil).unsqueeze(0)).flatten().numpy().tolist()
+                        vec = ai_brain(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
 
                     supabase.table("ai_data").upsert({
                         "file_name": f.name, "vector": vec, "spec_json": d['spec'],
                         "img_url": img_url, "category": d['cat']
                     }, on_conflict="file_name").execute()
-                    st.toast(f"✅ Xong: {f.name}")
-        st.success("🏁 Hoàn tất nạp kho!")
+                    st.toast(f"✅ Đã nạp: {f.name}")
+        st.success("🏁 Nạp kho thành công!")
         if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
         st.rerun()
 
-# ================= PHẦN TEST =================
+# ================= TEST SO SÁNH =================
 test_file = st.file_uploader("Tải file Test", type="pdf")
 if test_file:
     with open("test.pdf", "wb") as f: f.write(test_file.getbuffer())
     target = get_data("test.pdf")
     if target:
-        st.subheader(f"Nhận diện: {target['cat']}")
+        st.info(f"Nhận diện: **{target['cat']}**")
         st.image(target['img'], width=300)
-        
         db = supabase.table("ai_data").select("*").eq("category", target['cat']).execute()
         if db.data:
-            st.write(f"Tìm thấy {len(db.data)} mẫu tương đồng.")
+            st.write(f"Tìm thấy {len(db.data)} mẫu cùng loại.")
