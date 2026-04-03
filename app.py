@@ -7,7 +7,7 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# ================= CONFIG (ĐIỀN THÔNG TIN CỦA BẠN) =================
+# ================= CONFIG (HÃY ĐIỀN THÔNG TIN CỦA BẠN) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET_NAME = "fashion-imgs"
@@ -17,7 +17,7 @@ try:
 except:
     st.error("❌ Lỗi kết nối Supabase!")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.16", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.17", page_icon="👔")
 
 # ================= AI ENGINE =================
 @st.cache_resource
@@ -27,7 +27,7 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= TRÍCH XUẤT POM (BỎ QUA BOM) =================
+# ================= HÀM QUÉT DỮ LIỆU THÔNG MINH =================
 def parse_val(t):
     try:
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
@@ -47,26 +47,33 @@ def get_data(pdf_path):
                 t = p.extract_text()
                 if t: text += t
                 for tb in p.extract_tables():
-                    content = str(tb).upper()
-                    # BỘ LỌC CHẶN BẢNG PHỤ LIỆU (BOM)
-                    if any(x in content for x in ['FABRIC', 'MATERIAL', 'THREAD', 'BUTTON', 'ZIPPER', 'BOM']):
-                        continue
-                    # CHỈ LẤY BẢNG CÓ THÔNG SỐ ĐO (POM)
-                    if not any(x in content for x in ['WAIST', 'HIP', 'INSEAM', 'LENGTH', 'SPEC', 'POM']):
-                        continue
+                    content_str = str(tb).upper()
+                    # Chặn bảng phụ liệu BOM
+                    if any(x in content_str for x in ['FABRIC', 'MATERIAL', 'THREAD', 'BOM']): continue
+                    # Chỉ lấy bảng có thông số đo
+                    if not any(x in content_str for x in ['WAIST', 'HIP', 'INSEAM', 'LENGTH', 'POM']): continue
 
                     for r in tb:
                         if not r or len(r) < 2: continue
-                        label = str(r[0]).strip().upper().replace("\n", " ")
-                        # Lọc lấy số đo thực tế (Inches: 2.5 - 100)
+                        
+                        # --- CẢI TIẾN: LẤY TÊN MÔ TẢ (BỎ MÃ SỐ D001, F001) ---
+                        # Thường r[0] là Mã, r[1] là Tên. Ta gộp lại rồi xóa mã.
+                        full_label = " ".join([str(x) for x in r[:2] if x]).strip().upper().replace("\n", " ")
+                        # Xóa các mã dạng D001, F02, L023.1 ở đầu câu
+                        clean_label = re.sub(r'^[A-Z]\d{1,4}[A-Z]?(\.\d+)?\s*', '', full_label)
+                        
+                        if not clean_label: clean_label = full_label # Dự phòng nếu xóa hết
+
+                        # Lấy các số đo kích thước (Inches: 2.5 - 100)
                         vals = [parse_val(x) for x in r[1:] if 2.5 <= parse_val(x) <= 100.0]
-                        if vals and len(label) > 2:
-                            specs[label[:50]] = round(float(np.median(vals)), 2)
+                        if vals and len(clean_label) > 2:
+                            specs[clean_label[:60]] = round(float(np.median(vals)), 2)
                             
         doc = fitz.open(pdf_path)
         img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.2, 2.2)).tobytes("png")
         doc.close()
         
+        # Nhận diện loại
         cat = "ÁO"
         if any(x in str(specs.keys()) for x in ['INSEAM', 'WAIST', 'HIP']):
             cat = "QUẦN DÀI LƯNG THƯỜNG"
@@ -88,18 +95,11 @@ with st.sidebar:
     
     st.divider()
     files = st.file_uploader("Nạp PDF mới", accept_multiple_files=True)
-    
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
-        # --- THIẾT LẬP THANH TIẾN ĐỘ ---
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
+        p_bar = st.progress(0); s_text = st.empty()
         for idx, f in enumerate(files):
-            # Cập nhật % và tên file
-            percent = (idx + 1) / len(files)
-            progress_bar.progress(percent)
-            status_text.info(f"正在上传 ({idx+1}/{len(files)}): {f.name}")
-            
+            p_bar.progress((idx + 1) / len(files))
+            s_text.info(f"Đang nạp ({idx+1}/{len(files)}): {f.name}")
             with open("tmp.pdf", "wb") as t: t.write(f.getbuffer())
             d = get_data("tmp.pdf")
             if d:
@@ -112,13 +112,10 @@ with st.sidebar:
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
                 with torch.no_grad(): vec = ai_brain(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
                 supabase.table("ai_data").upsert({"file_name": f.name, "vector": vec, "spec_json": d['spec'], "img_url": url, "category": d['cat']}, on_conflict="file_name").execute()
-        
-        status_text.success(f"🏁 Đã nạp xong {len(files)} mẫu!")
-        st.balloons()
-        st.rerun()
+        st.balloons(); st.rerun()
 
-# ================= PHẦN SO SÁNH (GIỮ NGUYÊN) =================
-st.title("👔 AI Fashion Pro V11.16")
+# ================= CHÍNH: SO SÁNH (LÀM GỌN SỐ ĐO) =================
+st.title("👔 AI Fashion Pro V11.17")
 test_file = st.file_uploader("Tải file PDF Test (Đối chứng)", type="pdf")
 
 if test_file:
@@ -137,7 +134,7 @@ if test_file:
                 for i in all_samples:
                     if i.get('vector'):
                         v_db = np.array(i['vector']).reshape(1, -1)
-                        sim_val = float(cosine_similarity(v_test.reshape(1, -1), v_db)[0][0]) * 100
+                        sim_val = float(cosine_similarity(v_test.reshape(1, -1), v_db)) * 100
                         matches.append({"name": i['file_name'], "sim": sim_val, "url": i['img_url'], "spec": i['spec_json']})
                 matches = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
         else:
@@ -157,5 +154,9 @@ if test_file:
                         comp = []
                         for k in all_k:
                             v_t, v_d = target['spec'].get(k, 0), m['spec'].get(k, 0)
-                            comp.append({"Điểm đo (POM)": k, "Test": v_t, "Kho": v_d, "Lệch": round(v_t-v_d, 2)})
-                        st.table(pd.DataFrame(comp).style.map(lambda x: 'color: red' if abs(x) > 0.25 else 'color: green', subset=['Lệch']))
+                            diff = round(v_t - v_d, 2)
+                            comp.append({"Điểm đo (POM)": k, "Test": v_t, "Kho": v_d, "Lệch": diff})
+                        
+                        # HIỂN THỊ BẢNG (ROUND 2 SỐ THẬP PHÂN CHO ĐẸP)
+                        df_res = pd.DataFrame(comp)
+                        st.table(df_res.style.format(subset=['Test', 'Kho', 'Lệch'], precision=2).map(lambda x: 'color: red' if abs(x) > 0.25 else 'color: green', subset=['Lệch']))
