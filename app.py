@@ -40,23 +40,27 @@ def compress_image(img_bytes):
 def upload_to_github(img_bytes, filename):
     try:
         clean_name = re.sub(r'[^a-zA-Z0-9]', '_', filename)
-        # 1. Đảm bảo dùng đuôi .png đồng nhất
+        # Đảm bảo dùng đuôi .png và đường dẫn chuẩn
         url = f"https://github.com{GH_REPO}/contents/imgs/{clean_name}.png"
-        headers = {"Authorization": f"token {GH_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+        headers = {
+            "Authorization": f"token {GH_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
         content = base64.b64encode(img_bytes).decode('utf-8')
-
-        check = requests.get(url, headers=headers)
-        data = {"message": f"upload {clean_name}", "content": content, "branch": GH_BRANCH}
         
-        if check.status_code == 200:
-            data["sha"] = check.json()["sha"]
-
-        res = requests.put(url, headers=headers, json=data)
+        # Gửi lệnh đẩy ảnh
+        data = {"message": f"up {clean_name}", "content": content, "branch": GH_BRANCH}
+        res = requests.put(url, headers=headers, json=data, timeout=15)
+        
         if res.status_code in [200, 201]:
-            # 2. Link trả về phải dùng ://githubusercontent.com
-            return f"https://://githubusercontent.com/{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.png"
+            return f"https://githubusercontent.com{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.png"
+        else:
+            # HIỆN LỖI THẬT SỰ RA MÀN HÌNH ĐỂ BIẾT TẠI SAO SAI
+            st.error(f"GitHub từ chối (Mã {res.status_code}): {res.json().get('message')}")
+            return None
+    except Exception as e:
+        st.error(f"Lỗi kết nối mạng: {e}")
         return None
-    except: return None
 
 # ================= TRÍCH XUẤT DỮ LIỆU =================
 def parse_val(t):
