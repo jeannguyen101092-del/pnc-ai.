@@ -76,6 +76,7 @@ def parse_val(t):
         return eval(v) if '/' in v else float(v)
     except: return 0
 
+# --- HÀM LẤY DỮ LIỆU ĐÃ FIX LỖI NHẬN DIỆN ---
 def get_data(pdf_path):
     try:
         specs, text = {}, ""
@@ -88,29 +89,57 @@ def get_data(pdf_path):
                         if not r: continue
                         txt_r = " | ".join([str(x) for x in r if x]).upper()
                         key_found = None
-                        # Mở rộng bộ từ khóa quét thông số
-                        for k in ['INSEAM','WAIST','HIP','LENGTH','SLEEVE','SHOULDER','CHEST']:
+                        # Bộ từ khóa quét thông số
+                        for k in ['INSEAM','WAIST','HIP','LENGTH','OUTSEAM','SLEEVE','SHOULDER']:
                             if k in txt_r: key_found = k; break
+                        
                         if key_found:
                             vals = [parse_val(x) for x in r if x]
-                            valid_vals = [v for v in vals if v >= 3]
+                            # FIX CHÍ MẠNG: Chỉ lấy thông số thực > 5 (Bỏ qua dung sai 0.25, 0.5...)
+                            valid_vals = [v for v in vals if v >= 5] 
+                            
                             if valid_vals:
+                                # Lấy số lớn nhất (thường là size chuẩn)
                                 specs[key_found] = round(float(max(valid_vals)), 2)
         
-        # BỘ LỌC: Bỏ qua nếu thiếu thông số hoặc ảnh
-        if len(specs) < 3: return None
+        if len(specs) < 2: return None
 
         doc = fitz.open(pdf_path)
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
         doc.close()
-        if not img_bytes or len(img_bytes) < 10000: return None
-
+        
         return {
             "spec": specs, "img": img_bytes, 
             "cat": classify_logic(specs, text, os.path.basename(pdf_path)),
             "name": os.path.basename(pdf_path)
         }
     except: return None
+
+# --- LOGIC PHÂN LOẠI CHI TIẾT ---
+def classify_logic(specs, text, name):
+    txt = (text + " " + name).upper()
+    inseam = specs.get('INSEAM', 0)
+    # Lấy Length hoặc Outseam (chiều dài tổng)
+    length = specs.get('LENGTH', specs.get('OUTSEAM', 0))
+
+    # 1. Nếu tên có chữ PANT/CARGO hoặc chiều dài > 30 inch hoặc Inseam > 20 inch -> QUẦN DÀI
+    if any(k in txt for k in ['PANT', 'CARGO', 'TROUSER', 'JOGGER']) or length >= 30 or inseam >= 20:
+        if any(k in txt for k in ['ELASTIC', 'WAISTBAND', 'THUN']):
+            return "QUẦN DÀI LƯNG THUN"
+        return "QUẦN DÀI LƯNG THƯỜNG"
+
+    # 2. Nếu chiều dài ngắn
+    if 0 < length <= 23 or 0 < inseam <= 13 or 'SHORT' in txt:
+        return "QUẦN SHORT"
+
+    # 3. Nhóm Áo
+    sleeve = specs.get('SLEEVE', 0)
+    if any(k in txt for k in ['VEST', 'BLAZER', 'JACKET']): return "ÁO VEST / JACKET"
+    if sleeve >= 20: return "ÁO DÀI TAY"
+    if 0 < sleeve <= 12: return "ÁO NGẮN TAY"
+
+    return "HÀNG KHÁC"
+
 
 # ================= CÁC HÀM XỬ LÝ (SUPABASE) =================
 def compress_to_webp(img_bytes):
