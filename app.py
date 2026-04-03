@@ -49,7 +49,8 @@ def upload_to_github(img_bytes, filename):
             
         res = requests.put(url, headers=headers, json=data, timeout=15)
         if res.status_code in [200, 201]:
-            return f"https://githubusercontent.com{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.png"
+            # Thay đổi dòng return này
+return f"https://githubusercontent.com{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.png"
         return None
     except:
         return None
