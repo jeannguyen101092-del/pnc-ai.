@@ -1,5 +1,5 @@
 # ==========================================================
-# AI FASHION PRO V8.3 - STABLE & OPTIMIZED
+# AI FASHION PRO V8.4 - FIX TYPEERROR & GITHUB IMAGE
 # ==========================================================
 
 import streamlit as st
@@ -11,20 +11,21 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# ================= 1. CẤU HÌNH (THAY KEY CỦA BẠN VÀO ĐÂY) =================
-URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
-KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
+# ================= 1. CẤU HÌNH (THAY KEY CỦA BẠN) =================
+URL = "https://ewqqodsfvlvnrzsylawy.supabase.co" 
+KEY ="sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
+
+# Lưu ý: Token ghp_ nên dán trực tiếp hoặc dùng st.secrets
 GH_TOKEN = "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"
 GH_REPO = "jeannguyen101092-del/fashion-storage"
 GH_BRANCH = "main"
 
-# Khởi tạo kết nối
 try:
     supabase: Client = create_client(URL, KEY)
 except:
-    st.error("Lỗi cấu hình Supabase. Vui lòng kiểm tra lại URL/KEY.")
+    st.error("Lỗi cấu hình Supabase.")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V8.3", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V8.4", page_icon="👔")
 
 # ================= 2. AI & GITHUB ENGINE =================
 @st.cache_resource
@@ -35,14 +36,12 @@ def load_ai():
 ai_brain = load_ai()
 
 def upload_to_github(img_bytes, filename):
-    """Tải ảnh lên GitHub với cơ chế chống treo app"""
     try:
         clean_name = re.sub(r'[^a-zA-Z0-9]', '_', filename)
         url = f"https://github.com{GH_REPO}/contents/imgs/{clean_name}.png"
         headers = {"Authorization": f"token {GH_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         content = base64.b64encode(img_bytes).decode()
         
-        # Kiểm tra file tồn tại (Timeout 10s tránh đứng máy)
         check = requests.get(url, headers=headers, timeout=10)
         data = {"message": f"Up {filename}", "content": content, "branch": GH_BRANCH}
         if check.status_code == 200:
@@ -52,8 +51,7 @@ def upload_to_github(img_bytes, filename):
         if res.status_code in [200, 201]:
             return f"https://githubusercontent.com{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.png"
         return None
-    except Exception as e:
-        st.warning(f"⚠️ Lỗi kết nối GitHub với file {filename}: {e}")
+    except:
         return None
 
 # ================= 3. XỬ LÝ DỮ LIỆU PDF =================
@@ -83,9 +81,7 @@ def get_data(pdf_path):
         
         doc = fitz.open(pdf_path)
         img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2)).tobytes("png")
-        if len(img) < 1000: return {"err": "Không tìm thấy hình ảnh"}
-
-        # Phân loại chủng loại
+        
         cat = "ÁO"
         ins = next((v for k, v in specs.items() if 'INSEAM' in k), 0)
         if ins > 0: cat = "QUẦN SHORT" if ins <= 12 else "QUẦN DÀI"
@@ -100,11 +96,11 @@ with st.sidebar:
     try:
         count_res = supabase.table("ai_data").select("*", count="exact").execute()
         st.metric("Tổng mẫu trong kho", f"{count_res.count if count_res.count else 0} mẫu")
-    except: st.metric("Tổng mẫu trong kho", "Đang kết nối...")
+    except: st.metric("Tổng mẫu trong kho", "Lỗi kết nối...")
 
     st.divider()
     if "up_key" not in st.session_state: st.session_state.up_key = 0
-    files = st.file_uploader("Chọn PDF nạp kho", accept_multiple_files=True, key=f"u_{st.session_state.up_key}")
+    files = st.file_uploader("Nạp PDF kho", accept_multiple_files=True, key=f"u_{st.session_state.up_key}")
 
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         bar = st.progress(0)
@@ -112,7 +108,7 @@ with st.sidebar:
         success = 0
         
         for idx, f in enumerate(files):
-            msg.text(f"Đang xử lý: {f.name} ({idx+1}/{len(files)})")
+            msg.text(f"Đang nạp: {f.name} ({idx+1}/{len(files)})")
             bar.progress((idx + 1) / len(files))
             
             with open("tmp.pdf", "wb") as t: t.write(f.getbuffer())
@@ -122,14 +118,16 @@ with st.sidebar:
                 st.warning(f"Bỏ qua {f.name}: {d['err']}")
                 continue
             
+            # Lưu ảnh lên GitHub
             url_anh = upload_to_github(d['img'], f.name)
-# if not url_anh: continue  <-- Thêm dấu # ở đây để không bị dừng khi lỗi ảnh
+            # if not url_anh: continue # Bỏ dấu # nếu muốn bắt buộc phải có ảnh mới nạp
 
-
+            # AI Vector
             tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
             with torch.no_grad():
                 vec = ai_brain(tf(Image.open(io.BytesIO(d['img'])).convert('RGB')).unsqueeze(0)).flatten().numpy().tolist()
 
+            # Lưu Supabase
             supabase.table("ai_data").upsert({
                 "file_name": f.name, "vector": vec, "spec_json": d['spec'], "img_url": url_anh, "category": d['cat']
             }, on_conflict="file_name").execute()
@@ -142,8 +140,8 @@ with st.sidebar:
         st.rerun()
 
 # ================= 5. GIAO DIỆN SO SÁNH =================
-st.title("👔 AI Fashion Pro V8.3")
-test_file = st.file_uploader("Tải file đối chứng", type="pdf")
+st.title("👔 AI Fashion Pro V8.4")
+test_file = st.file_uploader("Tải file đối chứng (Test)", type="pdf")
 
 if test_file:
     with open("test.pdf", "wb") as f: f.write(test_file.getbuffer())
@@ -152,7 +150,7 @@ if test_file:
     if "err" in target:
         st.error(f"Lỗi: {target['err']}")
     else:
-        st.info(f"Loại sản phẩm nhận diện: **{target['cat']}**")
+        st.info(f"Loại sản phẩm: **{target['cat']}**")
         db = supabase.table("ai_data").select("*").eq("category", target['cat']).execute()
 
         if db.data:
@@ -163,20 +161,20 @@ if test_file:
             results = []
             for i in db.data:
                 if i.get('vector'):
-                   # Sửa lại dòng tính toán độ giống nhau (Similarity)
-v_test_2d = v_test.reshape(1, -1)
-v_db_2d = np.array(i['vector']).reshape(1, -1)
-sim = float(cosine_similarity(v_test_2d, v_db_2d)[0][0]) * 100
-
+                    # --- SỬA LỖI TYPEERROR TẠI ĐÂY ---
+                    v_t_2d = v_test.reshape(1, -1)
+                    v_db_2d = np.array(i['vector']).reshape(1, -1)
+                    sim = float(cosine_similarity(v_t_2d, v_db_2d)[0][0]) * 100
+                    
+                    results.append({"name": i['file_name'], "sim": sim, "spec": i['spec_json'], "img": i['img_url']})
 
             for r in sorted(results, key=lambda x: x['sim'], reverse=True)[:5]:
                 with st.expander(f"🎯 {r['sim']:.1f}% | {r['name']}"):
-# Cột bên trái hiện ảnh mẫu vừa upload (Test)
-c1.image(target['img'], caption="Mẫu Test")
-
-# Cột bên phải hiện ảnh lấy từ Link GitHub trong Database
-c2.image(r['img'], caption="Mẫu trong Kho (GitHub)")
-
+                    c1, c2 = st.columns(2)
+                    c1.image(target['img'], caption="Mẫu Test")
+                    # Hiện ảnh từ Link GitHub
+                    if r['img']: c2.image(r['img'], caption="Mẫu trong Kho")
+                    else: c2.warning("Không tìm thấy ảnh trên GitHub")
 
                     diff = []
                     poms = set(target['spec']) | set(r['spec'])
@@ -192,3 +190,5 @@ c2.image(r['img'], caption="Mẫu trong Kho (GitHub)")
                     st.download_button(label="📥 Tải Excel", data=out.getvalue(), file_name=f"SoSanh_{r['name']}.xlsx")
         else:
             st.warning(f"Chưa có mẫu nào thuộc loại {target['cat']} trong kho.")
+
+if os.path.exists("test.pdf"): os.remove("test.pdf")
