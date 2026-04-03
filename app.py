@@ -14,7 +14,6 @@ from supabase import create_client, Client
 # ================= 1. CẤU HÌNH (THAY KEY CỦA BẠN VÀO ĐÂY) =================
 URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
-
 GH_TOKEN = "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"
 GH_REPO = "jeannguyen101092-del/fashion-storage"
 GH_BRANCH = "main"
@@ -124,7 +123,8 @@ with st.sidebar:
                 continue
             
             url_anh = upload_to_github(d['img'], f.name)
-            if not url_anh: continue # Bỏ qua nếu lỗi mạng GitHub
+# if not url_anh: continue  <-- Thêm dấu # ở đây để không bị dừng khi lỗi ảnh
+
 
             tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
             with torch.no_grad():
