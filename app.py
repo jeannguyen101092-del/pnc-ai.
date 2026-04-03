@@ -37,9 +37,9 @@ def upload_to_github(img_bytes, filename):
     try:
         clean_name = re.sub(r'[^a-zA-Z0-9]', '_', filename)
         # Sử dụng API chính xác của GitHub
+        # CÁCH SỬA ĐÚNG:
         url = f"https://github.com{GH_REPO}/contents/imgs/{clean_name}.jpg"
-        
-        headers = {
+          headers = {
             "Authorization": f"token {GH_TOKEN}",
             "Accept": "application/vnd.github.v3+json"
         }
