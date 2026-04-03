@@ -264,3 +264,21 @@ if file:
                     st.dataframe(pd.DataFrame(diff), use_container_width=True)
         else:
             st.error(f"Chưa có dữ liệu cho loại {target['cat']} trong kho.")
+            # --- ĐOẠN CODE THÊM NÚT XUẤT EXCEL ---
+# Tạo dữ liệu bảng
+df_diff = pd.DataFrame(diff)
+
+# Tạo buffer để chứa file Excel trong bộ nhớ
+buffer = io.BytesIO()
+with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+    df_diff.to_excel(writer, index=False, sheet_name='SoSanhAI')
+    
+# Nút bấm tải về
+st.download_button(
+    label="📥 Xuất bảng so sánh Excel",
+    data=buffer.getvalue(),
+    file_name=f"So_sanh_{r['name']}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+# ---------------------------------------
+
