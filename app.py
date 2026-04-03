@@ -127,13 +127,41 @@ def get_data(pdf_path):
         return None
 
 # ================= UPLOAD (NẠP KHO) =================
+# ================= SIDEBAR: NẠP KHO & THỐNG KÊ =================
 with st.sidebar:
-    st.header("📦 NẠP KHO")
-    files = st.file_uploader("Upload PDF", accept_multiple_files=True)
+    st.header("📦 QUẢN LÝ KHO")
+    
+    # 1. Hiển thị tổng số lượng trong kho
+    try:
+        count_res = supabase.table("ai_data").select("*", count="exact").execute()
+        total_items = count_res.count if count_res.count else 0
+        st.metric("Tổng mẫu trong kho", f"{total_items} mẫu")
+    except:
+        st.metric("Tổng mẫu trong kho", "0 mẫu")
 
-    if files and st.button("🚀 NẠP"):
-        for f in files:
+    st.divider()
+
+    # 2. Upload file với key để reset sau khi nạp
+    if "upload_key" not in st.session_state:
+        st.session_state.upload_key = 0
+
+    files = st.file_uploader("Chọn các file PDF để nạp", 
+                            accept_multiple_files=True, 
+                            type="pdf",
+                            key=f"uploader_{st.session_state.upload_key}")
+
+    if files and st.button("🚀 BẮT ĐẦU NẠP"):
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        num_files = len(files)
+
+        for idx, f in enumerate(files):
             try:
+                # Cập nhật % tiến độ
+                percent_complete = (idx + 1) / num_files
+                status_text.text(f"Đang xử lý: {f.name} ({idx+1}/{num_files})")
+                progress_bar.progress(percent_complete)
+
                 name = re.sub(r'\s*\(\d+\)', '', f.name)
                 with open("tmp.pdf", "wb") as t:
                     t.write(f.getbuffer())
@@ -141,6 +169,7 @@ with st.sidebar:
                 d = get_data("tmp.pdf")
                 if not d: continue
 
+                # Xử lý AI vector
                 tf = transforms.Compose([
                     transforms.Resize(224),
                     transforms.CenterCrop(224),
@@ -149,23 +178,27 @@ with st.sidebar:
                 ])
 
                 with torch.no_grad():
-                    vec = ai_brain(tf(Image.open(io.BytesIO(d['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy().tolist()
+                    img_input = Image.open(io.BytesIO(d['img_bytes'])).convert('RGB')
+                    vec = ai_brain(tf(img_input).unsqueeze(0)).flatten().numpy().tolist()
 
-                # Lưu vào Supabase kèm cột category
+                # Lưu vào Supabase
                 supabase.table("ai_data").upsert({
                     "file_name": name,
                     "vector": vec,
                     "spec_json": d['spec'],
                     "img_base64": d['img_b64'],
-                    "category": d['cat'] # Lưu nhãn chủng loại
+                    "category": d['cat']
                 }, on_conflict="file_name").execute()
 
                 os.remove("tmp.pdf")
             except Exception as e:
-                st.warning(f"Lỗi {f.name}: {e}")
+                st.warning(f"Lỗi tại file {f.name}: {e}")
 
-        st.success("✅ Đã nạp kho thành công!")
+        # 3. Sau khi xong: Xóa danh sách file và báo thành công
+        st.session_state.upload_key += 1 # Đổi key để reset file_uploader
+        st.success(f"✅ Đã nạp thành công {num_files} mẫu!")
         st.rerun()
+
 
 # ================= COMPARE (SO SÁNH) =================
 st.title("👔 AI Fashion Pro V8")
