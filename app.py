@@ -10,7 +10,7 @@ from supabase import create_client, Client
 # ==========================================
 # 1. KẾT NỐI (Thay URL và KEY từ ảnh Supabase của bạn)
 # ==========================================
-URL = ""https://ewqqodsfvlvnrzsylawy.supabase.co"
+URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
