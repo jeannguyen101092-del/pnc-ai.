@@ -12,8 +12,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
 # ================= CONFIG =================
-URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
-KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
+URL ="https://ewqqodsfvlvnrzsylawy.supabase.co"
+KEY = "https://ewqqodsfvlvnrzsylawy.supabase.co"
 supabase: Client = create_client(URL, KEY)
 
 st.set_page_config(layout="wide", page_title="AI Fashion Pro V8.3", page_icon="👔")
@@ -47,62 +47,98 @@ BLOCK_KEYS = ['FABRIC','BODY','SHELL','LINING','MATERIAL','COTTON','POLY','ELAST
 # ================= PARSER =================
 def extract_specs(table):
     specs = {}
+
     for r in table:
-        if not r: continue
+        if not r:
+            continue
+
         row_text = " | ".join([str(x) for x in r if x]).upper()
-        if any(b in row_text for b in BLOCK_KEYS): continue
-        if not any(v in row_text for v in VALID_KEYS): continue
+
+        if any(b in row_text for b in BLOCK_KEYS):
+            continue
+
+        if not any(v in row_text for v in VALID_KEYS):
+            continue
+
         vals = [parse_val(x) for x in r if x]
         vals = [v for v in vals if v > 0]
-        if not vals: continue
+
+        if not vals:
+            continue
+
         key = row_text[:120]
         specs[key] = float(np.median(vals))
+
     return specs
 
 # ================= CLASSIFY FIX =================
 def advanced_classify(specs, text, file_name):
     txt = (text + " " + file_name).upper()
-    score = {"ÁO": 0, "QUẦN": 0, "ĐẦM": 0, "VÁY": 0}
 
+    # ===== SCORE SYSTEM =====
+    score = {
+        "ÁO": 0,
+        "QUẦN": 0,
+        "ĐẦM": 0,
+        "VÁY": 0
+    }
+
+    # ===== SPEC BASE =====
     for k in specs.keys():
-        if any(x in k for x in ['CHEST','SLEEVE','SHOULDER']): score['ÁO'] += 2
-        if 'INSEAM' in k or 'WAIST' in k or 'HIP' in k: score['QUẦN'] += 2
+        if any(x in k for x in ['CHEST','SLEEVE','SHOULDER']):
+            score['ÁO'] += 2
+        if 'INSEAM' in k or 'WAIST' in k or 'HIP' in k:
+            score['QUẦN'] += 2
 
+    # ===== TEXT BASE =====
     if 'SHIRT' in txt: score['ÁO'] += 3
     if 'PANT' in txt or 'TROUSER' in txt: score['QUẦN'] += 3
     if 'DRESS' in txt: score['ĐẦM'] += 3
     if 'SKIRT' in txt: score['VÁY'] += 3
 
+    # ===== DECISION =====
     best = max(score, key=score.get)
 
+    # ===== DETAIL =====
     if best == 'QUẦN':
         inseam = 0
         for k,v in specs.items():
             if 'INSEAM' in k:
                 inseam = v
                 break
-        if 0 < inseam <= 11: return "QUẦN SHORT"
-        if inseam >= 25: return "QUẦN DÀI"
-        if 'CARGO' in txt: return "QUẦN CARGO"
+
+        if inseam <= 11 and inseam > 0:
+            return "QUẦN SHORT"
+        if inseam >= 25:
+            return "QUẦN DÀI"
+
+        if 'CARGO' in txt:
+            return "QUẦN CARGO"
+
         return "QUẦN"
 
     if best == 'ÁO':
-        if 'SHIRT' in txt: return "ÁO SƠ MI"
+        if 'SHIRT' in txt:
+            return "ÁO SƠ MI"
         return "ÁO"
+
     return best
 
 # ================= GET DATA =================
 def get_data(pdf_path):
     try:
         specs, text = {}, ""
+
         with pdfplumber.open(pdf_path) as pdf:
             for p in pdf.pages:
                 t = p.extract_text()
-                if t: text += t
+                if t:
+                    text += t
                 for tb in p.extract_tables():
                     specs.update(extract_specs(tb))
 
-        if len(specs) < 5: return None
+        if len(specs) < 5:
+            return None
 
         doc = fitz.open(pdf_path)
         pix = doc.load_page(0).get_pixmap()
@@ -113,6 +149,7 @@ def get_data(pdf_path):
             "img": img,
             "cat": advanced_classify(specs, text, os.path.basename(pdf_path))
         }
+
     except Exception as e:
         st.error(e)
         return None
@@ -131,7 +168,6 @@ if file:
     if target:
         st.success(f"Nhận diện: {target['cat']}")
 
-        # Lấy dữ liệu từ kho
         db = supabase.table("ai_data").select("*").execute()
 
         tf = transforms.Compose([
@@ -147,11 +183,7 @@ if file:
         results = []
 
         for i in db.data:
-            # === CHỖ SỬA QUAN TRỌNG: CHỈ SO SÁNH NẾU CÙNG CHỦNG LOẠI (CAT) ===
-            # Điều kiện này ép Áo so với Áo, Quần so với Quần đúng form
-            db_cat = i.get('cat') # Lấy chủng loại đã lưu trong database
-            
-            if i.get('vector') and db_cat == target['cat']:
+            if i.get('vector'):
                 sim = float(cosine_similarity([v_test],[np.array(i['vector'])])[0][0])*100
                 results.append({
                     "name": i['file_name'],
@@ -160,26 +192,20 @@ if file:
                     "img": i['img_base64']
                 })
 
-        # Sắp xếp và hiển thị
         results = sorted(results, key=lambda x:x['sim'], reverse=True)[:10]
 
-        if not results:
-            st.warning(f"Không tìm thấy mẫu nào cùng chủng loại {target['cat']} trong kho.")
-        else:
-            for r in results:
-                with st.expander(f"{r['name']} | {r['sim']:.1f}%"):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.image(target['img'], caption="Mẫu Test")
-                    with col2:
-                        st.image(base64.b64decode(r['img']), caption="Mẫu Đối Sánh")
+        for r in results:
+            with st.expander(f"{r['name']} | {r['sim']:.1f}%"):
+                st.image(target['img'])
+                st.image(base64.b64decode(r['img']))
 
-                    diff=[]
-                    poms=set(target['spec'])|set(r['spec'])
-                    for p in poms:
-                        diff.append({
-                            "POM":p,
-                            "NEW":target['spec'].get(p,0),
-                            "OLD":r['spec'].get(p,0)
-                        })
-                    st.dataframe(pd.DataFrame(diff), use_container_width=True)
+                diff=[]
+                poms=set(target['spec'])|set(r['spec'])
+                for p in poms:
+                    diff.append({
+                        "POM":p,
+                        "NEW":target['spec'].get(p,0),
+                        "OLD":r['spec'].get(p,0)
+                    })
+
+                st.dataframe(pd.DataFrame(diff))
