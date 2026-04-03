@@ -8,13 +8,13 @@ from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
 # ==========================================
-# 1. KẾT NỐI SUPABASE
+# 1. KẾT NỐI (Thay URL và KEY của bạn)
 # ==========================================
-URL = "https://ewqqodsfvlvnrzsylawy.supabase.co" 
+URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI SMART SPEC PRO V4.2", page_icon="🔍")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V4.3", page_icon="👔")
 
 # Khởi tạo bộ nhớ tạm
 if 'sel_code' not in st.session_state: st.session_state.sel_code = None
@@ -28,11 +28,14 @@ ai_brain = load_ai()
 
 def get_data(pdf_path):
     try:
-        specs, all_texts = {}, ""
+        doc = fitz.open(pdf_path)
+        pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+        img_bytes = pix.tobytes("png")
+        img_b64 = base64.b64encode(img_bytes).decode()
+        
+        specs = {}
         with pdfplumber.open(pdf_path) as pdf:
             for p in pdf.pages:
-                t = p.extract_text()
-                if t: all_texts += t + " "
                 tables = p.extract_tables()
                 for table in tables:
                     for r in table:
@@ -41,18 +44,16 @@ def get_data(pdf_path):
                             nums = re.findall(r'\d+\.?\d*', val_str)
                             pom = " ".join([str(x) for x in r[:-1] if x]).strip().upper()
                             if nums and len(pom) > 3: specs[pom] = float(nums[0])
-        doc = fitz.open(pdf_path)
-        pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-        img_b64 = base64.b64encode(pix.tobytes("png")).decode()
-        cat = "QUẦN" if "PANT" in all_texts.upper() else "ÁO"
-        return {"spec": specs, "img_b64": img_b64, "img_bytes": pix.tobytes("png"), "cat": cat}
+        return {"img_bytes": img_bytes, "img_b64": img_b64, "spec": specs}
     except: return None
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("📦 QUẢN TRỊ KHO")
-    res_db = supabase.table("ai_data").select("file_name", count="exact").execute()
-    st.metric("Tổng mẫu trong kho", res_db.count if res_db.count else 0)
+    try:
+        res_db = supabase.table("ai_data").select("file_name", count="exact").execute()
+        st.metric("Tổng mẫu trong kho", res_db.count if res_db.count else 0)
+    except: st.error("Lỗi kết nối!")
     
     up_bulk = st.file_uploader("Nạp mẫu mới vào kho", accept_multiple_files=True)
     if up_bulk and st.button("🚀 BẮT ĐẦU NẠP"):
@@ -63,7 +64,7 @@ with st.sidebar:
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
                 with torch.no_grad():
                     v = ai_brain(tf(Image.open(io.BytesIO(d['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy().tolist()
-                supabase.table("ai_data").upsert({"file_name": f.name, "vector": v, "spec_json": d['spec'], "img_base64": d['img_b64'], "category": d['cat']}).execute()
+                supabase.table("ai_data").upsert({"file_name": f.name, "vector": v, "spec_json": d['spec'], "img_base64": d['img_b64']}).execute()
         st.success("Đã nạp xong!")
         st.rerun()
 
@@ -77,66 +78,59 @@ if up_test:
     target = get_data("test.pdf")
     
     if target:
-        # Lấy danh sách tên file trong kho để Tìm kiếm
-        all_items = supabase.table("ai_data").select("file_name, spec_json, img_base64, vector").execute()
-        file_list = [i['file_name'] for i in all_items.data]
-
-        st.divider()
-        col_ctrl1, col_ctrl2 = st.columns([1, 2])
+        db = supabase.table("ai_data").select("*").execute()
         
-        with col_ctrl1:
-            mode = st.radio("🎯 Chế độ so sánh:", ["Tự động (AI)", "Tìm mã thủ công"], horizontal=True)
-        
-        with col_ctrl2:
-            if mode == "Tìm mã thủ công":
-                st.session_state.sel_code = st.selectbox("🔍 Gõ tên mã hàng để tìm:", file_list)
-            else:
-                st.info("💡 Hệ thống đang tự động tìm mã khớp nhất...")
-
-        # XỬ LÝ LẤY DỮ LIỆU ĐỐI CHIẾU
-        best_match = None
-        
-        if mode == "Tự động (AI)":
-            # Tính AI Similarity
-            tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-            with torch.no_grad():
-                v_test = ai_brain(tf(Image.open(io.BytesIO(target['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy()
-            
-            sims = []
-            for i in all_items.data:
-                s = float(cosine_similarity([v_test], [np.array(i['vector'])])) * 100
-                sims.append({"name": i['file_name'], "sim": s, "spec": i['spec_json'], "img": i['img_base64']})
-            
-            best_match = sorted(sims, key=lambda x: x['sim'], reverse=True)[0]
+        if not db.data:
+            st.warning("⚠️ Kho đang trống, vui lòng nạp mẫu vào bên trái!")
         else:
-            # Lấy dữ liệu từ mã chọn thủ công
-            selected_item = next(i for i in all_items.data if i['file_name'] == st.session_state.sel_code)
-            best_match = {"name": selected_item['file_name'], "sim": 0, "spec": selected_item['spec_json'], "img": selected_item['img_base64']}
+            file_list = [i['file_name'] for i in db.data]
+            st.divider()
+            c_ctrl1, c_ctrl2 = st.columns(2)
+            with c_ctrl1:
+                mode = st.radio("🎯 Chế độ so sánh:", ["Tự động (AI)", "Tìm mã thủ công"], horizontal=True)
+            with c_ctrl2:
+                if mode == "Tìm mã thủ công":
+                    st.session_state.sel_code = st.selectbox("🔍 Gõ tên mã hàng:", file_list)
+                else: st.info("💡 Đang tự động đối chiếu mã khớp nhất...")
 
-        # HIỂN THỊ KẾT QUẢ
-        if best_match:
-            c1, c2 = st.columns(2)
-            with c1:
-                st.subheader("🔍 Đang soi: " + up_test.name)
-                st.image(target['img_bytes'], use_container_width=True)
-            with c2:
-                st.subheader(f"✅ Đối chiếu với: {best_match['name']}")
-                st.image(base64.b64decode(best_match['img']), use_container_width=True)
+            # TÍNH TOÁN SO SÁNH AN TOÀN
+            best = None
+            if mode == "Tự động (AI)":
+                tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+                with torch.no_grad():
+                    v_test = ai_brain(tf(Image.open(io.BytesIO(target['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy()
+                
+                sims = []
+                for i in db.data:
+                    if i.get('vector') and isinstance(i['vector'], list):
+                        s = float(cosine_similarity([v_test], [np.array(i['vector'])])) * 100
+                        sims.append({"name": i['file_name'], "sim": s, "spec": i['spec_json'], "img": i['img_base64']})
+                if sims: best = sorted(sims, key=lambda x: x['sim'], reverse=True)[0]
+            else:
+                sel = next((i for i in db.data if i['file_name'] == st.session_state.sel_code), None)
+                if sel: best = {"name": sel['file_name'], "sim": 0, "spec": sel['spec_json'], "img": sel['img_base64']}
 
-            # BẢNG SO SÁNH 4 CỘT
-            st.markdown("### 📊 Bảng đối chiếu thông số & Chênh lệch")
-            diff_list = []
-            poms = sorted(list(set(target['spec'].keys()) | set(best_match['spec'].keys())))
-            for p in poms:
-                v_new, v_old = target['spec'].get(p, 0), best_match['spec'].get(p, 0)
-                diff = round(v_new - v_old, 2)
-                diff_list.append({"Thông số (POM)": p, "Mẫu Mới": v_new, "Mẫu Kho": v_old, "Chênh lệch": diff})
-            
-            df = pd.DataFrame(diff_list)
-            st.table(df)
+            if best:
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("🔍 Đang soi: " + up_test.name)
+                    st.image(target['img_bytes'], use_container_width=True)
+                with col2:
+                    st.subheader(f"✅ Đối chiếu: {best['name']}")
+                    st.image(base64.b64decode(best['img']), use_container_width=True)
 
-            # NÚT XUẤT EXCEL
-            out = io.BytesIO()
-            with pd.ExcelWriter(out, engine='xlsxwriter') as wr:
-                df.to_excel(wr, index=False)
-            st.download_button("📥 TẢI EXCEL SO SÁNH", out.getvalue(), f"So_sanh_{best_match['name']}.xlsx")
+                # BẢNG SO SÁNH 4 CỘT
+                st.markdown("### 📊 Bảng đối chiếu thông số & Chênh lệch")
+                diff_list = []
+                poms = sorted(list(set(target['spec'].keys()) | set(best['spec'].keys())))
+                for p in poms:
+                    v_n, v_o = target['spec'].get(p, 0), best['spec'].get(p, 0)
+                    diff_list.append({"Thông số (POM)": p, "Mẫu Mới": v_n, "Mẫu Kho": v_o, "Chênh lệch": round(v_n - v_o, 2)})
+                
+                df = pd.DataFrame(diff_list)
+                st.table(df)
+
+                out = io.BytesIO()
+                with pd.ExcelWriter(out, engine='xlsxwriter') as wr:
+                    df.to_excel(wr, index=False)
+                st.download_button("📥 TẢI EXCEL SO SÁNH", out.getvalue(), f"So_sanh_{best['name']}.xlsx")
