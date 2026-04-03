@@ -17,7 +17,7 @@ try:
 except:
     st.error("❌ Lỗi kết nối Supabase!")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.13", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.14", page_icon="👔")
 
 # ================= AI ENGINE =================
 @st.cache_resource
@@ -27,9 +27,10 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= HÀM TIỆN ÍCH PDF & PHÂN LOẠI =================
+# ================= TRÍCH XUẤT TOÀN BỘ THÔNG SỐ (FIX CHÍ MẠNG) =================
 def parse_val(t):
     try:
+        # Xử lý phân số như 30 1/2 hoặc 1/4
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
         if not found: return 0
         v = found[0]
@@ -38,17 +39,6 @@ def parse_val(t):
             return float(p[0]) + eval(p[1])
         return eval(v) if '/' in v else float(v)
     except: return 0
-
-def classify_logic(specs, text, name):
-    txt = (text + " " + name).upper()
-    inseam = specs.get('INSEAM', 0)
-    length = specs.get('LENGTH', specs.get('OUTSEAM', 0))
-    if any(k in txt for k in ['PANT', 'CARGO', 'TROUSER']) or length >= 25 or inseam >= 15:
-        if any(k in txt for k in ['ELASTIC WAIST', 'RIB WAIST', 'LƯNG THUN']):
-            return "QUẦN DÀI LƯNG THUN"
-        return "QUẦN DÀI LƯNG THƯỜNG"
-    if 0 < length <= 23 or 0 < inseam <= 13 or 'SHORT' in txt: return "QUẦN SHORT"
-    return "ÁO"
 
 def get_data(pdf_path):
     try:
@@ -59,19 +49,35 @@ def get_data(pdf_path):
                 if t: text += t
                 for tb in p.extract_tables():
                     for r in tb:
-                        if not r: continue
-                        txt_r = " | ".join([str(x) for x in r if x]).upper()
-                        key_f = None
-                        for k in ['INSEAM','WAIST','HIP','LENGTH','OUTSEAM','SLEEVE','SHOULDER','CHEST']:
-                            if k in txt_r: key_f = k; break
-                        if key_f:
-                            vals = [parse_val(x) for x in r if x]
-                            valid = [v for v in vals if v >= 4]
-                            if valid: specs[key_f] = round(float(max(valid)), 2)
+                        if not r or len(r) < 2: continue
+                        # Làm sạch dữ liệu trong hàng
+                        clean_row = [str(x).strip() for x in r if x]
+                        if not clean_row: continue
+                        
+                        # Tên thông số thường nằm ở cột 1 hoặc 2
+                        label = str(clean_row[0]).upper()
+                        # Lọc bỏ các hàng tiêu đề rác
+                        if any(x in label for x in ['SIZE', 'DATE', 'TOL', 'COLOR', 'FABRIC', 'PAGE']): continue
+                        
+                        # Lấy tất cả các số đo thực tế trong hàng (Bỏ qua số quá nhỏ < 0.8 là dung sai)
+                        vals = [parse_val(x) for x in clean_row if parse_val(x) > 0.8]
+                        
+                        if vals and len(label) > 2:
+                            # Lấy giá trị đầu tiên tìm thấy (thường là size chuẩn/base size)
+                            specs[label[:50]] = round(float(vals[0]), 2)
+                            
         doc = fitz.open(pdf_path)
         img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
         doc.close()
-        return {"spec": specs, "img": img, "cat": classify_logic(specs, text, os.path.basename(pdf_path)), "name": os.path.basename(pdf_path)}
+        
+        # Nhận diện loại đơn giản dựa trên thông số đã quét
+        cat = "ÁO"
+        if any(x in str(specs.keys()).upper() for x in ['INSEAM', 'THIGH', 'KNEE', 'LEG OPEN']):
+            cat = "QUẦN DÀI LƯNG THƯỜNG"
+            if 'ELASTIC' in text.upper(): cat = "QUẦN DÀI LƯNG THUN"
+            if specs.get('INSEAM', 0) < 15 and specs.get('INSEAM', 0) > 0: cat = "QUẦN SHORT"
+
+        return {"spec": specs, "img": img, "cat": cat, "name": os.path.basename(pdf_path)}
     except: return None
 
 # ================= SIDEBAR & QUẢN LÝ KHO =================
@@ -91,7 +97,7 @@ with st.sidebar:
         for f in files:
             with open("tmp.pdf", "wb") as t: t.write(f.getbuffer())
             d = get_data("tmp.pdf")
-            if d:
+            if d and len(d['spec']) > 3: # Chỉ nạp nếu lấy được trên 3 thông số
                 img_p = Image.open(io.BytesIO(d['img'])).convert("RGB")
                 buf = io.BytesIO()
                 img_p.save(buf, format="WEBP", quality=75)
@@ -101,11 +107,11 @@ with st.sidebar:
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
                 with torch.no_grad(): vec = ai_brain(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
                 supabase.table("ai_data").upsert({"file_name": f.name, "vector": vec, "spec_json": d['spec'], "img_url": url, "category": d['cat']}, on_conflict="file_name").execute()
-        st.success("🏁 Xong!")
+        st.success("🏁 Nạp xong!")
         st.rerun()
 
-# ================= CHÍNH: SO SÁNH =================
-st.title("👔 AI Fashion Pro V11.13")
+# ================= CHÍNH: SO SÁNH TOÀN DIỆN =================
+st.title("👔 AI Fashion Pro V11.14")
 test_file = st.file_uploader("Tải file PDF Test (Đối chứng)", type="pdf")
 
 if test_file:
@@ -114,10 +120,9 @@ if test_file:
     
     if target:
         st.subheader(f"Nhận diện loại: {target['cat']}")
-        st.divider()
         
         list_names = [item['file_name'] for item in all_samples]
-        selected_code = st.selectbox("🎯 Chọn mã hàng trong kho để so sánh (hoặc để AI tự tìm):", ["-- Tự động tìm mẫu tương đồng --"] + list_names)
+        selected_code = st.selectbox("🎯 Chọn mã hàng cụ thể (hoặc AI tự tìm):", ["-- Tự động tìm mẫu tương đồng --"] + list_names)
         
         matches = []
         if selected_code != "-- Tự động tìm mẫu tương đồng --":
@@ -133,30 +138,24 @@ if test_file:
                     if item.get('vector'):
                         v_db = np.array(item['vector']).reshape(1, -1)
                         sim_val = float(cosine_similarity(v_test.reshape(1, -1), v_db)[0][0]) * 100
-                        if item['category'] == target['cat']: sim_val += 5
                         matches.append({"name": item['file_name'], "sim": sim_val, "url": item['img_url'], "spec": item['spec_json']})
                 matches = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
 
         if matches:
             for m in matches:
-                with st.expander(f"📌 ĐỐI CHIẾU: {m['name']} (Độ tương đồng: {m['sim']:.1f}%)", expanded=True):
-                    c1, c2, c3 = st.columns(3)
-                    with c1: st.image(target['img'], caption="File Test")
-                    with c2: st.image(m['url'], caption="Mẫu trong kho")
+                with st.expander(f"📌 ĐỐI CHIẾU TOÀN DIỆN: {m['name']} (Giống {m['sim']:.1f}%)", expanded=True):
+                    c1, c2, c3 = st.columns([1, 1, 1.5])
+                    with c1: st.image(target['img'], caption="Bản vẽ PDF Test")
+                    with c2: st.image(m['url'], caption="Bản vẽ trong Kho")
                     with c3:
-                        comp = []
+                        # Gộp tất cả thông số của cả 2 bên để so sánh
                         all_keys = sorted(list(set(target['spec'].keys()).union(set(m['spec'].keys()))))
+                        comp_list = []
                         for k in all_keys:
                             v_t, v_d = target['spec'].get(k, 0), m['spec'].get(k, 0)
                             diff = round(v_t - v_d, 2)
-                            comp.append({"Thông số": k, "Test": v_t, "Kho": v_d, "Lệch": diff})
+                            comp_list.append({"Điểm đo": k, "Test": v_t, "Kho": v_d, "Lệch": diff})
                         
-                        df = pd.DataFrame(comp)
-                        # FIX LỖI ĐỎ: Thay applymap bằng map (theo chuẩn Pandas mới)
-                        def style_diff(val):
-                            color = 'red' if abs(val) > 0.25 else 'green'
-                            return f'color: {color}'
-                        
-                        st.table(df.style.map(style_diff, subset=['Lệch']))
-        else:
-            st.warning("Kho chưa có mẫu để so sánh.")
+                        df_res = pd.DataFrame(comp_list)
+                        st.table(df_res.style.map(lambda x: 'color: red' if abs(x) > 0.25 else 'color: green', subset=['Lệch']))
+        else: st.warning("Chưa có dữ liệu so sánh.")
