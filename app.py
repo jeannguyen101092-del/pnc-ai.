@@ -163,14 +163,20 @@ if test_file:
             results = []
             for i in db.data:
                 if i.get('vector'):
-                    sim = float(cosine_similarity([v_test], [np.array(i['vector'])])) * 100
-                    results.append({"name": i['file_name'], "sim": sim, "spec": i['spec_json'], "img": i['img_url']})
+                   # Sửa lại dòng tính toán độ giống nhau (Similarity)
+v_test_2d = v_test.reshape(1, -1)
+v_db_2d = np.array(i['vector']).reshape(1, -1)
+sim = float(cosine_similarity(v_test_2d, v_db_2d)[0][0]) * 100
+
 
             for r in sorted(results, key=lambda x: x['sim'], reverse=True)[:5]:
                 with st.expander(f"🎯 {r['sim']:.1f}% | {r['name']}"):
-                    c1, c2 = st.columns(2)
-                    c1.image(target['img'], caption="Mẫu Test")
-                    c2.image(r['img'], caption="Mẫu Kho")
+# Cột bên trái hiện ảnh mẫu vừa upload (Test)
+c1.image(target['img'], caption="Mẫu Test")
+
+# Cột bên phải hiện ảnh lấy từ Link GitHub trong Database
+c2.image(r['img'], caption="Mẫu trong Kho (GitHub)")
+
 
                     diff = []
                     poms = set(target['spec']) | set(r['spec'])
