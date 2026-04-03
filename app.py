@@ -7,7 +7,7 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# ================= CONFIG (ĐIỀN THÔNG TIN CỦA BẠN) =================
+# ================= CONFIG (HÃY ĐIỀN THÔNG TIN CỦA BẠN) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET_NAME = "fashion-imgs"
@@ -17,7 +17,7 @@ try:
 except:
     st.error("❌ Lỗi kết nối Supabase!")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.12", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.13", page_icon="👔")
 
 # ================= AI ENGINE =================
 @st.cache_resource
@@ -105,7 +105,7 @@ with st.sidebar:
         st.rerun()
 
 # ================= CHÍNH: SO SÁNH =================
-st.title("👔 AI Fashion Pro V11.12")
+st.title("👔 AI Fashion Pro V11.13")
 test_file = st.file_uploader("Tải file PDF Test (Đối chứng)", type="pdf")
 
 if test_file:
@@ -116,39 +116,30 @@ if test_file:
         st.subheader(f"Nhận diện loại: {target['cat']}")
         st.divider()
         
-        # --- TÍNH NĂNG CHỌN MÃ TRONG KHO ---
         list_names = [item['file_name'] for item in all_samples]
-        selected_code = st.selectbox("🎯 Chọn mã hàng trong kho để so sánh cụ thể:", ["-- Tự động tìm mẫu tương đồng --"] + list_names)
+        selected_code = st.selectbox("🎯 Chọn mã hàng trong kho để so sánh (hoặc để AI tự tìm):", ["-- Tự động tìm mẫu tương đồng --"] + list_names)
         
         matches = []
-        # Trường hợp 1: Chọn mã cụ thể
         if selected_code != "-- Tự động tìm mẫu tương đồng --":
             for item in all_samples:
                 if item['file_name'] == selected_code:
                     matches = [{"name": item['file_name'], "sim": 100.0, "url": item['img_url'], "spec": item['spec_json']}]
                     break
-        # Trường hợp 2: AI tự tìm mẫu tương đồng
         else:
             if all_samples:
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
                 with torch.no_grad(): v_test = ai_brain(tf(Image.open(io.BytesIO(target['img']))).unsqueeze(0)).flatten().numpy()
-                
                 for item in all_samples:
                     if item.get('vector'):
                         v_db = np.array(item['vector']).reshape(1, -1)
-                        # Tính độ tương đồng
-                        sim_matrix = cosine_similarity(v_test.reshape(1, -1), v_db)
-                        sim_val = float(sim_matrix[0][0]) * 100
-                        # Ưu tiên cộng điểm nếu cùng loại
+                        sim_val = float(cosine_similarity(v_test.reshape(1, -1), v_db)[0][0]) * 100
                         if item['category'] == target['cat']: sim_val += 5
                         matches.append({"name": item['file_name'], "sim": sim_val, "url": item['img_url'], "spec": item['spec_json']})
                 matches = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
 
-        # --- HIỂN THỊ KẾT QUẢ SO SÁNH ---
         if matches:
             for m in matches:
                 with st.expander(f"📌 ĐỐI CHIẾU: {m['name']} (Độ tương đồng: {m['sim']:.1f}%)", expanded=True):
-                    # FIX LỖI RED BOX: Thêm số 3 vào st.columns
                     c1, c2, c3 = st.columns(3)
                     with c1: st.image(target['img'], caption="File Test")
                     with c2: st.image(m['url'], caption="Mẫu trong kho")
@@ -156,13 +147,16 @@ if test_file:
                         comp = []
                         all_keys = sorted(list(set(target['spec'].keys()).union(set(m['spec'].keys()))))
                         for k in all_keys:
-                            v_t = target['spec'].get(k, 0)
-                            v_d = m['spec'].get(k, 0)
+                            v_t, v_d = target['spec'].get(k, 0), m['spec'].get(k, 0)
                             diff = round(v_t - v_d, 2)
                             comp.append({"Thông số": k, "Test": v_t, "Kho": v_d, "Lệch": diff})
                         
                         df = pd.DataFrame(comp)
-                        # Tô màu: Đỏ nếu lệch > 0.25, Xanh nếu khớp
-                        st.table(df.style.applymap(lambda x: 'color: red' if abs(x) > 0.25 else 'color: green', subset=['Lệch']))
+                        # FIX LỖI ĐỎ: Thay applymap bằng map (theo chuẩn Pandas mới)
+                        def style_diff(val):
+                            color = 'red' if abs(val) > 0.25 else 'green'
+                            return f'color: {color}'
+                        
+                        st.table(df.style.map(style_diff, subset=['Lệch']))
         else:
             st.warning("Kho chưa có mẫu để so sánh.")
