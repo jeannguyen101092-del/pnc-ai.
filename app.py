@@ -36,7 +36,7 @@ def compress_image(img_bytes):
 def upload_to_github(img_bytes, filename):
     try:
         clean_name = re.sub(r'[^a-zA-Z0-9]', '_', filename)
-        # Sử dụng API chuẩn của GitHub
+        # 1. API chuẩn của GitHub
         url = f"https://github.com{GH_REPO}/contents/imgs/{clean_name}.jpg"
         
         headers = {
@@ -45,20 +45,25 @@ def upload_to_github(img_bytes, filename):
         }
         content = base64.b64encode(img_bytes).decode('utf-8')
         
-        # Kiểm tra file tồn tại
+        # Kiểm tra file cũ để lấy SHA (nếu có)
         check = requests.get(url, headers=headers, timeout=10)
-        data = {"message": f"up {clean_name}", "content": content, "branch": GH_BRANCH}
+        data = {"message": f"Upload {clean_name}", "content": content, "branch": GH_BRANCH}
         if check.status_code == 200:
             data["sha"] = check.json()["sha"]
             
+        # 2. Đẩy file lên GitHub
         res = requests.put(url, headers=headers, json=data, timeout=15)
+        
         if res.status_code in [200, 201]:
-            # Trả về link RAW để hiển thị được trên Streamlit
+            # TRẢ VỀ LINK RAW ĐỂ HIỂN THỊ ĐƯỢC ẢNH TRÊN APP
             return f"https://githubusercontent.com{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.jpg"
-        return None
+        else:
+            st.error(f"GitHub Error {res.status_code}: {res.text}")
+            return None
     except Exception as e:
-        st.error(f"Lỗi GitHub: {e}")
+        st.error(f"Lỗi kết nối GitHub: {e}")
         return None
+
 
 # ================= TRÍCH XUẤT DỮ LIỆU =================
 def parse_val(t):
