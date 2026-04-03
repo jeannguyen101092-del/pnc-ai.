@@ -63,7 +63,32 @@ def upload_to_github(img_bytes, filename):
         return None
     except Exception as e:
         st.warning(f"Lỗi kết nối GitHub: {e}")
+        return Nonedef upload_to_github(img_bytes, filename):
+    try:
+        clean_name = re.sub(r'[^a-zA-Z0-9]', '_', filename)
+        # SỬA ĐÚNG LINK API CỦA GITHUB
+        url = f"https://github.com{GH_REPO}/contents/imgs/{clean_name}.jpg"
+        
+        headers = {
+            "Authorization": f"token {GH_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        content = base64.b64encode(img_bytes).decode('utf-8')
+        
+        check = requests.get(url, headers=headers, timeout=10)
+        data = {"message": f"up {clean_name}", "content": content, "branch": GH_BRANCH}
+        if check.status_code == 200:
+            data["sha"] = check.json()["sha"]
+            
+        res = requests.put(url, headers=headers, json=data, timeout=15)
+        if res.status_code in [200, 201]:
+            # TRẢ VỀ LINK RAW ĐỂ HIỂN THỊ ĐƯỢC ẢNH
+            return f"https://githubusercontent.com{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.jpg"
         return None
+    except Exception as e:
+        st.error(f"Lỗi kết nối GitHub: {e}")
+        return None
+
 
 
 # ================= TRÍCH XUẤT DỮ LIỆU =================
