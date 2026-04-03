@@ -11,7 +11,7 @@ from supabase import create_client, Client
 # ==========================================
 # 1. KẾT NỐI (TỰ ĐIỀN)
 # ==========================================
-URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
+URL =  "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
@@ -173,9 +173,9 @@ with st.sidebar:
         st.rerun()
 
 # ==========================================
-# SO SÁNH
+# SO SÁNH V7 PRO
 # ==========================================
-st.title("👔 AI Fashion Pro V6")
+st.title("👔 AI Fashion Pro V7 PRO")
 
 up_test = st.file_uploader("Upload PDF", type="pdf")
 
@@ -215,11 +215,30 @@ if up_test:
                     try:
                         vec_db = np.array(i['vector']).reshape(1, -1)
                         vec_test = v_test.reshape(1, -1)
-                        s = float(cosine_similarity(vec_test, vec_db)[0][0]) * 100
+                        sim_img = float(cosine_similarity(vec_test, vec_db)[0][0])
+
+                        # ===== SO SÁNH SPEC =====
+                        spec_score = 0
+                        count = 0
+                        for k in target['spec']:
+                            if k in i['spec_json']:
+                                v1 = target['spec'][k]
+                                v2 = i['spec_json'][k]
+                                if v1 > 0 and v2 > 0:
+                                    diff = abs(v1 - v2) / max(v1, v2)
+                                    spec_score += (1 - diff)
+                                    count += 1
+
+                        sim_spec = (spec_score / count) if count > 0 else 0
+
+                        # ===== COMBINE SCORE =====
+                        final_score = (sim_img * 0.6 + sim_spec * 0.4) * 100
 
                         sims.append({
                             "name": i['file_name'],
-                            "sim": s,
+                            "sim": final_score,
+                            "img_sim": sim_img * 100,
+                            "spec_sim": sim_spec * 100,
                             "spec": i['spec_json'],
                             "img": i['img_base64']
                         })
@@ -227,35 +246,47 @@ if up_test:
                         continue
 
             if sims:
-                best = sorted(sims, key=lambda x: x['sim'], reverse=True)[0]
+                sims = sorted(sims, key=lambda x: x['sim'], reverse=True)
 
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.image(target['img_bytes'], caption="Mẫu mới", use_container_width=True)
-                with c2:
-                    st.image(base64.b64decode(best['img']), caption=f"{best['name']} ({best['sim']:.1f}%)", use_container_width=True)
+                # ===== HIỂN THỊ TOP 5 =====
+                st.subheader("🏆 TOP MẪU TƯƠNG ĐỒNG")
 
-                diff_list = []
-                poms = sorted(list(set(target['spec'].keys()) | set(best['spec'].keys())))
+                top_n = sims[:5]
 
-                for p in poms:
-                    v1 = target['spec'].get(p, 0)
-                    v2 = best['spec'].get(p, 0)
-                    diff_list.append({
-                        "POM": p,
-                        "Mẫu mới": v1,
-                        "Mẫu kho": v2,
-                        "Diff": round(v1 - v2, 2)
-                    })
+                for idx, item in enumerate(top_n):
+                    with st.expander(f"#{idx+1} - {item['name']} | Tổng: {item['sim']:.1f}% | Ảnh: {item['img_sim']:.1f}% | Spec: {item['spec_sim']:.1f}%"):
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.image(target['img_bytes'], caption="Mẫu mới", use_container_width=True)
+                        with c2:
+                            st.image(base64.b64decode(item['img']), caption=item['name'], use_container_width=True)
 
-                df = pd.DataFrame(diff_list)
-                st.dataframe(df)
+                        # bảng so sánh
+                        diff_list = []
+                        poms = sorted(list(set(target['spec'].keys()) | set(item['spec'].keys())))
 
+                        for p in poms:
+                            v1 = target['spec'].get(p, 0)
+                            v2 = item['spec'].get(p, 0)
+                            diff_list.append({
+                                "POM": p,
+                                "Mẫu mới": v1,
+                                "Mẫu kho": v2,
+                                "Diff": round(v1 - v2, 2)
+                            })
+
+                        df = pd.DataFrame(diff_list)
+                        st.dataframe(df)
+
+                # ===== EXPORT EXCEL TOP =====
                 out = io.BytesIO()
                 with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
-                    df.to_excel(writer, index=False)
+                    for i, item in enumerate(top_n):
+                        df = pd.DataFrame(diff_list)
+                        df.to_excel(writer, sheet_name=f"Top_{i+1}", index=False)
 
-                st.download_button("📥 Excel", out.getvalue(), "compare.xlsx")
+                st.download_button("📥 Tải Excel TOP", out.getvalue(), "Top_compare.xlsx")
 
 # DEBUG
+# st.write(target)
 # st.write(target)
