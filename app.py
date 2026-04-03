@@ -1,5 +1,5 @@
 # ==========================================================
-# AI FASHION PRO V8.2 FIX - GIỮ NGUYÊN NẠP KHO + FIX SO SÁNH
+# AI FASHION V8.2 - GIỮ NGUYÊN UI + FIX SO SÁNH ĐÚNG LOẠI
 # ==========================================================
 
 import streamlit as st
@@ -18,7 +18,7 @@ supabase: Client = create_client(URL, KEY)
 
 st.set_page_config(layout="wide")
 
-# ================= AI =================
+# ================= LOAD AI =================
 @st.cache_resource
 def load_ai():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -27,7 +27,7 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= PARSE =================
+# ================= PARSE VALUE =================
 def parse_val(t):
     try:
         found = re.findall(r'(\d+\.?\d*)', str(t))
@@ -35,10 +35,11 @@ def parse_val(t):
     except:
         return 0
 
+# ================= FILTER =================
 VALID_KEYS = ['INSEAM','WAIST','HIP','THIGH','KNEE','LEG','CHEST','LENGTH','SLEEVE','SHOULDER']
 BLOCK_KEYS = ['FABRIC','BODY','MATERIAL','COTTON','POLY','ELASTANE','%','COLOR']
 
-# ================= EXTRACT =================
+# ================= EXTRACT SPEC =================
 def extract_specs(table):
     specs = {}
     for r in table:
@@ -57,20 +58,6 @@ def extract_specs(table):
             specs[row_text[:100]] = np.mean(vals)
 
     return specs
-
-# ================= CLASSIFY (CHỈ FIX NHẸ) =================
-def classify_basic(specs, text):
-    txt = text.upper()
-
-    has_inseam = any('INSEAM' in k for k in specs)
-    has_chest = any('CHEST' in k for k in specs)
-
-    if has_inseam:
-        return "QUẦN"
-    if has_chest:
-        return "ÁO"
-
-    return "KHÁC"
 
 # ================= GET DATA =================
 def get_data(pdf_path):
@@ -94,15 +81,14 @@ def get_data(pdf_path):
 
         return {
             "spec": specs,
-            "img": img,
-            "cat": classify_basic(specs, text)
+            "img": img
         }
 
     except:
         return None
 
 # ================= UI =================
-st.title("AI V8.2 FIX")
+st.title("AI V8.2 FIX - SAME UI")
 
 file = st.file_uploader("Upload PDF", type="pdf")
 
@@ -113,7 +99,7 @@ if file:
     target = get_data("temp.pdf")
 
     if target:
-        st.success(f"Nhận diện: {target['cat']}")
+        st.success("Đã đọc file")
 
         db = supabase.table("ai_data").select("*").execute()
 
@@ -130,10 +116,23 @@ if file:
         results = []
 
         for i in db.data:
-            # 🔥 FIX QUAN TRỌNG: CHỈ SO SÁNH CÙNG LOẠI
-            if i.get('category') != target['cat']:
+
+            db_spec = i.get('spec_json', {})
+
+            # ===== FIX SO SÁNH ĐÚNG LOẠI =====
+            target_is_pant = any('INSEAM' in k for k in target['spec'])
+            db_is_pant = any('INSEAM' in k for k in db_spec)
+
+            target_is_top = any('CHEST' in k for k in target['spec'])
+            db_is_top = any('CHEST' in k for k in db_spec)
+
+            if target_is_pant != db_is_pant:
                 continue
 
+            if target_is_top != db_is_top:
+                continue
+
+            # ===== GIỮ NGUYÊN LOGIC CŨ =====
             if i.get('vector'):
                 sim = float(cosine_similarity([v_test],[np.array(i['vector'])])[0][0])*100
                 results.append({
