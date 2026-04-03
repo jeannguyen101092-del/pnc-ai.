@@ -59,7 +59,7 @@ def extract_specs(table):
         row_text = " | ".join([str(x) for x in r if x]).upper()
 
         # ❌ bỏ dòng rác
-       if any(x in row_text for x in [
+    if any(x in row_text for x in [
     'SIZE','SEASON','TECH','DATE','#','DEVELOPMENT',
     'FABRIC','BODY','SHELL','LINING','MATERIAL',
     'COTTON','POLYESTER','ELASTANE','NYLON',
