@@ -7,7 +7,7 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# ================= CONFIG (HÃY ĐIỀN THÔNG TIN CỦA BẠN) =================
+# ================= CONFIG (ĐIỀN THÔNG TIN CỦA BẠN) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET_NAME = "fashion-imgs"
@@ -17,7 +17,7 @@ try:
 except Exception as e:
     st.error(f"❌ Lỗi cấu hình Supabase: {e}")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.2", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.3", page_icon="👔")
 
 # ================= AI ENGINE =================
 @st.cache_resource
@@ -57,10 +57,7 @@ def parse_val(t):
 
 def classify_logic(specs, text, name):
     txt = (text + name).upper()
-    inseam, length = 0, 0
-    for k, v in specs.items():
-        if 'INSEAM' in k: inseam = max(inseam, v)
-        if 'LENGTH' in k: length = max(length, v)
+    inseam, length = specs.get('INSEAM', 0), specs.get('LENGTH', 0)
     if 'CARGO' in txt: return "QUẦN CARGO"
     if inseam >= 22 or length >= 30: return "QUẦN DÀI"
     if 0 < inseam <= 15 or 0 < length <= 22: return "QUẦN SHORT"
@@ -77,9 +74,8 @@ def get_data(pdf_path):
                     for r in tb:
                         if not r: continue
                         txt_r = " | ".join([str(x) for x in r if x]).upper()
-                        # Lọc lấy các key thông số chuẩn
                         key_found = None
-                        for k in ['INSEAM','WAIST','HIP','THIGH','LENGTH','CHEST','SHOULDER']:
+                        for k in ['INSEAM','WAIST','HIP','THIGH','LENGTH','CHEST','SHOULDER','SLEEVE']:
                             if k in txt_r: 
                                 key_found = k
                                 break
@@ -89,7 +85,7 @@ def get_data(pdf_path):
         doc = fitz.open(pdf_path)
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
         doc.close()
-        return {"spec": specs, "img": img_bytes, "cat": classify_logic(specs, text, os.path.basename(pdf_path))}
+        return {"spec": specs, "img": img_bytes, "cat": classify_logic(specs, text, os.path.basename(pdf_path)), "name": os.path.basename(pdf_path)}
     except: return None
 
 # ================= SIDEBAR =================
@@ -123,17 +119,8 @@ with st.sidebar:
         st.success("🏁 Nạp kho thành công!")
         st.rerun()
 
-    if st.button("📥 XUẤT FILE EXCEL"):
-        db_data = supabase.table("ai_data").select("file_name, category, spec_json, img_url").execute()
-        if db_data.data:
-            df = pd.DataFrame(db_data.data)
-            excel_buf = io.BytesIO()
-            with pd.ExcelWriter(excel_buf, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False)
-            st.download_button(label="📁 Tải Excel", data=excel_buf.getvalue(), file_name="Bao_Cao_Kho.xlsx")
-
 # ================= GIAO DIỆN CHÍNH =================
-st.title("👔 AI Fashion Pro V11.2 - So sánh chi tiết")
+st.title("👔 AI Fashion Pro V11.3")
 
 test_file = st.file_uploader("Tải file PDF Test (Đối chứng)", type="pdf")
 
@@ -144,11 +131,9 @@ if test_file:
     if target:
         st.subheader(f"Nhận diện loại: {target['cat']}")
         
-        # Tìm trong DB mẫu cùng loại
         db = supabase.table("ai_data").select("*").eq("category", target['cat']).execute()
         
         if db.data:
-            # So sánh AI Vector
             tf = transforms.Compose([
                 transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(),
                 transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
@@ -162,32 +147,57 @@ if test_file:
                     sim = float(cosine_similarity(v_test.reshape(1,-1), np.array(item['vector']).reshape(1,-1))) * 100
                     matches.append({"name": item['file_name'], "sim": sim, "url": item['img_url'], "spec": item['spec_json']})
             
-            # Lấy Top 3 mẫu giống nhất để so sánh chi tiết
             top_matches = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
             
-            # --- HIỂN THỊ BẢNG SO SÁNH ---
-            st.write("### 🔍 Bảng so sánh thông số cụ thể:")
+            # --- PHẦN XUẤT EXCEL SO SÁNH (Đã dời về đây) ---
+            st.write("### 🔍 Kết quả so sánh:")
             
+            # Chuẩn bị dữ liệu Excel cho tất cả các mẫu so sánh
+            export_list = []
             for m in top_matches:
-                with st.expander(f"Mẫu: {m['name']} (Độ giống AI: {m['sim']:.1f}%)", expanded=True):
+                all_keys = set(target['spec'].keys()).union(set(m['spec'].keys()))
+                for k in sorted(all_keys):
+                    val_test = target['spec'].get(k, 0)
+                    val_db = m['spec'].get(k, 0)
+                    diff = round(val_test - val_db, 2)
+                    export_list.append({
+                        "Mẫu đối chiếu": m['name'],
+                        "Độ giống AI (%)": round(m['sim'], 1),
+                        "Thông số": k,
+                        "Giá trị Test": val_test,
+                        "Giá trị Kho": val_db,
+                        "Chênh lệch (Diff)": diff,
+                        "Ghi chú": "Khớp" if abs(diff) < 0.25 else "Lệch"
+                    })
+            
+            if export_list:
+                df_compare = pd.DataFrame(export_list)
+                excel_buf = io.BytesIO()
+                with pd.ExcelWriter(excel_buf, engine='xlsxwriter') as writer:
+                    df_compare.to_excel(writer, index=False, sheet_name='Comparison_Report')
+                
+                # Nút tải Excel đặt ngay trên bảng so sánh
+                st.download_button(
+                    label="📥 TẢI BÁO CÁO ĐỐI CHIẾU (EXCEL)",
+                    data=excel_buf.getvalue(),
+                    file_name=f"So_Sanh_{target['name']}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+            # --- HIỂN THỊ GIAO DIỆN BẢNG ---
+            for m in top_matches:
+                with st.expander(f"Mẫu: {m['name']} (Khớp {m['sim']:.1f}%)", expanded=True):
                     c1, c2, c3 = st.columns([1, 1, 2])
-                    with c1:
-                        st.image(target['img'], caption="File Test", use_container_width=True)
-                    with c2:
-                        st.image(m['url'], caption="Mẫu trong kho", use_container_width=True)
+                    with c1: st.image(target['img'], caption="File Test")
+                    with c2: st.image(m['url'], caption="Mẫu trong kho")
                     with c3:
-                        st.write("**Bảng đối chiếu thông số (Inches):**")
-                        # Tạo bảng so sánh
                         comp_data = []
                         all_keys = set(target['spec'].keys()).union(set(m['spec'].keys()))
                         for k in sorted(all_keys):
-                            val_test = target['spec'].get(k, 0)
-                            val_db = m['spec'].get(k, 0)
-                            diff = round(val_test - val_db, 2)
-                            status = "✅ Khớp" if abs(diff) < 0.25 else f"❌ Lệch {diff}"
-                            comp_data.append({"Thông số": k, "File Test": val_test, "Trong Kho": val_db, "Chênh lệch": diff, "Trạng thái": status})
-                        
+                            v_t = target['spec'].get(k, 0)
+                            v_d = m['spec'].get(k, 0)
+                            d = round(v_t - v_d, 2)
+                            comp_data.append({"Thông số": k, "Test": v_t, "Kho": v_d, "Lệch": d})
                         st.table(pd.DataFrame(comp_data))
 
-        else:
-            st.warning("Không tìm thấy mẫu cùng loại trong kho để so sánh.")
+        else: st.warning("Không có mẫu cùng loại trong kho.")
