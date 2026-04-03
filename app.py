@@ -39,28 +39,32 @@ def compress_image(img_bytes):
 # ================= GITHUB UPLOAD =================
 def upload_to_github(img_bytes, filename):
     try:
+        # Làm sạch tên file (xóa dấu cách, ký tự đặc biệt)
         clean_name = re.sub(r'[^a-zA-Z0-9]', '_', filename)
-        # Đảm bảo dùng đuôi .png và đường dẫn chuẩn
         url = f"https://github.com{GH_REPO}/contents/imgs/{clean_name}.png"
+        
         headers = {
             "Authorization": f"token {GH_TOKEN}",
             "Accept": "application/vnd.github.v3+json"
         }
         content = base64.b64encode(img_bytes).decode('utf-8')
         
-        # Gửi lệnh đẩy ảnh
+        # 1. Kiểm tra file đã có chưa để lấy SHA
+        check = requests.get(url, headers=headers, timeout=10)
         data = {"message": f"up {clean_name}", "content": content, "branch": GH_BRANCH}
+        if check.status_code == 200:
+            data["sha"] = check.json()["sha"]
+            
+        # 2. Đẩy file lên
         res = requests.put(url, headers=headers, json=data, timeout=15)
-        
         if res.status_code in [200, 201]:
+            # Trả về link raw chuẩn
             return f"https://githubusercontent.com{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.png"
-        else:
-            # HIỆN LỖI THẬT SỰ RA MÀN HÌNH ĐỂ BIẾT TẠI SAO SAI
-            st.error(f"GitHub từ chối (Mã {res.status_code}): {res.json().get('message')}")
-            return None
-    except Exception as e:
-        st.error(f"Lỗi kết nối mạng: {e}")
         return None
+    except Exception as e:
+        st.warning(f"Lỗi kết nối GitHub: {e}")
+        return None
+
 
 # ================= TRÍCH XUẤT DỮ LIỆU =================
 def parse_val(t):
