@@ -14,7 +14,7 @@ from supabase import create_client, Client
 # ==========================================
 # KẾT NỐI
 # ==========================================
-URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
+URL =  "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
@@ -197,7 +197,7 @@ with st.sidebar:
         st.rerun()
 
 # ==========================================
-# SO SÁNH (GIỮ NGUYÊN)
+# SO SÁNH V8 - DROPDOWN MULTI RESULT
 # ==========================================
 st.title("👔 AI Fashion Pro V8")
 
@@ -237,30 +237,40 @@ if up_test:
                         "img": i['img_base64']
                     })
 
-            results = sorted(results, key=lambda x: x['sim'], reverse=True)[:5]
+            results = sorted(results, key=lambda x: x['sim'], reverse=True)[:10]
 
-            for r in results:
-                st.image(base64.b64decode(r['img']), caption=f"{r['name']} - {r['sim']:.1f}%")
+            st.subheader("📊 DANH SÁCH MẪU TƯƠNG ĐỒNG")
 
-            best = results[0]
+            for idx, r in enumerate(results):
+                with st.expander(f"{r['name']}  |  🔥 {r['sim']:.1f}%"):
+                    c1, c2 = st.columns(2)
 
-            diff = []
-            poms = set(target['spec']) | set(best['spec'])
+                    with c1:
+                        st.image(target['img_bytes'], caption="Mẫu mới", use_container_width=True)
 
-            for p in poms:
-                v1 = target['spec'].get(p, 0)
-                v2 = best['spec'].get(p, 0)
-                diff.append({
-                    "POM": p,
-                    "NEW": v1,
-                    "OLD": v2,
-                    "DIFF": round(v1 - v2, 2)
-                })
+                    with c2:
+                        st.image(base64.b64decode(r['img']), caption=r['name'], use_container_width=True)
 
-            st.table(pd.DataFrame(diff))
+                    # bảng so sánh
+                    diff = []
+                    poms = set(target['spec']) | set(r['spec'])
 
-            out = io.BytesIO()
-            with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
-                pd.DataFrame(diff).to_excel(writer, index=False)
+                    for p in poms:
+                        v1 = target['spec'].get(p, 0)
+                        v2 = r['spec'].get(p, 0)
+                        diff.append({
+                            "POM": p,
+                            "NEW": v1,
+                            "OLD": v2,
+                            "DIFF": round(v1 - v2, 2)
+                        })
 
-            st.download_button("📥 Excel", out.getvalue(), "compare.xlsx")
+                    df = pd.DataFrame(diff)
+                    st.dataframe(df, use_container_width=True)
+
+                    # export riêng từng mã
+                    out = io.BytesIO()
+                    with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
+                        df.to_excel(writer, index=False)
+
+                    st.download_button(f"📥 Excel {r['name']}", out.getvalue(), f"{r['name']}.xlsx")
