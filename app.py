@@ -2,12 +2,12 @@ import streamlit as st
 import os, fitz, io, pdfplumber, re, pandas as pd
 import numpy as np
 from PIL import Image
-import torch, gc # Thêm gc để dọn rác RAM
+import torch, gc
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# ================= CONFIG (ĐIỀN THÔNG TIN CỦA BẠN) =================
+# ================= CONFIG (HÃY ĐIỀN THÔNG TIN CỦA BẠN) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET_NAME = "fashion-imgs"
@@ -17,18 +17,17 @@ try:
 except:
     st.error("❌ Lỗi kết nối Supabase!")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.20", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.21", page_icon="👔")
 
-# ================= AI ENGINE (DÙNG MOBILENET CHO NHẸ RAM) =================
+# ================= AI ENGINE (MOBILENET V2 - SIÊU NHẸ) =================
 @st.cache_resource
 def load_ai():
-    # MobileNet V2 nhẹ hơn ResNet rất nhiều, tránh lỗi Over Resource
     model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
     return torch.nn.Sequential(*(list(model.features.children()) + [torch.nn.AdaptiveAvgPool2d(1)])).eval()
 
 ai_brain = load_ai()
 
-# ================= HÀM XỬ LÝ (TỐI ƯU BỘ NHỚ) =================
+# ================= HÀM XỬ LÝ (CHỈ TRÍCH XUẤT - KHÔNG LƯU PDF) =================
 def parse_val(t):
     try:
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
@@ -45,7 +44,6 @@ def classify_logic(specs, text, name):
     inseam = specs.get('INSEAM', 0)
     length = specs.get('LENGTH', specs.get('OUTSEAM', 0))
     if any(k in txt for k in ['PANT', 'CARGO', 'TROUSER']) or length >= 25 or inseam >= 15:
-        # CHỈ THUN khi có chữ ELASTIC rõ ràng
         if any(k in txt for k in ['ELASTIC WAIST', 'RIB WAIST', 'FULL ELASTIC']):
             return "QUẦN DÀI LƯNG THUN"
         return "QUẦN DÀI LƯNG THƯỜNG"
@@ -55,6 +53,7 @@ def classify_logic(specs, text, name):
 def get_data(pdf_path):
     try:
         specs, text = {}, ""
+        # 1. Quét thông số xong là đóng file ngay
         with pdfplumber.open(pdf_path) as pdf:
             for p in pdf.pages:
                 t = p.extract_text()
@@ -70,13 +69,15 @@ def get_data(pdf_path):
                         if vals and len(clean_label) > 3:
                             specs[clean_label[:60]] = round(float(np.median(vals)), 2)
         
+        # 2. Chụp ảnh trang đầu rồi đóng file PDF ngay lập tức
         doc = fitz.open(pdf_path)
         img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         doc.close()
+        
         return {"spec": specs, "img": img, "cat": classify_logic(specs, text, os.path.basename(pdf_path))}
     except: return None
 
-# ================= SIDEBAR & QUẢN LÝ KHO =================
+# ================= SIDEBAR: NẠP KHO (CHỈ LƯU ẢNH) =================
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     try:
@@ -87,33 +88,46 @@ with st.sidebar:
         all_samples = []; st.metric("Tổng mẫu trong kho", "0 mẫu")
     
     st.divider()
-    files = st.file_uploader("Nạp PDF mới", accept_multiple_files=True)
+    files = st.file_uploader("Upload PDF (AI sẽ chỉ lấy ảnh & thông số)", accept_multiple_files=True)
+    
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         p_bar = st.progress(0)
         for idx, f in enumerate(files):
             p_bar.progress((idx + 1) / len(files))
+            # Lưu tạm để xử lý
             with open("tmp.pdf", "wb") as t: t.write(f.getbuffer())
             d = get_data("tmp.pdf")
+            
             if d:
+                # Nén ảnh thành WebP cực nhẹ
                 img_p = Image.open(io.BytesIO(d['img'])).convert("RGB")
-                buf = io.BytesIO(); img_p.save(buf, format="WEBP", quality=60) # Giảm quality để nhẹ RAM
+                buf = io.BytesIO()
+                img_p.save(buf, format="WEBP", quality=60)
+                
+                # CHỈ UPLOAD ẢNH LÊN STORAGE
                 fname = re.sub(r'[^a-zA-Z0-9]', '_', f.name) + ".webp"
                 supabase.storage.from_(BUCKET_NAME).upload(path=fname, file=buf.getvalue(), file_options={"upsert":"true"})
                 url = supabase.storage.from_(BUCKET_NAME).get_public_url(fname)
                 
+                # Trích xuất Vector AI
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
                 with torch.no_grad(): vec = ai_brain(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
-                supabase.table("ai_data").upsert({"file_name": f.name, "vector": vec, "spec_json": d['spec'], "img_url": url, "category": d['cat']}, on_conflict="file_name").execute()
+                
+                # LƯU DỮ LIỆU CHỮ VÀ LINK ẢNH VÀO DATABASE (KHÔNG LƯU PDF)
+                supabase.table("ai_data").upsert({
+                    "file_name": f.name, "vector": vec, "spec_json": d['spec'], 
+                    "img_url": url, "category": d['cat']
+                }, on_conflict="file_name").execute()
             
-            # --- DỌN RÁC BỘ NHỚ SAU MỖI FILE ---
+            # Xóa file tạm ngay sau khi xử lý xong 1 file
             if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
             gc.collect() 
             
-        st.success("🏁 Hoàn tất!"); st.rerun()
+        st.success("🏁 Nạp kho thành công (Đã tối ưu dung lượng)!"); st.rerun()
 
 # ================= CHÍNH: SO SÁNH =================
-st.title("👔 AI Fashion Pro V11.20")
-test_file = st.file_uploader("Tải file PDF Test (Đối chứng)", type="pdf")
+st.title("👔 AI Fashion Pro V11.21")
+test_file = st.file_uploader("Tải file PDF Test để đối chiếu", type="pdf")
 
 if test_file:
     with open("test.pdf", "wb") as f: f.write(test_file.getbuffer())
@@ -131,8 +145,7 @@ if test_file:
                 for i in all_samples:
                     if i.get('vector'):
                         v_db = np.array(i['vector']).reshape(1, -1)
-                        sim_val = float(cosine_similarity(v_test.reshape(1, -1), v_db)[0][0]) * 100
-                        if i['category'] == target['cat']: sim_val += 5
+                        sim_val = float(cosine_similarity(v_test.reshape(1, -1), v_db)) * 100
                         matches.append({"name": i['file_name'], "sim": sim_val, "url": i['img_url'], "spec": i['spec_json']})
                 matches = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
         else:
@@ -145,13 +158,12 @@ if test_file:
             for m in matches:
                 with st.expander(f"📌 ĐỐI CHIẾU: {m['name']} (Giống {m['sim']:.1f}%)", expanded=True):
                     c1, c2, c3 = st.columns([1, 1, 1.8])
-                    with c1: st.image(target['img'], caption="Test")
-                    with c2: st.image(m['url'], caption="Kho")
+                    with c1: st.image(target['img'], caption="Bản vẽ Test")
+                    with c2: st.image(m['url'], caption="Ảnh mẫu trong kho")
                     with c3:
                         all_k = sorted(list(set(target['spec'].keys()).union(set(m['spec'].keys()))))
                         comp = [{"Thông số": k, "Test": target['spec'].get(k, 0), "Kho": m['spec'].get(k, 0), "Lệch": round(target['spec'].get(k, 0) - m['spec'].get(k, 0), 2)} for k in all_k]
-                        df = pd.DataFrame(comp)
-                        st.table(df.style.format(subset=['Test', 'Kho', 'Lệch'], precision=2).map(lambda x: 'color: red' if abs(x) > 0.25 else 'color: green', subset=['Lệch']))
+                        st.table(pd.DataFrame(comp).style.format(subset=['Test', 'Kho', 'Lệch'], precision=2).map(lambda x: 'color: red' if abs(x) > 0.25 else 'color: green', subset=['Lệch']))
     
-    # Giải phóng RAM sau khi so sánh
+    if os.path.exists("test.pdf"): os.remove("test.pdf")
     gc.collect()
