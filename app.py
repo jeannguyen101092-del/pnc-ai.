@@ -11,7 +11,7 @@ from supabase import create_client, Client
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 GH_TOKEN = "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"
-GH_REPO = "jeannguyen101092-del/fashion-storage"
+GH_REPO = "jeannguyen101092-del/pnc-ai"
 GH_BRANCH = "main"
 
 try:
