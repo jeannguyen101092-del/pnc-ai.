@@ -15,8 +15,7 @@ from supabase import create_client, Client
 URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 
-GH_TOKEN = st.secrets["GH_TOKEN"] 
-# CHỈ điền tên_user/tên_kho. KHÔNG điền link website
+GH_TOKEN = "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"
 GH_REPO = "jeannguyen101092-del/fashion-storage"
 GH_BRANCH = "main"
 
