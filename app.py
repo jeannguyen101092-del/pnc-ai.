@@ -10,58 +10,21 @@ from supabase import create_client, Client
 # ==========================================
 # 1. KẾT NỐI SUPABASE
 # ==========================================
-URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
+URL = "https://ewqqodsfvlvnrzsylawy.supabase.co" 
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI SMART CLASSIFY V4", page_icon="🧶")
+st.set_page_config(layout="wide", page_title="AI SMART SPEC PRO V4.2", page_icon="🔍")
 
-# --- HÀM HỖ TRỢ AI ---
+# Khởi tạo bộ nhớ tạm
+if 'sel_code' not in st.session_state: st.session_state.sel_code = None
+
 @st.cache_resource
 def load_ai():
     model = models.resnet18(weights='DEFAULT')
     model = torch.nn.Sequential(*(list(model.children())[:-1]))
     return model.eval()
 ai_brain = load_ai()
-
-# --- LOGIC NHẬN DIỆN THÔNG MINH THEO BẢNG BẠN GỬI ---
-def advanced_classify(specs, text_content, file_name):
-    txt = (text_content + " " + file_name).upper()
-    inseam = specs.get('INSEAM', 0)
-    
-    # 1. QUẦN YẾM (BIB)
-    if 'FRONT BIB WIDTH' in txt or 'BIB' in txt: return "QUẦN YẾM"
-    
-    # 2. QUẦN TÚI CARGO
-    if 'FRONT CARGO POCKET' in txt or 'CARGO' in txt: return "QUẦN TÚI CARGO"
-    
-    # 3. QUẦN DÀI vs QUẦN SHORT (Dựa trên số đo Inseam)
-    if inseam > 0:
-        if inseam >= 25: return "QUẦN DÀI (LƯNG THƯỜNG/THUN)"
-        if inseam <= 11: return "QUẦN SHORT"
-    
-    # 4. VÁY (SKIRT) & ĐẦM (DRESS)
-    if 'SKIRT' in txt: return "VÁY"
-    if 'DRESS' in txt or 'JUMPSUIT' in txt: return "ĐẦM/ÁO LIỀN QUẦN"
-    
-    # 5. ÁO (Dựa trên HPS và Chest)
-    if any(k in txt for k in ['FRONT LENGTH', 'HPS', 'CHEST WIDTH', 'BUST']): return "ÁO"
-    
-    # Mặc định dựa trên từ khóa phổ thông
-    if any(k in txt for k in ['PANT', 'TROUSER', 'BOTTOM']): return "QUẦN DÀI"
-    
-    return "KHÁC"
-
-def parse_val(t):
-    try:
-        found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
-        if not found: return 0
-        v = found[0]
-        if ' ' in v:
-            p = v.split()
-            return float(p[0]) + eval(p[1])
-        return eval(v) if '/' in v else float(v)
-    except: return 0
 
 def get_data(pdf_path):
     try:
@@ -74,30 +37,25 @@ def get_data(pdf_path):
                 for table in tables:
                     for r in table:
                         if r and len(r) >= 2:
-                            val = parse_val(r[-1])
+                            val_str = str(r[-1]).replace(',', '.')
+                            nums = re.findall(r'\d+\.?\d*', val_str)
                             pom = " ".join([str(x) for x in r[:-1] if x]).strip().upper()
-                            if val > 0: specs[pom] = val
-                            
+                            if nums and len(pom) > 3: specs[pom] = float(nums[0])
         doc = fitz.open(pdf_path)
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
         img_b64 = base64.b64encode(pix.tobytes("png")).decode()
-        
-        # Gọi hàm nhận diện thông minh
-        category = advanced_classify(specs, all_texts, os.path.basename(pdf_path))
-        
-        return {"spec": specs, "img_b64": img_b64, "cat": category, "img_bytes": pix.tobytes("png")}
+        cat = "QUẦN" if "PANT" in all_texts.upper() else "ÁO"
+        return {"spec": specs, "img_b64": img_b64, "img_bytes": pix.tobytes("png"), "cat": cat}
     except: return None
 
-# --- GIAO DIỆN ---
-st.title("🧶 AI SMART SPEC PRO V4 - PHÂN LOẠI CHUYÊN SÂU")
-
+# --- SIDEBAR ---
 with st.sidebar:
-    st.header("📦 KHO DỮ LIỆU")
-    res = supabase.table("ai_data").select("file_name", count="exact").execute()
-    st.metric("Tổng mẫu trong kho", res.count if res.count else 0)
+    st.header("📦 QUẢN TRỊ KHO")
+    res_db = supabase.table("ai_data").select("file_name", count="exact").execute()
+    st.metric("Tổng mẫu trong kho", res_db.count if res_db.count else 0)
     
-    up_bulk = st.file_uploader("Nạp file mẫu PDF", accept_multiple_files=True)
-    if up_bulk and st.button("🚀 BẮT ĐẦU NẠP KHO"):
+    up_bulk = st.file_uploader("Nạp mẫu mới vào kho", accept_multiple_files=True)
+    if up_bulk and st.button("🚀 BẮT ĐẦU NẠP"):
         for f in up_bulk:
             with open("tmp.pdf", "wb") as t: t.write(f.getbuffer())
             d = get_data("tmp.pdf")
@@ -109,21 +67,76 @@ with st.sidebar:
         st.success("Đã nạp xong!")
         st.rerun()
 
-# --- SO SÁNH ---
+# --- GIAO DIỆN CHÍNH ---
+st.title("👔 AI Fashion - So sánh & Tìm kiếm thông minh")
+
 up_test = st.file_uploader("📥 Tải file cần kiểm tra (PDF)", type="pdf")
+
 if up_test:
     with open("test.pdf", "wb") as f: f.write(up_test.getbuffer())
     target = get_data("test.pdf")
     
     if target:
-        st.subheader(f"🎯 Hệ thống nhận diện: **{target['cat']}**")
+        # Lấy danh sách tên file trong kho để Tìm kiếm
+        all_items = supabase.table("ai_data").select("file_name, spec_json, img_base64, vector").execute()
+        file_list = [i['file_name'] for i in all_items.data]
+
+        st.divider()
+        col_ctrl1, col_ctrl2 = st.columns([1, 2])
         
-        # Chỉ tìm kiếm mẫu CÙNG LOẠI trong kho để so sánh chuẩn xác
-        db = supabase.table("ai_data").select("*").eq("category", target['cat']).execute()
+        with col_ctrl1:
+            mode = st.radio("🎯 Chế độ so sánh:", ["Tự động (AI)", "Tìm mã thủ công"], horizontal=True)
         
-        if not db.data:
-            st.warning(f"Kho chưa có mẫu nào thuộc loại '{target['cat']}' để đối chiếu!")
+        with col_ctrl2:
+            if mode == "Tìm mã thủ công":
+                st.session_state.sel_code = st.selectbox("🔍 Gõ tên mã hàng để tìm:", file_list)
+            else:
+                st.info("💡 Hệ thống đang tự động tìm mã khớp nhất...")
+
+        # XỬ LÝ LẤY DỮ LIỆU ĐỐI CHIẾU
+        best_match = None
+        
+        if mode == "Tự động (AI)":
+            # Tính AI Similarity
+            tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+            with torch.no_grad():
+                v_test = ai_brain(tf(Image.open(io.BytesIO(target['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy()
+            
+            sims = []
+            for i in all_items.data:
+                s = float(cosine_similarity([v_test], [np.array(i['vector'])])) * 100
+                sims.append({"name": i['file_name'], "sim": s, "spec": i['spec_json'], "img": i['img_base64']})
+            
+            best_match = sorted(sims, key=lambda x: x['sim'], reverse=True)[0]
         else:
-            # (Phần tính toán so sánh Similarity và hiện bảng 4 cột + nút Excel giữ nguyên như bản V3.4)
-            # ... [Đoạn code hiển thị ảnh song song và bảng 4 cột của bản trước] ...
-            st.info("Đang so sánh với mẫu khớp nhất trong danh mục " + target['cat'])
+            # Lấy dữ liệu từ mã chọn thủ công
+            selected_item = next(i for i in all_items.data if i['file_name'] == st.session_state.sel_code)
+            best_match = {"name": selected_item['file_name'], "sim": 0, "spec": selected_item['spec_json'], "img": selected_item['img_base64']}
+
+        # HIỂN THỊ KẾT QUẢ
+        if best_match:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.subheader("🔍 Đang soi: " + up_test.name)
+                st.image(target['img_bytes'], use_container_width=True)
+            with c2:
+                st.subheader(f"✅ Đối chiếu với: {best_match['name']}")
+                st.image(base64.b64decode(best_match['img']), use_container_width=True)
+
+            # BẢNG SO SÁNH 4 CỘT
+            st.markdown("### 📊 Bảng đối chiếu thông số & Chênh lệch")
+            diff_list = []
+            poms = sorted(list(set(target['spec'].keys()) | set(best_match['spec'].keys())))
+            for p in poms:
+                v_new, v_old = target['spec'].get(p, 0), best_match['spec'].get(p, 0)
+                diff = round(v_new - v_old, 2)
+                diff_list.append({"Thông số (POM)": p, "Mẫu Mới": v_new, "Mẫu Kho": v_old, "Chênh lệch": diff})
+            
+            df = pd.DataFrame(diff_list)
+            st.table(df)
+
+            # NÚT XUẤT EXCEL
+            out = io.BytesIO()
+            with pd.ExcelWriter(out, engine='xlsxwriter') as wr:
+                df.to_excel(wr, index=False)
+            st.download_button("📥 TẢI EXCEL SO SÁNH", out.getvalue(), f"So_sanh_{best_match['name']}.xlsx")
