@@ -1,5 +1,5 @@
 # ==========================================================
-# AI FASHION PRO V8 - PARSER CHUẨN TECHPACK (GIỮ NGUYÊN SO SÁNH)
+# AI FASHION PRO V8 (CLEAN SPEC + FILTER RÁC)
 # ==========================================================
 
 import streamlit as st
@@ -11,18 +11,14 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# ==========================================
-# KẾT NỐI
-# ==========================================
-URL =  "https://ewqqodsfvlvnrzsylawy.supabase.co"
+# ================= CONFIG =================
+URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
 st.set_page_config(layout="wide", page_title="AI Fashion Pro V8", page_icon="👔")
 
-# ==========================================
-# AI MODEL
-# ==========================================
+# ================= AI =================
 @st.cache_resource
 def load_ai():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -31,9 +27,7 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ==========================================
-# PARSE VALUE CHUẨN
-# ==========================================
+# ================= PARSE VALUE =================
 def parse_val(t):
     try:
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
@@ -46,48 +40,52 @@ def parse_val(t):
     except:
         return 0
 
-# ==========================================
-# PARSER V8 - FIX TECHPACK
-# ==========================================
-def extract_specs(table):
-    specs = {}
-    for r in table:
-        if not r or len(r) < 2:
-            continue
+# ================= FILTER KEY =================
+VALID_KEYS = [
+    'INSEAM','WAIST','HIP','THIGH','KNEE','LEG OPEN',
+    'CHEST','LENGTH','SLEEVE','SHOULDER','BOTTOM'
+]
 
-        # 🔥 GHÉP FULL DÒNG (tránh mất nội dung dài)
-        row_text = " | ".join([str(x) for x in r if x]).upper()
-
-        # ❌ bỏ dòng rác
-    if any(x in row_text for x in [
+BLOCK_KEYS = [
     'SIZE','SEASON','TECH','DATE','#','DEVELOPMENT',
     'FABRIC','BODY','SHELL','LINING','MATERIAL',
     'COTTON','POLYESTER','ELASTANE','NYLON',
     '%','PFD','DYED','WASH','COLOR','PRINT'
-]):
-    continue
+]
 
-        # 🔥 lấy tất cả số trong dòng (không phụ thuộc cột)
+# ================= PARSER V8 =================
+def extract_specs(table):
+    specs = {}
+
+    for r in table:
+        if not r or len(r) < 2:
+            continue
+
+        row_text = " | ".join([str(x) for x in r if x]).upper()
+
+        # ❌ bỏ rác
+        if any(x in row_text for x in BLOCK_KEYS):
+            continue
+
+        # ❌ không phải POM kỹ thuật
+        if not any(k in row_text for k in VALID_KEYS):
+            continue
+
         vals = [parse_val(x) for x in r if x]
         vals = [v for v in vals if v > 0]
 
         if len(vals) < 1:
             continue
 
-        # 🔥 lấy giá trị đại diện (median ổn định hơn mean)
         val = float(np.median(vals))
 
-        # 🔥 key = mô tả đầy đủ (không chỉ cột đầu)
-        key = row_text[:120]  # giới hạn độ dài tránh quá dài
+        key = row_text[:120]
 
-        if val > 0 and len(key) > 5:
-            specs[key] = round(val, 2)
+        specs[key] = round(val, 2)
 
     return specs
 
-# ==========================================
-# CLASSIFY V8.2
-# ==========================================
+# ================= CLASSIFY =================
 def advanced_classify(specs, text, file_name):
     txt = (text + " " + file_name).upper()
     inseam = specs.get('INSEAM', 0)
@@ -95,10 +93,10 @@ def advanced_classify(specs, text, file_name):
     if 'BIB' in txt:
         return "QUẦN YẾM"
 
-    if 'CARGO' in txt or 'CARGO POCKET' in txt:
+    if 'CARGO' in txt:
         return "QUẦN CARGO"
 
-    if 'ELASTIC' in txt or 'WAISTBAND' in txt:
+    if 'ELASTIC' in txt:
         return "QUẦN LƯNG THUN"
 
     if inseam > 0:
@@ -116,9 +114,7 @@ def advanced_classify(specs, text, file_name):
 
     return "ÁO"
 
-# ==========================================
-# GET DATA
-# ==========================================
+# ================= GET DATA =================
 def get_data(pdf_path):
     try:
         specs, all_texts = {}, ""
@@ -139,7 +135,7 @@ def get_data(pdf_path):
         img_b64 = base64.b64encode(img_bytes).decode()
 
         if len(specs) < 5:
-            return None  # ❌ bỏ file lỗi
+            return None
 
         cat = advanced_classify(specs, all_texts, os.path.basename(pdf_path))
 
@@ -151,21 +147,19 @@ def get_data(pdf_path):
         }
 
     except Exception as e:
-        st.error(f"Lỗi đọc PDF: {e}")
+        st.error(f"Lỗi PDF: {e}")
         return None
 
-# ==========================================
-# SIDEBAR - NẠP KHO
-# ==========================================
+# ================= UPLOAD =================
 with st.sidebar:
-    st.header("📦 QUẢN TRỊ KHO V8")
+    st.header("📦 NẠP KHO")
 
-    up_bulk = st.file_uploader("Upload PDF", accept_multiple_files=True)
+    files = st.file_uploader("Upload PDF", accept_multiple_files=True)
 
-    if up_bulk and st.button("🚀 NẠP KHO"):
-        for f in up_bulk:
+    if files and st.button("🚀 NẠP"):
+        for f in files:
             try:
-                clean_name = re.sub(r'\\s*\\(\\d+\\)', '', f.name)
+                name = re.sub(r'\\s*\\(\\d+\\)', '', f.name)
 
                 with open("tmp.pdf", "wb") as t:
                     t.write(f.getbuffer())
@@ -186,7 +180,7 @@ with st.sidebar:
                     vec = ai_brain(tf(Image.open(io.BytesIO(d['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy().tolist()
 
                 supabase.table("ai_data").upsert({
-                    "file_name": clean_name,
+                    "file_name": name,
                     "vector": vec,
                     "spec_json": d['spec'],
                     "img_base64": d['img_b64'],
@@ -198,19 +192,17 @@ with st.sidebar:
             except Exception as e:
                 st.warning(f"Lỗi {f.name}: {e}")
 
-        st.success("✅ Nạp kho hoàn tất")
+        st.success("✅ Done")
         st.rerun()
 
-# ==========================================
-# SO SÁNH V8 - DROPDOWN MULTI RESULT
-# ==========================================
+# ================= COMPARE =================
 st.title("👔 AI Fashion Pro V8")
 
-up_test = st.file_uploader("Upload file test", type="pdf")
+file = st.file_uploader("Upload test", type="pdf")
 
-if up_test:
+if file:
     with open("test.pdf", "wb") as f:
-        f.write(up_test.getbuffer())
+        f.write(file.getbuffer())
 
     target = get_data("test.pdf")
 
@@ -244,19 +236,15 @@ if up_test:
 
             results = sorted(results, key=lambda x: x['sim'], reverse=True)[:10]
 
-            st.subheader("📊 DANH SÁCH MẪU TƯƠNG ĐỒNG")
-
-            for idx, r in enumerate(results):
-                with st.expander(f"{r['name']}  |  🔥 {r['sim']:.1f}%"):
+            for r in results:
+                with st.expander(f"{r['name']} | {r['sim']:.1f}%"):
                     c1, c2 = st.columns(2)
 
                     with c1:
-                        st.image(target['img_bytes'], caption="Mẫu mới", use_container_width=True)
-
+                        st.image(target['img_bytes'])
                     with c2:
-                        st.image(base64.b64decode(r['img']), caption=r['name'], use_container_width=True)
+                        st.image(base64.b64decode(r['img']))
 
-                    # bảng so sánh
                     diff = []
                     poms = set(target['spec']) | set(r['spec'])
 
@@ -271,11 +259,10 @@ if up_test:
                         })
 
                     df = pd.DataFrame(diff)
-                    st.dataframe(df, use_container_width=True)
+                    st.dataframe(df)
 
-                    # export riêng từng mã
                     out = io.BytesIO()
                     with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
                         df.to_excel(writer, index=False)
 
-                    st.download_button(f"📥 Excel {r['name']}", out.getvalue(), f"{r['name']}.xlsx")
+                    st.download_button("📥 Excel", out.getvalue(), f"{r['name']}.xlsx")
