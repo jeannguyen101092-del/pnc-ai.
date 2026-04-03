@@ -1,5 +1,5 @@
 # ==========================================================
-# AI FASHION PRO V8 (FIXED: ĐỐI SÁNH ĐÚNG CHỦNG LOẠI)
+# AI FASHION PRO V8 - FULL OPTIMIZED
 # ==========================================================
 
 import streamlit as st
@@ -41,19 +41,10 @@ def parse_val(t):
         return 0
 
 # ================= FILTER KEY =================
-VALID_KEYS = [
-    'INSEAM','WAIST','HIP','THIGH','KNEE','LEG OPEN',
-    'CHEST','LENGTH','SLEEVE','SHOULDER','BOTTOM'
-]
+VALID_KEYS = ['INSEAM','WAIST','HIP','THIGH','KNEE','LEG OPEN','CHEST','LENGTH','SLEEVE','SHOULDER','BOTTOM']
+BLOCK_KEYS = ['SIZE','SEASON','TECH','DATE','#','DEVELOPMENT','FABRIC','BODY','SHELL','LINING','MATERIAL','%','PFD','DYED','WASH','COLOR','PRINT']
 
-BLOCK_KEYS = [
-    'SIZE','SEASON','TECH','DATE','#','DEVELOPMENT',
-    'FABRIC','BODY','SHELL','LINING','MATERIAL',
-    'COTTON','POLYESTER','ELASTANE','NYLON',
-    '%','PFD','DYED','WASH','COLOR','PRINT'
-]
-
-# ================= PARSER V8 =================
+# ================= PARSER =================
 def extract_specs(table):
     specs = {}
     for r in table:
@@ -72,27 +63,15 @@ def extract_specs(table):
 # ================= CLASSIFY =================
 def advanced_classify(specs, text, file_name):
     txt = (text + " " + file_name).upper()
-    
-    # Tìm giá trị Inseam trong specs
-    inseam = 0
-    for k, v in specs.items():
-        if 'INSEAM' in k:
-            inseam = v
-            break
-
+    inseam = next((v for k, v in specs.items() if 'INSEAM' in k), 0)
     if 'BIB' in txt: return "QUẦN YẾM"
     if 'CARGO' in txt: return "QUẦN CARGO"
     if 'ELASTIC' in txt: return "QUẦN LƯNG THUN"
-
     if inseam > 0:
-        if inseam <= 11: return "QUẦN SHORT"
-        if inseam >= 25: return "QUẦN DÀI"
-        return "QUẦN" # Trường hợp quần lửng
-
+        return "QUẦN SHORT" if inseam <= 11 else "QUẦN DÀI" if inseam >= 25 else "QUẦN"
     if 'DRESS' in txt: return "ĐẦM"
     if 'SKIRT' in txt: return "VÁY"
     if 'SHIRT' in txt: return "ÁO SƠ MI"
-
     return "ÁO"
 
 # ================= GET DATA =================
@@ -103,129 +82,75 @@ def get_data(pdf_path):
             for p in pdf.pages:
                 t = p.extract_text()
                 if t: all_texts += t + " "
-                tables = p.extract_tables()
-                for table in tables:
+                for table in p.extract_tables():
                     specs.update(extract_specs(table))
-
         doc = fitz.open(pdf_path)
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
         img_bytes = pix.tobytes("png")
         img_b64 = base64.b64encode(img_bytes).decode()
-
         if len(specs) < 5: return None
-
         cat = advanced_classify(specs, all_texts, os.path.basename(pdf_path))
-
-        return {
-            "spec": specs,
-            "img_b64": img_b64,
-            "img_bytes": img_bytes,
-            "cat": cat
-        }
+        return {"spec": specs, "img_b64": img_b64, "img_bytes": img_bytes, "cat": cat}
     except Exception as e:
         st.error(f"Lỗi PDF: {e}")
         return None
 
-# ================= UPLOAD (NẠP KHO) =================
-# ================= SIDEBAR: NẠP KHO & THỐNG KÊ =================
+# ================= SIDEBAR: NẠP KHO =================
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     
-    # 1. Hiển thị tổng số lượng trong kho
+    # Hiển thị tổng số lượng kho
     try:
         count_res = supabase.table("ai_data").select("*", count="exact").execute()
-        total_items = count_res.count if count_res.count else 0
-        st.metric("Tổng mẫu trong kho", f"{total_items} mẫu")
+        st.metric("Tổng mẫu trong kho", f"{count_res.count} mẫu")
     except:
-        st.metric("Tổng mẫu trong kho", "0 mẫu")
+        st.metric("Tổng mẫu trong kho", "Đang kết nối...")
 
-    st.divider()
-
-    # 2. Upload file với key để reset sau khi nạp
     if "upload_key" not in st.session_state:
         st.session_state.upload_key = 0
 
-    files = st.file_uploader("Chọn các file PDF để nạp", 
-                            accept_multiple_files=True, 
-                            type="pdf",
-                            key=f"uploader_{st.session_state.upload_key}")
+    files = st.file_uploader("Chọn file PDF nạp kho", accept_multiple_files=True, key=f"up_{st.session_state.upload_key}")
 
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        num_files = len(files)
-
+        p_bar = st.progress(0)
+        status = st.empty()
         for idx, f in enumerate(files):
             try:
-                # Cập nhật % tiến độ
-                percent_complete = (idx + 1) / num_files
-                status_text.text(f"Đang xử lý: {f.name} ({idx+1}/{num_files})")
-                progress_bar.progress(percent_complete)
-
+                status.text(f"Đang nạp: {f.name} ({idx+1}/{len(files)})")
+                p_bar.progress((idx + 1) / len(files))
+                
                 name = re.sub(r'\s*\(\d+\)', '', f.name)
-                with open("tmp.pdf", "wb") as t:
-                    t.write(f.getbuffer())
-
+                with open("tmp.pdf", "wb") as t: t.write(f.getbuffer())
                 d = get_data("tmp.pdf")
                 if not d: continue
 
-                # Xử lý AI vector
-                tf = transforms.Compose([
-                    transforms.Resize(224),
-                    transforms.CenterCrop(224),
-                    transforms.ToTensor(),
-                    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-                ])
-
+                tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
                 with torch.no_grad():
-                    img_input = Image.open(io.BytesIO(d['img_bytes'])).convert('RGB')
-                    vec = ai_brain(tf(img_input).unsqueeze(0)).flatten().numpy().tolist()
+                    vec = ai_brain(tf(Image.open(io.BytesIO(d['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy().tolist()
 
-                # Lưu vào Supabase
-                supabase.table("ai_data").upsert({
-                    "file_name": name,
-                    "vector": vec,
-                    "spec_json": d['spec'],
-                    "img_base64": d['img_b64'],
-                    "category": d['cat']
-                }, on_conflict="file_name").execute()
-
+                supabase.table("ai_data").upsert({"file_name": name, "vector": vec, "spec_json": d['spec'], "img_base64": d['img_b64'], "category": d['cat']}, on_conflict="file_name").execute()
                 os.remove("tmp.pdf")
             except Exception as e:
-                st.warning(f"Lỗi tại file {f.name}: {e}")
-
-        # 3. Sau khi xong: Xóa danh sách file và báo thành công
-        st.session_state.upload_key += 1 # Đổi key để reset file_uploader
-        st.success(f"✅ Đã nạp thành công {num_files} mẫu!")
+                st.warning(f"Lỗi {f.name}: {e}")
+        
+        st.session_state.upload_key += 1 # Reset file uploader
+        st.success("✅ Nạp kho hoàn tất!")
         st.rerun()
 
-
-# ================= COMPARE (SO SÁNH) =================
+# ================= COMPARE: SO SÁNH =================
 st.title("👔 AI Fashion Pro V8")
+test_file = st.file_uploader("Tải file đối chứng (Test)", type="pdf")
 
-file = st.file_uploader("Upload test", type="pdf")
-
-if file:
-    with open("test.pdf", "wb") as f:
-        f.write(file.getbuffer())
-
+if test_file:
+    with open("test.pdf", "wb") as f: f.write(test_file.getbuffer())
     target = get_data("test.pdf")
 
     if target:
-        st.success(f"Nhận diện: {target['cat']}")
-
-        # --- CHỖ SỬA QUAN TRỌNG NHẤT: LỌC NGAY TỪ CÂU TRUY VẤN ---
-        # .eq("category", target['cat']) ép Supabase chỉ trả về các mẫu đúng chủng loại
+        st.info(f"Nhận diện chủng loại: **{target['cat']}**")
         db = supabase.table("ai_data").select("*").eq("category", target['cat']).execute()
 
         if db.data:
-            tf = transforms.Compose([
-                transforms.Resize(224),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-            ])
-
+            tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
             with torch.no_grad():
                 v_test = ai_brain(tf(Image.open(io.BytesIO(target['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy()
 
@@ -233,52 +158,31 @@ if file:
             for i in db.data:
                 if i.get('vector'):
                     sim = float(cosine_similarity([v_test], [np.array(i['vector'])])[0][0]) * 100
-                    results.append({
-                        "name": i['file_name'],
-                        "sim": sim,
-                        "spec": i['spec_json'],
-                        "img": i['img_base64']
-                    })
+                    results.append({"name": i['file_name'], "sim": sim, "spec": i['spec_json'], "img": i['img_base64']})
 
             results = sorted(results, key=lambda x: x['sim'], reverse=True)[:10]
 
-            if not results:
-                st.warning(f"Không có mẫu nào thuộc loại {target['cat']} trong kho.")
-            
             for r in results:
-                with st.expander(f"{r['name']} | {r['sim']:.1f}%"):
+                # Đưa % lên đầu để không bị che khuất
+                with st.expander(f"🎯 {r['sim']:.1f}% | {r['name']}"):
                     c1, c2 = st.columns(2)
-                    with c1:
-                        st.image(target['img_bytes'], caption="Mẫu Test")
-                    with c2:
-                        st.image(base64.b64decode(r['img']), caption="Mẫu Trong Kho")
+                    with c1: st.image(target['img_bytes'], caption="Mẫu Test")
+                    with c2: st.image(base64.b64decode(r['img']), caption="Mẫu Trong Kho")
 
                     diff = []
                     poms = set(target['spec']) | set(r['spec'])
                     for p in poms:
-                        v1 = target['spec'].get(p, 0)
-                        v2 = r['spec'].get(p, 0)
-                        diff.append({
-                            "POM": p, "NEW": v1, "OLD": v2, "DIFF": round(v1 - v2, 2)
-                        })
-                    st.dataframe(pd.DataFrame(diff), use_container_width=True)
-        else:
-            st.error(f"Chưa có dữ liệu cho loại {target['cat']} trong kho.")
-            # --- ĐOẠN CODE THÊM NÚT XUẤT EXCEL ---
-# Tạo dữ liệu bảng
-df_diff = pd.DataFrame(diff)
+                        v1, v2 = target['spec'].get(p, 0), r['spec'].get(p, 0)
+                        diff.append({"POM": p, "Mẫu Test": v1, "Mẫu Kho": v2, "Chênh lệch": round(v1 - v2, 2)})
+                    
+                    df_res = pd.DataFrame(diff)
+                    st.dataframe(df_res, use_container_width=True)
 
-# Tạo buffer để chứa file Excel trong bộ nhớ
-buffer = io.BytesIO()
-with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-    df_diff.to_excel(writer, index=False, sheet_name='SoSanhAI')
-    
-# Nút bấm tải về
-st.download_button(
-    label="📥 Xuất bảng so sánh Excel",
-    data=buffer.getvalue(),
-    file_name=f"So_sanh_{r['name']}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
-# ---------------------------------------
+                    # Nút xuất Excel
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                        df_res.to_excel(writer, index=False, sheet_name='SoSanh')
+                    st.download_button(label="📥 Tải bảng so sánh (Excel)", data=output.getvalue(), file_name=f"SoSanh_{r['name']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        else:
+            st.error(f"Kho chưa có dữ liệu cho loại: {target['cat']}")
 
