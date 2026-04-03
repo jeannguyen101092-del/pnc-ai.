@@ -33,12 +33,9 @@ ai_brain = load_ai()
 # ================= HÀM UPLOAD GITHUB (ĐÃ FIX LỖI DÍNH CHỮ URL) =================
 def upload_to_github(img_bytes, filename):
     try:
-        # Làm sạch tên file để tránh lỗi ký tự đặc biệt
         clean_name = re.sub(r'[^a-zA-Z0-9]', '_', filename)
-        repo_path = GH_REPO.strip("/")
-        
-        # FIX CHÍ MẠNG: Đảm bảo có dấu / giữa các thành phần URL
-        url = f"https://github.com{repo_path}/contents/imgs/{clean_name}.jpg"
+        # SỬA LỖI CHÍ MẠNG: Thêm dấu / sau ://github.com
+        url = f"https://://github.com{GH_REPO}/contents/imgs/{clean_name}.jpg"
         
         headers = {
             "Authorization": f"token {GH_TOKEN}",
@@ -46,24 +43,25 @@ def upload_to_github(img_bytes, filename):
         }
         content = base64.b64encode(img_bytes).decode('utf-8')
         
-        # Kiểm tra xem file đã tồn tại chưa để lấy mã SHA (tránh lỗi 422)
+        # 1. Kiểm tra SHA
         check = requests.get(url, headers=headers, timeout=10)
-        data = {"message": f"Upload {clean_name}", "content": content, "branch": GH_BRANCH}
+        data = {"message": f"up {clean_name}", "content": content, "branch": GH_BRANCH}
         if check.status_code == 200:
             data["sha"] = check.json()["sha"]
             
-        # Gửi lệnh PUT để đẩy file lên GitHub
+        # 2. Đẩy file
         res = requests.put(url, headers=headers, json=data, timeout=15)
         
         if res.status_code in [200, 201]:
-            # Trả về link RAW chuẩn để Streamlit hiển thị được ảnh trực tiếp
-            return f"https://githubusercontent.com{repo_path}/{GH_BRANCH}/imgs/{clean_name}.jpg"
+            # SỬA LỖI HIỂN THỊ: Link Raw chuẩn
+            return f"https://githubusercontent.com{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.jpg"
         else:
-            st.error(f"❌ GitHub từ chối ({res.status_code}): {res.text}")
+            st.error(f"Lỗi GitHub {res.status_code}: {res.text}")
             return None
     except Exception as e:
-        st.error(f"❌ Lỗi hệ thống kết nối GitHub: {e}")
+        st.error(f"Lỗi hệ thống: {e}")
         return None
+
 
 # ================= TRÍCH XUẤT VÀ PHÂN LOẠI (SỬA LỖI QUẦN DÀI/SHORT) =================
 def parse_val(t):
