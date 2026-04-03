@@ -59,8 +59,13 @@ def extract_specs(table):
         row_text = " | ".join([str(x) for x in r if x]).upper()
 
         # ❌ bỏ dòng rác
-        if any(x in row_text for x in ['SIZE', 'SEASON', 'TECH', 'DATE', '#', 'DEVELOPMENT']):
-            continue
+       if any(x in row_text for x in [
+    'SIZE','SEASON','TECH','DATE','#','DEVELOPMENT',
+    'FABRIC','BODY','SHELL','LINING','MATERIAL',
+    'COTTON','POLYESTER','ELASTANE','NYLON',
+    '%','PFD','DYED','WASH','COLOR','PRINT'
+]):
+    continue
 
         # 🔥 lấy tất cả số trong dòng (không phụ thuộc cột)
         vals = [parse_val(x) for x in r if x]
