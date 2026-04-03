@@ -196,8 +196,21 @@ if file:
             results=[]
             for i in db.data:
                 if i.get('vector'):
-                    sim = float(cosine_similarity(v_test.reshape(1,-1), np.array(i['vector']).reshape(1,-1))) * 100
-                    results.append({"name": i['file_name'], "sim": sim, "spec": i['spec_json'], "img": i.get('img_url')})
+                                results=[]
+            for i in db.data:
+                if i.get('vector'):
+                    # Tính toán similarity chuẩn xác
+                    v_t_2d = v_test.reshape(1, -1)
+                    v_db_2d = np.array(i['vector']).reshape(1, -1)
+                    sim = float(cosine_similarity(v_t_2d, v_db_2d)[0][0]) * 100
+                    
+                    results.append({
+                        "name": i['file_name'],
+                        "sim": sim,
+                        "spec": i['spec_json'],
+                        "img": i.get('img_url') # Lấy link từ GitHub
+                    })
+
 
             # Hiển thị Top 10
             for r in sorted(results, key=lambda x:x['sim'], reverse=True)[:10]:
