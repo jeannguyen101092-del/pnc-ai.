@@ -1,5 +1,5 @@
 # ==========================================================
-# AI FASHION PRO V8.3 - FIX CLASSIFICATION + CLEAN SPEC
+# AI FASHION PRO V8.2 FIX - GIỮ NGUYÊN NẠP KHO + FIX SO SÁNH
 # ==========================================================
 
 import streamlit as st
@@ -16,7 +16,7 @@ URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V8.3", page_icon="👔")
+st.set_page_config(layout="wide")
 
 # ================= AI =================
 @st.cache_resource
@@ -27,32 +27,22 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= PARSE VALUE =================
+# ================= PARSE =================
 def parse_val(t):
     try:
-        found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
-        if not found: return 0
-        v = found[0]
-        if ' ' in v:
-            p = v.split()
-            return float(p[0]) + eval(p[1])
-        return eval(v) if '/' in v else float(v)
+        found = re.findall(r'(\d+\.?\d*)', str(t))
+        return float(found[0]) if found else 0
     except:
         return 0
 
-# ================= FILTER =================
 VALID_KEYS = ['INSEAM','WAIST','HIP','THIGH','KNEE','LEG','CHEST','LENGTH','SLEEVE','SHOULDER']
-BLOCK_KEYS = ['FABRIC','BODY','SHELL','LINING','MATERIAL','COTTON','POLY','ELASTANE','NYLON','%','COLOR','WASH']
+BLOCK_KEYS = ['FABRIC','BODY','MATERIAL','COTTON','POLY','ELASTANE','%','COLOR']
 
-# ================= PARSER =================
+# ================= EXTRACT =================
 def extract_specs(table):
     specs = {}
-
     for r in table:
-        if not r:
-            continue
-
-        row_text = " | ".join([str(x) for x in r if x]).upper()
+        row_text = " ".join([str(x) for x in r if x]).upper()
 
         if any(b in row_text for b in BLOCK_KEYS):
             continue
@@ -63,66 +53,24 @@ def extract_specs(table):
         vals = [parse_val(x) for x in r if x]
         vals = [v for v in vals if v > 0]
 
-        if not vals:
-            continue
-
-        key = row_text[:120]
-        specs[key] = float(np.median(vals))
+        if vals:
+            specs[row_text[:100]] = np.mean(vals)
 
     return specs
 
-# ================= CLASSIFY FIX =================
-def advanced_classify(specs, text, file_name):
-    txt = (text + " " + file_name).upper()
+# ================= CLASSIFY (CHỈ FIX NHẸ) =================
+def classify_basic(specs, text):
+    txt = text.upper()
 
-    # ===== SCORE SYSTEM =====
-    score = {
-        "ÁO": 0,
-        "QUẦN": 0,
-        "ĐẦM": 0,
-        "VÁY": 0
-    }
+    has_inseam = any('INSEAM' in k for k in specs)
+    has_chest = any('CHEST' in k for k in specs)
 
-    # ===== SPEC BASE =====
-    for k in specs.keys():
-        if any(x in k for x in ['CHEST','SLEEVE','SHOULDER']):
-            score['ÁO'] += 2
-        if 'INSEAM' in k or 'WAIST' in k or 'HIP' in k:
-            score['QUẦN'] += 2
-
-    # ===== TEXT BASE =====
-    if 'SHIRT' in txt: score['ÁO'] += 3
-    if 'PANT' in txt or 'TROUSER' in txt: score['QUẦN'] += 3
-    if 'DRESS' in txt: score['ĐẦM'] += 3
-    if 'SKIRT' in txt: score['VÁY'] += 3
-
-    # ===== DECISION =====
-    best = max(score, key=score.get)
-
-    # ===== DETAIL =====
-    if best == 'QUẦN':
-        inseam = 0
-        for k,v in specs.items():
-            if 'INSEAM' in k:
-                inseam = v
-                break
-
-        if inseam <= 11 and inseam > 0:
-            return "QUẦN SHORT"
-        if inseam >= 25:
-            return "QUẦN DÀI"
-
-        if 'CARGO' in txt:
-            return "QUẦN CARGO"
-
+    if has_inseam:
         return "QUẦN"
-
-    if best == 'ÁO':
-        if 'SHIRT' in txt:
-            return "ÁO SƠ MI"
+    if has_chest:
         return "ÁO"
 
-    return best
+    return "KHÁC"
 
 # ================= GET DATA =================
 def get_data(pdf_path):
@@ -147,23 +95,22 @@ def get_data(pdf_path):
         return {
             "spec": specs,
             "img": img,
-            "cat": advanced_classify(specs, text, os.path.basename(pdf_path))
+            "cat": classify_basic(specs, text)
         }
 
-    except Exception as e:
-        st.error(e)
+    except:
         return None
 
 # ================= UI =================
-st.title("AI Fashion Pro V8.3")
+st.title("AI V8.2 FIX")
 
 file = st.file_uploader("Upload PDF", type="pdf")
 
 if file:
-    with open("test.pdf","wb") as f:
+    with open("temp.pdf","wb") as f:
         f.write(file.getbuffer())
 
-    target = get_data("test.pdf")
+    target = get_data("temp.pdf")
 
     if target:
         st.success(f"Nhận diện: {target['cat']}")
@@ -183,6 +130,10 @@ if file:
         results = []
 
         for i in db.data:
+            # 🔥 FIX QUAN TRỌNG: CHỈ SO SÁNH CÙNG LOẠI
+            if i.get('category') != target['cat']:
+                continue
+
             if i.get('vector'):
                 sim = float(cosine_similarity([v_test],[np.array(i['vector'])])[0][0])*100
                 results.append({
