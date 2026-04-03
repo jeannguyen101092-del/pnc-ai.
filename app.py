@@ -32,38 +32,44 @@ def load_ai():
 ai_brain = load_ai()
 
 # ================= HÀM UPLOAD GITHUB (ĐÃ FIX LỖI DÍNH CHỮ URL) =================
+# ================= FIX GITHUB =================
 def upload_to_github(img_bytes, filename):
     try:
-        # Làm sạch tên file và đảm bảo đường dẫn repo chuẩn (xóa dấu / thừa)
         clean_name = re.sub(r'[^a-zA-Z0-9]', '_', filename)
         repo_path = GH_REPO.strip("/")
-        
-        # ĐÂY LÀ DÒNG ĐÚNG CHUẨN API GITHUB:
-        url = f"https://github.com{repo_path}/contents/imgs/{clean_name}.jpg"
 
-          headers = {
+        # ✅ FIX URL ĐÚNG
+        url = f"https://api.github.com/repos/{repo_path}/contents/imgs/{clean_name}.jpg"
+
+        headers = {
             "Authorization": f"token {GH_TOKEN}",
             "Accept": "application/vnd.github.v3+json"
         }
+
         content = base64.b64encode(img_bytes).decode('utf-8')
-        
-        # Kiểm tra file cũ để lấy SHA
-        check = requests.get(url, headers=headers, timeout=10)
-        data = {"message": f"Upload {clean_name}", "content": content, "branch": GH_BRANCH}
+
+        check = requests.get(url, headers=headers)
+
+        data = {
+            "message": f"upload {clean_name}",
+            "content": content,
+            "branch": GH_BRANCH
+        }
+
         if check.status_code == 200:
             data["sha"] = check.json()["sha"]
-            
-        # Gửi lệnh upload
-        res = requests.put(url, headers=headers, json=data, timeout=15)
-        
+
+        res = requests.put(url, headers=headers, json=data)
+
         if res.status_code in [200, 201]:
-            # Link RAW chuẩn để hiển thị được ảnh trực tiếp trên Streamlit
-            return f"https://githubusercontent.com{repo_path}/{GH_BRANCH}/imgs/{clean_name}.jpg"
-        else:
-            st.error(f"❌ GitHub báo lỗi {res.status_code}: {res.text}")
-            return None
+            # ✅ FIX LINK ẢNH
+            return f"https://raw.githubusercontent.com/{repo_path}/{GH_BRANCH}/imgs/{clean_name}.jpg"
+
+        st.error(f"GitHub lỗi: {res.text}")
+        return None
+
     except Exception as e:
-        st.error(f"❌ Lỗi hệ thống GitHub: {e}")
+        st.error(f"Lỗi GitHub: {e}")
         return None
 
 # ================= TRÍCH XUẤT & PHÂN LOẠI (SỬA LỖI QUẦN DÀI/SHORT) =================
