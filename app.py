@@ -14,7 +14,7 @@ URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V4.5", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V4.6", page_icon="👔")
 
 if 'sel_code' not in st.session_state: st.session_state.sel_code = None
 
@@ -62,8 +62,12 @@ with st.sidebar:
             if d:
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
                 with torch.no_grad():
-                    v = ai_brain(tf(Image.open(io.BytesIO(d['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy().tolist()
-                supabase.table("ai_data").upsert({"file_name": f.name, "vector": v, "spec_json": d['spec'], "img_base64": d['img_b64']}).execute()
+                    img_input = Image.open(io.BytesIO(d['img_bytes'])).convert('RGB')
+                    v = ai_brain(tf(img_input).unsqueeze(0)).flatten().numpy().tolist()
+                # Lưu dữ liệu
+                supabase.table("ai_data").upsert({
+                    "file_name": f.name, "vector": v, "spec_json": d['spec'], "img_base64": d['img_b64']
+                }).execute()
         st.success("Đã nạp xong!")
         st.rerun()
 
@@ -92,7 +96,7 @@ if up_test:
                     st.session_state.sel_code = st.selectbox("🔍 Gõ tên mã hàng:", file_list)
                 else: st.info("💡 Đang tự động đối chiếu mã khớp nhất...")
 
-            # --- TÍNH TOÁN SO SÁNH AN TOÀN (CHẶN LỖI TYPEERROR) ---
+            # --- TÍNH TOÁN SO SÁNH AN TOÀN (CHỐNG LỖI TYPEERROR) ---
             best = None
             if mode == "Tự động (AI)":
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
@@ -101,8 +105,8 @@ if up_test:
                 
                 sims = []
                 for i in db.data:
-                    # Kiểm tra vector có hợp lệ không
-                    if i.get('vector') and isinstance(i['vector'], list) and len(i['vector']) > 0:
+                    # CHỈ SO SÁNH NẾU VECTOR TỒN TẠI
+                    if i.get('vector') is not None and isinstance(i['vector'], list) and len(i['vector']) > 0:
                         s = float(cosine_similarity([v_test], [np.array(i['vector'])])) * 100
                         sims.append({"name": i['file_name'], "sim": s, "spec": i['spec_json'], "img": i['img_base64']})
                 if sims:
