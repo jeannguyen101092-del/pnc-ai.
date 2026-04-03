@@ -8,15 +8,14 @@ from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
 # ==========================================
-# 1. KẾT NỐI (Thay URL và KEY của bạn)
+# 1. KẾT NỐI (Thay URL và KEY từ ảnh Supabase của bạn)
 # ==========================================
-URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
+URL = ""https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V4.3", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V4.4", page_icon="👔")
 
-# Khởi tạo bộ nhớ tạm
 if 'sel_code' not in st.session_state: st.session_state.sel_code = None
 
 @st.cache_resource
@@ -47,7 +46,7 @@ def get_data(pdf_path):
         return {"img_bytes": img_bytes, "img_b64": img_b64, "spec": specs}
     except: return None
 
-# --- SIDEBAR ---
+# --- SIDEBAR: QUẢN TRỊ KHO ---
 with st.sidebar:
     st.header("📦 QUẢN TRỊ KHO")
     try:
@@ -64,7 +63,10 @@ with st.sidebar:
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
                 with torch.no_grad():
                     v = ai_brain(tf(Image.open(io.BytesIO(d['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy().tolist()
-                supabase.table("ai_data").upsert({"file_name": f.name, "vector": v, "spec_json": d['spec'], "img_base64": d['img_b64']}).execute()
+                # Upsert dữ liệu sạch
+                supabase.table("ai_data").upsert({
+                    "file_name": f.name, "vector": v, "spec_json": d['spec'], "img_base64": d['img_b64']
+                }).execute()
         st.success("Đã nạp xong!")
         st.rerun()
 
@@ -93,7 +95,7 @@ if up_test:
                     st.session_state.sel_code = st.selectbox("🔍 Gõ tên mã hàng:", file_list)
                 else: st.info("💡 Đang tự động đối chiếu mã khớp nhất...")
 
-            # TÍNH TOÁN SO SÁNH AN TOÀN
+            # --- TÍNH TOÁN SO SÁNH AN TOÀN (CHẶN LỖI TYPEERROR) ---
             best = None
             if mode == "Tự động (AI)":
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
@@ -102,10 +104,13 @@ if up_test:
                 
                 sims = []
                 for i in db.data:
-                    if i.get('vector') and isinstance(i['vector'], list):
+                    # Kiểm tra vector có tồn tại và đúng định dạng list không
+                    if i.get('vector') and isinstance(i['vector'], list) and len(i['vector']) > 0:
                         s = float(cosine_similarity([v_test], [np.array(i['vector'])])) * 100
                         sims.append({"name": i['file_name'], "sim": s, "spec": i['spec_json'], "img": i['img_base64']})
-                if sims: best = sorted(sims, key=lambda x: x['sim'], reverse=True)[0]
+                
+                if sims:
+                    best = sorted(sims, key=lambda x: x['sim'], reverse=True)[0]
             else:
                 sel = next((i for i in db.data if i['file_name'] == st.session_state.sel_code), None)
                 if sel: best = {"name": sel['file_name'], "sim": 0, "spec": sel['spec_json'], "img": sel['img_base64']}
@@ -128,9 +133,12 @@ if up_test:
                     diff_list.append({"Thông số (POM)": p, "Mẫu Mới": v_n, "Mẫu Kho": v_o, "Chênh lệch": round(v_n - v_o, 2)})
                 
                 df = pd.DataFrame(diff_list)
-                st.table(df)
+                st.table(df) # Hiện bảng đủ 4 cột
 
+                # NÚT XUẤT EXCEL
                 out = io.BytesIO()
                 with pd.ExcelWriter(out, engine='xlsxwriter') as wr:
                     df.to_excel(wr, index=False)
                 st.download_button("📥 TẢI EXCEL SO SÁNH", out.getvalue(), f"So_sanh_{best['name']}.xlsx")
+            else:
+                st.error("❌ Không tìm thấy dữ liệu hợp lệ trong kho để so sánh. Hãy xóa và nạp lại mẫu!")
