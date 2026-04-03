@@ -17,7 +17,7 @@ try:
 except:
     st.error("❌ Lỗi kết nối Supabase!")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.25", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.26", page_icon="👔")
 
 # ================= AI ENGINE (SIÊU NHẸ) =================
 @st.cache_resource
@@ -53,30 +53,7 @@ def classify_logic(specs, text, name):
         return "QUẦN DÀI LƯNG THƯỜNG"
     return "ÁO / KHÁC"
 
- get_data(pdf_path):
-    try:
-        specdefs, text = {}, ""
-        with pdfplumber.open(pdf_path) as pdf:
-            for p in pdf.pages:
-                t = p.extract_text()
-                if t: text += t
-                for tb in p.extract_tables():
-                    content = str(tb).upper()
-                    if any(x in content for x in ['FABRIC', 'MATERIAL', 'BOM']): continue
-                    for r in tb:
-                        if not r or len(r) < 2: continue
-                        # Làm sạch tên thông số
-                        label = " ".join([str(x) for x in r[:2] if x]).strip().upper().replace("\n", " ")
-                        label = re.sub(r'^[A-Z]\d{1,4}.*?\s', '', label) # Xóa mã D001...
-                        # Lấy số đo thực tế (3-100 inch)
-                        vals = [parse_val(x) for x in r[1:] if 3.0 <= parse_val(x) <= 100.0]
-                        if vals and len(label) > 3:
-                            specs[label[:100]] = round(float(np.median(vals)), 2)
-        doc = fitz.open(pdf_path)
-        img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
-        doc.close()
-        return {"spec": specs, "img": img, "cat": classify_logic(specs, text, os.path.basename(pdf_path))}
-    except: return Nonedef get_data(pdf_path):
+def get_data(pdf_path):
     try:
         specs, text = {}, ""
         with pdfplumber.open(pdf_path) as pdf:
@@ -84,29 +61,29 @@ def classify_logic(specs, text, name):
                 t = p.extract_text()
                 if t: text += t
                 for tb in p.extract_tables():
-                    content_str = str(tb).upper()
-                    if any(x in content_str for x in ['FABRIC', 'MATERIAL', 'BOM']): continue
+                    content = str(tb).upper()
+                    # Chặn bảng phụ liệu
+                    if any(x in content for x in ['FABRIC', 'MATERIAL', 'BOM']): continue
                     for r in tb:
                         if not r or len(r) < 2: continue
+                        # Làm sạch tên thông số
                         label = " ".join([str(x) for x in r[:2] if x]).strip().upper().replace("\n", " ")
-                        label = re.sub(r'^[A-Z]\d{1,4}.*?\s', '', label)
+                        label = re.sub(r'^[A-Z]\d{1,4}.*?\s', '', label) # Xóa mã D001...
                         
-                        # Lấy tất cả số đo thực tế
+                        # Lấy số đo thực tế (3-100 inch)
                         vals = [parse_val(x) for x in r[1:] if 3.0 <= parse_val(x) <= 100.0]
                         
                         if vals and len(label) > 3:
-                            # THAY ĐỔI TẠI ĐÂY: Lấy vals[0] (số đầu tiên) thay vì median
-                            # Việc này đảm bảo luôn lấy đúng 1 cột size cố định
-                            specs[label[:100]] = round(float(vals[0]), 2) 
+                            # FIX QUAN TRỌNG: Lấy vals[0] (Số đầu tiên/Size chuẩn) thay vì Median
+                            specs[label[:100]] = round(float(vals[0]), 2)
                             
         doc = fitz.open(pdf_path)
         img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         doc.close()
-        return {"spec": specs, "img": img, "cat": classify_logic(specs, text, os.path.basename(pdf_path))}
+        return {"spec": specs, "img": img, "cat": classify_logic(specs, text, os.path.basename(pdf_path)), "name": os.path.basename(pdf_path)}
     except: return None
 
-
-# ================= SIDEBAR & NẠP KHO =================
+# ================= SIDEBAR & QUẢN LÝ KHO =================
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     try:
@@ -116,7 +93,7 @@ with st.sidebar:
     except: all_samples = []; st.metric("Tổng mẫu trong kho", "0 mẫu")
     
     st.divider()
-    files = st.file_uploader("Nạp PDF mới", accept_multiple_files=True)
+    files = st.file_uploader("Nạp PDF mới (Chỉ lưu Ảnh & POM)", accept_multiple_files=True)
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         p_bar = st.progress(0)
         for idx, f in enumerate(files):
@@ -129,6 +106,7 @@ with st.sidebar:
                 fname = re.sub(r'[^a-zA-Z0-9]', '_', f.name) + ".webp"
                 supabase.storage.from_(BUCKET_NAME).upload(path=fname, file=buf.getvalue(), file_options={"upsert":"true"})
                 url = supabase.storage.from_(BUCKET_NAME).get_public_url(fname)
+                
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
                 with torch.no_grad(): vec = ai_brain(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
                 supabase.table("ai_data").upsert({"file_name": f.name, "vector": vec, "spec_json": d['spec'], "img_url": url, "category": d['cat']}, on_conflict="file_name").execute()
@@ -136,8 +114,8 @@ with st.sidebar:
             gc.collect()
         st.success("🏁 Nạp xong!"); st.rerun()
 
-# ================= CHÍNH: SO SÁNH THÔNG MINH =================
-st.title("👔 AI Fashion Pro V11.25")
+# ================= CHÍNH: SO SÁNH CHUẨN XÁC =================
+st.title("👔 AI Fashion Pro V11.26")
 test_file = st.file_uploader("Tải file PDF Test đối chiếu", type="pdf")
 
 if test_file:
@@ -146,7 +124,7 @@ if test_file:
     if target:
         st.subheader(f"Nhận diện loại: {target['cat']}")
         list_names = [item['file_name'] for item in all_samples]
-        selected = st.selectbox("🎯 Chọn mã hàng trong kho (hoặc AI tự tìm):", ["-- Tự động tìm mẫu tương đồng --"] + list_names)
+        selected = st.selectbox("🎯 Chọn mã hàng cụ thể (hoặc AI tự tìm):", ["-- Tự động tìm mẫu tương đồng --"] + list_names)
         
         matches = []
         if selected == "-- Tự động tìm mẫu tương đồng --":
@@ -170,37 +148,34 @@ if test_file:
             for m in matches:
                 with st.expander(f"📌 ĐỐI CHIẾU: {m['name']} (Giống {m['sim']:.1f}%)", expanded=True):
                     c1, c2, c3 = st.columns([1, 1, 1.8])
-                    with c1: st.image(target['img'], caption="Ảnh Test")
-                    with c2: st.image(m['url'], caption="Ảnh Kho")
+                    with c1: st.image(target['img'], caption="Bản vẽ Test")
+                    with c2: st.image(m['url'], caption="Ảnh mẫu trong kho")
                     with c3:
-                        # --- LOGIC KHỚP THÔNG SỐ THÔNG MINH ---
+                        # --- LOGIC KHỚP THÔNG SỐ FUZZY ---
                         comp_list = []
                         test_specs = target['spec']
                         db_specs = m['spec']
                         used_db_keys = set()
 
-                        for k_t, v_t in test_specs.items():
-                            # Tìm key tương đồng nhất (bỏ qua dấu cách, ký tự đặc biệt)
-                            match_key = next((kd for kd in db_specs.keys() if kd.strip() == k_t.strip() or k_t[:20] in kd), None)
+                        for kt, vt in test_specs.items():
+                            # Khớp tên thông minh (loại bỏ dấu cách thừa)
+                            match_key = next((kd for kd in db_specs.keys() if kd.strip() == kt.strip()), None)
                             if match_key:
-                                v_d = db_specs[match_key]
+                                vd = db_specs[match_key]
                                 used_db_keys.add(match_key)
-                                diff = round(v_t - v_d, 2)
-                                comp_list.append({"Thông số": k_t, "Test": v_t, "Kho": v_d, "Lệch": diff})
+                                diff = round(vt - vd, 2)
+                                comp_list.append({"Thông số": kt, "Test": vt, "Kho": vd, "Lệch": diff})
                             else:
-                                comp_list.append({"Thông số": k_t, "Test": v_t, "Kho": 0.0, "Lệch": v_t})
+                                comp_list.append({"Thông số": kt, "Test": vt, "Kho": 0.0, "Lệch": vt})
 
-                        for k_d, v_d in db_specs.items():
-                            if k_d not in used_db_keys:
-                                comp_list.append({"Thông số": k_d, "Test": 0.0, "Kho": v_d, "Lệch": -v_d})
+                        for kd, vd in db_specs.items():
+                            if kd not in used_db_keys:
+                                comp_list.append({"Thông số": kd, "Test": 0.0, "Kho": vd, "Lệch": -vd})
                         
                         df_res = pd.DataFrame(comp_list)
-                        
-                        # Xuất Excel
                         output = io.BytesIO()
                         with pd.ExcelWriter(output, engine='xlsxwriter') as writer: df_res.to_excel(writer, index=False)
                         st.download_button(label="📥 Tải Excel Đối Chiếu", data=output.getvalue(), file_name=f"SoSanh_{m['name']}.xlsx")
                         
-                        # Hiển thị bảng
-                        st.table(df_res.style.format(subset=['Test', 'Kho', 'Lệch'], precision=2).map(lambda x: 'color: red' if abs(x) > 0.25 else 'color: green', subset=['Lệch']))
+                        st.table(df_res.style.format(subset=['Test', 'Kho', 'Lệch'], precision=2).map(lambda x: 'color: red' if abs(x) > 0.05 else 'color: green', subset=['Lệch']))
     gc.collect()
