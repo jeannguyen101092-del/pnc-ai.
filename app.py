@@ -55,24 +55,27 @@ def extract_specs(table):
         if not r or len(r) < 2:
             continue
 
-        pom = " ".join([str(x) for x in r if x]).upper()
+        # 🔥 GHÉP FULL DÒNG (tránh mất nội dung dài)
+        row_text = " | ".join([str(x) for x in r if x]).upper()
 
         # ❌ bỏ dòng rác
-        if any(x in pom for x in ['SIZE', 'SEASON', 'TECH', 'DATE', '#', 'DEVELOPMENT']):
+        if any(x in row_text for x in ['SIZE', 'SEASON', 'TECH', 'DATE', '#', 'DEVELOPMENT']):
             continue
 
-        # 🔥 lấy giá trị đúng (bỏ cột cuối diff)
-        vals = [parse_val(x) for x in r[1:-1] if x]
+        # 🔥 lấy tất cả số trong dòng (không phụ thuộc cột)
+        vals = [parse_val(x) for x in r if x]
         vals = [v for v in vals if v > 0]
 
-        if not vals:
+        if len(vals) < 1:
             continue
 
-        val = np.mean(vals)
+        # 🔥 lấy giá trị đại diện (median ổn định hơn mean)
+        val = float(np.median(vals))
 
-        # lọc POM hợp lệ
-        key = str(r[0]).strip().upper()
-        if len(key) > 3 and val > 0:
+        # 🔥 key = mô tả đầy đủ (không chỉ cột đầu)
+        key = row_text[:120]  # giới hạn độ dài tránh quá dài
+
+        if val > 0 and len(key) > 5:
             specs[key] = round(val, 2)
 
     return specs
