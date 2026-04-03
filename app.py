@@ -35,16 +35,39 @@ def advanced_classify(specs, text_content, file_name):
     txt = (text_content + " " + file_name).upper()
     inseam = specs.get('INSEAM', 0)
 
-    pant_keys = ['PANT', 'TROUSER', 'JEAN', 'SHORT', 'INSEAM', 'CROTCH', 'THIGH', 'HIP', 'WAIST']
-    if any(k in txt for k in pant_keys) or inseam > 0:
-        if 'BIB' in txt: return "QUẦN YẾM"
-        if 'CARGO' in txt: return "QUẦN CARGO"
-        return "QUẦN DÀI" if (inseam >= 25 or inseam == 0) else "QUẦN SHORT"
+    # ===== ƯU TIÊN NHẬN DIỆN QUẦN =====
 
-    if 'DRESS' in txt: return "ĐẦM"
-    if 'SKIRT' in txt: return "VÁY"
-    if any(k in txt for k in ['JACKET', 'COAT', 'VEST', 'BLAZER']): return "JACKET/VEST"
-    return "ÁO"
+    # QUẦN YẾM
+    if 'BIB' in txt or 'FRONT BIB WIDTH' in txt:
+        return "QUẦN YẾM"
+
+    # QUẦN CARGO
+    if 'CARGO' in txt or 'FRONT CARGO POCKET' in txt:
+        if 'JOGGER' in txt or 'ELASTIC' in txt:
+            return "QUẦN CARGO LƯNG THUN"
+        return "QUẦN TÚI CARGO"
+
+    # QUẦN SHORT (ưu tiên trước)
+    if ('SHORT' in txt or 'SKORT' in txt) or (inseam > 0 and inseam <= 11):
+        return "QUẦN SHORT"
+
+    # QUẦN DÀI
+    if ('PANT' in txt or 'TROUSER' in txt) or (inseam >= 25):
+        return "QUẦN DÀI"
+
+    # ===== KHÁC =====
+
+    if 'DRESS' in txt:
+        return "ĐẦM"
+
+    if 'SKIRT' in txt:
+        return "VÁY"
+
+    # ÁO (dựa vào thông số đặc trưng)
+    if 'CHEST WIDTH' in txt or 'FRONT LENGTH' in txt or 'HPS' in txt:
+        return "ÁO"
+
+    return "KHÁC"
 
 # ==========================================
 # PARSE VALUE
