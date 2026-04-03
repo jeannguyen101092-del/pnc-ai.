@@ -35,9 +35,10 @@ def compress_image(img_bytes):
 # ================= GITHUB UPLOAD (ĐÃ FIX LINK) =================
 def upload_to_github(img_bytes, filename):
     try:
+        # Làm sạch tên file
         clean_name = re.sub(r'[^a-zA-Z0-9]', '_', filename)
-        # 1. API chuẩn của GitHub
-        url = f"https://github.com{GH_REPO}/contents/imgs/{clean_name}.jpg"
+        # SỬA LỖI 1: Link API phải có ://github.com
+        url = f"https://://github.com{GH_REPO}/contents/imgs/{clean_name}.jpg"
         
         headers = {
             "Authorization": f"token {GH_TOKEN}",
@@ -45,23 +46,24 @@ def upload_to_github(img_bytes, filename):
         }
         content = base64.b64encode(img_bytes).decode('utf-8')
         
-        # Kiểm tra file cũ để lấy SHA (nếu có)
+        # Kiểm tra file cũ để lấy SHA
         check = requests.get(url, headers=headers, timeout=10)
         data = {"message": f"Upload {clean_name}", "content": content, "branch": GH_BRANCH}
         if check.status_code == 200:
             data["sha"] = check.json()["sha"]
             
-        # 2. Đẩy file lên GitHub
+        # SỬA LỖI 2: Đẩy file lên GitHub
         res = requests.put(url, headers=headers, json=data, timeout=15)
         
         if res.status_code in [200, 201]:
-            # TRẢ VỀ LINK RAW ĐỂ HIỂN THỊ ĐƯỢC ẢNH TRÊN APP
+            # SỬA LỖI 3: Trả về link RAW chuẩn để hiển thị được ảnh
             return f"https://githubusercontent.com{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.jpg"
         else:
-            st.error(f"GitHub Error {res.status_code}: {res.text}")
+            # Hiện lỗi trực tiếp để bạn biết vì sao không nạp được
+            st.error(f"GitHub báo lỗi {res.status_code}: {res.text}")
             return None
     except Exception as e:
-        st.error(f"Lỗi kết nối GitHub: {e}")
+        st.error(f"Lỗi hệ thống GitHub: {e}")
         return None
 
 
