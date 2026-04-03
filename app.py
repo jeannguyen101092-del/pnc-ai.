@@ -13,7 +13,7 @@ from supabase import create_client, Client
 
 # ================= 1. CẤU HÌNH HỆ THỐNG (THAY TẠI ĐÂY) =================
 # Supabase (Lấy từ Settings > API)
-URL = ""https://ewqqodsfvlvnrzsylawy.supabase.co""
+URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 
 # GitHub (Lấy từ Settings > Developer settings > Tokens classic)
