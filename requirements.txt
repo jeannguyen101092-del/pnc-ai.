@@ -1,11 +1,12 @@
 streamlit
 supabase
-pdfplumber
 PyMuPDF
+pdfplumber
+pandas
+numpy
+Pillow
 torch
 torchvision
 scikit-learn
-pandas
-xlsxwriter
-pillow
 requests
+xlsxwriter
