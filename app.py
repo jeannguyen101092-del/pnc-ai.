@@ -17,9 +17,9 @@ try:
 except:
     st.error("❌ Lỗi kết nối Supabase!")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.22", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.23", page_icon="👔")
 
-# ================= AI ENGINE (SIÊU NHẸ RAM) =================
+# ================= AI ENGINE =================
 @st.cache_resource
 def load_ai():
     model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
@@ -44,7 +44,6 @@ def classify_logic(specs, text, name):
     inseam = specs.get('INSEAM', 0)
     length = specs.get('LENGTH', specs.get('OUTSEAM', 0))
     if any(k in txt for k in ['PANT', 'CARGO', 'TROUSER']) or length >= 25 or inseam >= 15:
-        # CHỈ báo Lưng Thun khi thấy từ khóa ELASTIC rõ ràng
         if any(k in txt for k in ['ELASTIC WAIST', 'RIB WAIST', 'FULL ELASTIC', 'LƯNG THUN']):
             return "QUẦN DÀI LƯNG THUN"
         return "QUẦN DÀI LƯNG THƯỜNG"
@@ -71,10 +70,10 @@ def get_data(pdf_path):
         doc = fitz.open(pdf_path)
         img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         doc.close()
-        return {"spec": specs, "img": img, "cat": classify_logic(specs, text, os.path.basename(pdf_path))}
+        return {"spec": specs, "img": img, "cat": classify_logic(specs, text, os.path.basename(pdf_path)), "name": os.path.basename(pdf_path)}
     except: return None
 
-# ================= SIDEBAR: QUẢN LÝ KHO (KHÔNG LƯU PDF) =================
+# ================= SIDEBAR =================
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     try:
@@ -105,8 +104,8 @@ with st.sidebar:
             gc.collect()
         st.success("🏁 Nạp kho thành công!"); st.rerun()
 
-# ================= CHÍNH: SO SÁNH (FIX LỖI DÒNG 148) =================
-st.title("👔 AI Fashion Pro V11.22")
+# ================= CHÍNH: SO SÁNH & XUẤT EXCEL =================
+st.title("👔 AI Fashion Pro V11.23")
 test_file = st.file_uploader("Tải file PDF Test đối chiếu", type="pdf")
 
 if test_file:
@@ -125,9 +124,7 @@ if test_file:
                 for i in all_samples:
                     if i.get('vector'):
                         v_db = np.array(i['vector']).reshape(1, -1)
-                        # FIX LỖI CHI TIẾT: Lấy đúng phần tử [0][0] để tránh TypeError
-                        sim_matrix = cosine_similarity(v_test.reshape(1, -1), v_db)
-                        sim_val = float(sim_matrix[0][0]) * 100
+                        sim_val = float(cosine_similarity(v_test.reshape(1, -1), v_db)[0][0]) * 100
                         if i['category'] == target['cat']: sim_val += 5
                         matches.append({"name": i['file_name'], "sim": sim_val, "url": i['img_url'], "spec": i['spec_json']})
                 matches = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
@@ -147,6 +144,20 @@ if test_file:
                         all_k = sorted(list(set(target['spec'].keys()).union(set(m['spec'].keys()))))
                         comp = [{"Thông số": k, "Test": target['spec'].get(k, 0), "Kho": m['spec'].get(k, 0), "Lệch": round(target['spec'].get(k, 0) - m['spec'].get(k, 0), 2)} for k in all_k]
                         df = pd.DataFrame(comp)
+                        
+                        # --- NÚT XUẤT EXCEL ĐỐI CHIẾU ---
+                        output = io.BytesIO()
+                        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                            df.to_excel(writer, index=False, sheet_name='Comparison')
+                        
+                        st.download_button(
+                            label=f"📥 Tải Excel Đối Chiếu ({m['name']})",
+                            data=output.getvalue(),
+                            file_name=f"Doi_Chieu_{target['name']}_vs_{m['name']}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+                        
+                        # Hiển thị bảng màu
                         st.table(df.style.format(subset=['Test', 'Kho', 'Lệch'], precision=2).map(lambda x: 'color: red' if abs(x) > 0.25 else 'color: green', subset=['Lệch']))
     
     if os.path.exists("test.pdf"): os.remove("test.pdf")
