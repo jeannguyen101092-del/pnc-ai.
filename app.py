@@ -7,14 +7,19 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# ================= CONFIG (HÃY ĐIỀN THÔNG TIN CỦA BẠN) =================
-URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
+# ================= CONFIG (HÃY ĐIỀN CHÍNH XÁC THÔNG TIN) =================
+URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 GH_TOKEN = "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"
-GH_REPO = "jeannguyen101092-del/pnc-ai"
+GH_REPO = "jeannguyen101092-del/pnc-ai" 
 GH_BRANCH = "main"
 
-supabase: Client = create_client(URL, KEY)
+# Khởi tạo Supabase
+try:
+    supabase: Client = create_client(URL, KEY)
+except:
+    st.error("❌ Lỗi cấu hình Supabase! Kiểm tra lại URL/KEY.")
+
 st.set_page_config(layout="wide", page_title="AI Fashion Pro V10", page_icon="👔")
 
 # ================= AI ENGINE =================
@@ -25,11 +30,11 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= GITHUB UPLOAD (ĐÃ FIX LỖI DÍNH CHỮ URL) =================
+# ================= HÀM UPLOAD GITHUB (FIX URL & RAW LINK) =================
 def upload_to_github(img_bytes, filename):
     try:
         clean_name = re.sub(r'[^a-zA-Z0-9]', '_', filename)
-        # Fix lỗi dính chữ bằng cách đảm bảo có dấu / giữa các thành phần
+        # URL API chuẩn không bao giờ dính chữ
         url = f"https://github.com{GH_REPO}/contents/imgs/{clean_name}.jpg"
         
         headers = {
@@ -45,16 +50,16 @@ def upload_to_github(img_bytes, filename):
             
         res = requests.put(url, headers=headers, json=data, timeout=15)
         if res.status_code in [200, 201]:
-            # Link RAW chuẩn để Streamlit hiển thị được ảnh trực tiếp
+            # Link RAW để Streamlit hiển thị được ảnh
             return f"https://githubusercontent.com{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.jpg"
         else:
-            st.error(f"Lỗi GitHub {res.status_code}: {res.text}")
+            st.error(f"❌ GitHub từ chối ({res.status_code}): {res.text}")
             return None
     except Exception as e:
-        st.error(f"Lỗi hệ thống: {e}")
+        st.error(f"❌ Lỗi kết nối GitHub: {e}")
         return None
 
-# ================= TRÍCH XUẤT & PHÂN LOẠI (SỬA LỖI QUẦN DÀI/SHORT) =================
+# ================= PHÂN LOẠI & TRÍCH XUẤT =================
 def parse_val(t):
     try:
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
@@ -74,10 +79,9 @@ def classify_logic(specs, text, name):
         if 'LENGTH' in k: length = max(length, v)
 
     if 'CARGO' in txt: return "QUẦN CARGO"
-    # SỬA LỖI: Ưu tiên Quần Dài nếu Inseam >= 22 hoặc Length >= 30
+    # SỬA LỖI: Logic phân biệt Quần Dài và Short
     if inseam >= 22 or length >= 30: return "QUẦN DÀI"
     if 0 < inseam <= 15 or 0 < length <= 22: return "QUẦN SHORT"
-    if 'SHIRT' in txt: return "ÁO SƠ MI"
     return "ÁO"
 
 def get_data(pdf_path):
@@ -101,24 +105,30 @@ def get_data(pdf_path):
         return {"spec": specs, "img": img_bytes, "cat": classify_logic(specs, text, os.path.basename(pdf_path))}
     except: return None
 
-# ================= GIAO DIỆN STREAMLIT =================
+# ================= GIAO DIỆN CHÍNH =================
 st.title("👔 AI Fashion Pro V10")
 
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     files = st.file_uploader("Upload PDF nạp kho", accept_multiple_files=True)
+    
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
+        progress_text = st.empty()
         for f in files:
+            progress_text.info(f"🔄 Đang xử lý: {f.name}")
             with open("tmp.pdf", "wb") as t: t.write(f.getbuffer())
             d = get_data("tmp.pdf")
+            
             if d:
-                # Nén ảnh JPEG
+                # Nén ảnh
                 img_p = Image.open(io.BytesIO(d['img'])).convert("RGB")
                 buf = io.BytesIO()
                 img_p.save(buf, format="JPEG", quality=80)
                 img_small = buf.getvalue()
                 
+                # Upload GitHub
                 img_url = upload_to_github(img_small, f.name)
+                
                 if img_url:
                     # AI Vector
                     tf = transforms.Compose([
@@ -128,23 +138,25 @@ with st.sidebar:
                     with torch.no_grad():
                         vec = ai_brain(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
 
+                    # Lưu Supabase
                     supabase.table("ai_data").upsert({
                         "file_name": f.name, "vector": vec, "spec_json": d['spec'],
                         "img_url": img_url, "category": d['cat']
                     }, on_conflict="file_name").execute()
-                    st.toast(f"✅ Đã nạp: {f.name}")
-        st.success("🏁 Nạp kho thành công!")
-        if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
-        st.rerun()
+                    st.success(f"✅ Đã nạp xong: {f.name}")
+            else:
+                st.error(f"❌ Không đọc được dữ liệu file: {f.name}")
+            
+            if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
+        
+        progress_text.empty()
+        st.balloons()
 
-# ================= TEST SO SÁNH =================
-test_file = st.file_uploader("Tải file Test", type="pdf")
+# ================= PHẦN TEST =================
+test_file = st.file_uploader("Tải file Test (PDF)", type="pdf")
 if test_file:
     with open("test.pdf", "wb") as f: f.write(test_file.getbuffer())
     target = get_data("test.pdf")
     if target:
-        st.info(f"Nhận diện: **{target['cat']}**")
+        st.write(f"### Nhận diện: {target['cat']}")
         st.image(target['img'], width=300)
-        db = supabase.table("ai_data").select("*").eq("category", target['cat']).execute()
-        if db.data:
-            st.write(f"Tìm thấy {len(db.data)} mẫu cùng loại.")
