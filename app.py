@@ -13,7 +13,7 @@ from supabase import create_client, Client
 
 # ================= CONFIG =================
 URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
-KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri""
+KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
 st.set_page_config(layout="wide", page_title="AI Fashion Pro V8", page_icon="👔")
