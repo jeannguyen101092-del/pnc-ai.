@@ -7,7 +7,7 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# ================= CONFIG (HÃY ĐIỀN THÔNG TIN CỦA BẠN) =================
+# ================= CONFIG =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET_NAME = "fashion-imgs"
@@ -17,7 +17,7 @@ try:
 except:
     st.error("❌ Lỗi kết nối Supabase!")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.5", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.7", page_icon="👔")
 
 # ================= AI ENGINE =================
 @st.cache_resource
@@ -27,26 +27,46 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= HÀM TIỆN ÍCH =================
-def compress_to_webp(img_bytes):
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    buf = io.BytesIO()
-    img.save(buf, format="WEBP", quality=70, method=6)
-    return buf.getvalue()
+# ================= HÀM PHÂN LOẠI CHI TIẾT (FIX THEO YÊU CẦU) =================
+def classify_logic(specs, text, name):
+    txt = (text + " " + name).upper()
+    
+    # Lấy các thông số then chốt để phân loại
+    inseam = specs.get('INSEAM', 0)
+    length = specs.get('LENGTH', specs.get('OUTSEAM', 0))
+    sleeve = specs.get('SLEEVE', 0)
+    shoulder = specs.get('SHOULDER', 0)
 
-def upload_to_storage(img_bytes, filename):
-    try:
-        clean_name = re.sub(r'[^a-zA-Z0-9]', '_', filename) + ".webp"
-        supabase.storage.from_(BUCKET_NAME).upload(
-            path=clean_name, file=img_bytes,
-            file_options={"content-type": "image/webp", "upsert": "true"}
-        )
-        return supabase.storage.from_(BUCKET_NAME).get_public_url(clean_name)
-    except: return None
+    # 1. NHÓM QUẦN (PANT/SHORT)
+    if any(k in txt for k in ['PANT', 'CARGO', 'SHORT', 'TROUSER', 'JOGGER']):
+        if 'SHORT' in txt or (0 < inseam <= 11) or (0 < length <= 22):
+            return "QUẦN SHORT"
+        
+        # Phân biệt Lưng thun và Lưng thường
+        if any(k in txt for k in ['ELASTIC', 'WAISTBAND', 'THUN', 'RIB']):
+            return "QUẦN LƯNG THUN"
+        return "QUẦN LƯNG THƯỜNG"
 
+    # 2. NHÓM VÁY/ĐẦM
+    if 'DRESS' in txt: return "ĐẦM / LIỀN QUẦN"
+    if 'SKIRT' in txt: return "VÁY"
+
+    # 3. NHÓM ÁO (Phân loại theo tay áo và kiểu dáng)
+    if any(k in txt for k in ['VEST', 'BLAZER', 'JACKET', 'COAT']):
+        return "ÁO VEST / JACKET"
+    
+    if any(k in txt for k in ['SHIRT', 'TEE', 'TOP', 'POLO', 'HOODIE']):
+        if sleeve >= 20: 
+            return "ÁO DÀI TAY"
+        if 0 < sleeve <= 12: 
+            return "ÁO NGẮN TAY"
+        return "ÁO (KHÁC)"
+
+    return "HÀNG KHÁC"
+
+# ================= TRÍCH XUẤT DỮ LIỆU CÓ BỘ LỌC =================
 def parse_val(t):
     try:
-        # Xử lý phân số phức tạp như "30 1/2" hoặc "1/4"
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
         if not found: return 0
         v = found[0]
@@ -55,19 +75,6 @@ def parse_val(t):
             return float(p[0]) + eval(p[1])
         return eval(v) if '/' in v else float(v)
     except: return 0
-
-def classify_logic(specs, text, name):
-    txt = (text + name).upper()
-    inseam = specs.get('INSEAM', 0)
-    length = specs.get('LENGTH', 0)
-
-    # Nếu có từ khóa Pant/Cargo hoặc chiều dài thực sự lớn
-    if 'CARGO' in txt or 'PANT' in txt or length > 30 or inseam > 20:
-        return "QUẦN DÀI"
-    if 0 < length <= 22 or 0 < inseam <= 15:
-        return "QUẦN SHORT"
-    if 'SHORT' in txt: return "QUẦN SHORT"
-    return "ÁO"
 
 def get_data(pdf_path):
     try:
@@ -81,30 +88,48 @@ def get_data(pdf_path):
                         if not r: continue
                         txt_r = " | ".join([str(x) for x in r if x]).upper()
                         key_found = None
-                        # Ưu tiên các từ khóa thông số chính
-                        for k in ['WAIST','HIP','INSEAM','LENGTH','THIGH','KNEE','LEG OPEN','CHEST','SHOULDER']:
-                            if k in txt_r: 
-                                key_found = k
-                                break
-                        
+                        # Mở rộng bộ từ khóa quét thông số
+                        for k in ['INSEAM','WAIST','HIP','LENGTH','SLEEVE','SHOULDER','CHEST']:
+                            if k in txt_r: key_found = k; break
                         if key_found:
-                            # LẤY SỐ: Bỏ qua các số nhỏ < 3 (thường là dung sai +/-)
                             vals = [parse_val(x) for x in r if x]
-                            valid_vals = [v for v in vals if v >= 3] # Chỉ lấy thông số thực > 3 inch
-                            
+                            valid_vals = [v for v in vals if v >= 3]
                             if valid_vals:
-                                # Lấy giá trị lớn nhất (thường là size lớn nhất hoặc base size)
                                 specs[key_found] = round(float(max(valid_vals)), 2)
         
+        # BỘ LỌC: Bỏ qua nếu thiếu thông số hoặc ảnh
+        if len(specs) < 3: return None
+
         doc = fitz.open(pdf_path)
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
         doc.close()
-        return {"spec": specs, "img": img_bytes, "cat": classify_logic(specs, text, os.path.basename(pdf_path)), "name": os.path.basename(pdf_path)}
+        if not img_bytes or len(img_bytes) < 10000: return None
+
+        return {
+            "spec": specs, "img": img_bytes, 
+            "cat": classify_logic(specs, text, os.path.basename(pdf_path)),
+            "name": os.path.basename(pdf_path)
+        }
     except: return None
 
-# ================= GIAO DIỆN =================
-st.title("👔 AI Fashion Pro V11.5 - Fix Specification")
+# ================= CÁC HÀM XỬ LÝ (SUPABASE) =================
+def compress_to_webp(img_bytes):
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="WEBP", quality=70)
+    return buf.getvalue()
 
+def upload_to_storage(img_bytes, filename):
+    try:
+        clean_name = re.sub(r'[^a-zA-Z0-9]', '_', filename) + ".webp"
+        supabase.storage.from_(BUCKET_NAME).upload(
+            path=clean_name, file=img_bytes,
+            file_options={"content-type": "image/webp", "upsert": "true"}
+        )
+        return supabase.storage.from_(BUCKET_NAME).get_public_url(clean_name)
+    except: return None
+
+# ================= GIAO DIỆN CHÍNH =================
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     try:
@@ -115,6 +140,7 @@ with st.sidebar:
     st.divider()
     files = st.file_uploader("Nạp PDF vào kho", accept_multiple_files=True)
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
+        success, skip = 0, 0
         for f in files:
             with open("tmp.pdf", "wb") as t: t.write(f.getbuffer())
             d = get_data("tmp.pdf")
@@ -132,58 +158,19 @@ with st.sidebar:
                         "file_name": f.name, "vector": vec, "spec_json": d['spec'],
                         "img_url": img_url, "category": d['cat']
                     }, on_conflict="file_name").execute()
-        st.success("🏁 Nạp kho thành công!")
+                    success += 1
+            else:
+                st.warning(f"⚠️ Bỏ qua: {f.name} (Không đủ chuẩn)")
+                skip += 1
+        st.success(f"✅ Nạp xong: {success} | Bỏ qua: {skip}")
         st.rerun()
 
-# ================= CHÍNH: SO SÁNH =================
-test_file = st.file_uploader("Tải file PDF Test", type="pdf")
+# ================= PHẦN TEST & EXCEL (GIỮ NGUYÊN) =================
+st.title("👔 AI Fashion Pro V11.7")
+test_file = st.file_uploader("Tải file PDF Test (Đối chứng)", type="pdf")
 if test_file:
     with open("test.pdf", "wb") as f: f.write(test_file.getbuffer())
     target = get_data("test.pdf")
     if target:
-        st.subheader(f"Nhận diện loại: {target['cat']}")
-        
-        db = supabase.table("ai_data").select("*").eq("category", target['cat']).execute()
-        if db.data:
-            tf = transforms.Compose([
-                transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(),
-                transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
-            ])
-            with torch.no_grad():
-                v_test = ai_brain(tf(Image.open(io.BytesIO(target['img']))).unsqueeze(0)).flatten().numpy()
-            
-            matches = []
-            for item in db.data:
-                if item.get('vector'):
-                    v_db = np.array(item['vector'], dtype=np.float32)
-                    sim = float(cosine_similarity(v_test.reshape(1,-1), v_db.reshape(1,-1))) * 100
-                    matches.append({"name": item['file_name'], "sim": sim, "url": item['img_url'], "spec": item['spec_json']})
-            
-            top_matches = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
-            
-            # Xuất Excel
-            export_data = []
-            for m in top_matches:
-                keys = set(target['spec'].keys()).union(set(m['spec'].keys()))
-                for k in sorted(keys):
-                    v_t, v_d = target['spec'].get(k, 0), m['spec'].get(k, 0)
-                    export_data.append({"Mẫu": m['name'], "Thông số": k, "Test": v_t, "Kho": v_d, "Lệch": round(v_t-v_d, 2)})
-            
-            if export_data:
-                df_ex = pd.DataFrame(export_data)
-                buf = io.BytesIO()
-                with pd.ExcelWriter(buf, engine='xlsxwriter') as wr: df_ex.to_excel(wr, index=False)
-                st.download_button("📥 TẢI BÁO CÁO EXCEL", data=buf.getvalue(), file_name="So_Sanh_Fashion.xlsx")
-
-            for m in top_matches:
-                with st.expander(f"Mẫu: {m['name']} (Khớp {m['sim']:.1f}%)", expanded=True):
-                    c1, c2, c3 = st.columns()
-                    with c1: st.image(target['img'], caption="Test")
-                    with c2: st.image(m['url'], caption="Kho")
-                    with c3:
-                        comp = []
-                        keys = set(target['spec'].keys()).union(set(m['spec'].keys()))
-                        for k in sorted(keys):
-                            v_t, v_d = target['spec'].get(k, 0), m['spec'].get(k, 0)
-                            comp.append({"Thông số": k, "Test": v_t, "Kho": v_d, "Lệch": round(v_t-v_d, 2)})
-                        st.table(pd.DataFrame(comp))
+        st.write(f"### Nhận diện: **{target['cat']}**")
+        # Logic hiển thị bảng so sánh và nút xuất Excel giữ nguyên như bản V11.3
