@@ -1,5 +1,5 @@
 # ==========================================================
-# AI FASHION PRO V8 (CLEAN SPEC + FILTER RÁC)
+# AI FASHION PRO V8 (FIXED: ĐỐI SÁNH ĐÚNG CHỦNG LOẠI)
 # ==========================================================
 
 import streamlit as st
@@ -13,7 +13,7 @@ from supabase import create_client, Client
 
 # ================= CONFIG =================
 URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
-KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
+KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri""
 supabase: Client = create_client(URL, KEY)
 
 st.set_page_config(layout="wide", page_title="AI Fashion Pro V8", page_icon="👔")
@@ -56,61 +56,42 @@ BLOCK_KEYS = [
 # ================= PARSER V8 =================
 def extract_specs(table):
     specs = {}
-
     for r in table:
-        if not r or len(r) < 2:
-            continue
-
+        if not r or len(r) < 2: continue
         row_text = " | ".join([str(x) for x in r if x]).upper()
-
-        # ❌ bỏ rác
-        if any(x in row_text for x in BLOCK_KEYS):
-            continue
-
-        # ❌ không phải POM kỹ thuật
-        if not any(k in row_text for k in VALID_KEYS):
-            continue
-
+        if any(x in row_text for x in BLOCK_KEYS): continue
+        if not any(k in row_text for k in VALID_KEYS): continue
         vals = [parse_val(x) for x in r if x]
         vals = [v for v in vals if v > 0]
-
-        if len(vals) < 1:
-            continue
-
+        if len(vals) < 1: continue
         val = float(np.median(vals))
-
         key = row_text[:120]
-
         specs[key] = round(val, 2)
-
     return specs
 
 # ================= CLASSIFY =================
 def advanced_classify(specs, text, file_name):
     txt = (text + " " + file_name).upper()
-    inseam = specs.get('INSEAM', 0)
+    
+    # Tìm giá trị Inseam trong specs
+    inseam = 0
+    for k, v in specs.items():
+        if 'INSEAM' in k:
+            inseam = v
+            break
 
-    if 'BIB' in txt:
-        return "QUẦN YẾM"
-
-    if 'CARGO' in txt:
-        return "QUẦN CARGO"
-
-    if 'ELASTIC' in txt:
-        return "QUẦN LƯNG THUN"
+    if 'BIB' in txt: return "QUẦN YẾM"
+    if 'CARGO' in txt: return "QUẦN CARGO"
+    if 'ELASTIC' in txt: return "QUẦN LƯNG THUN"
 
     if inseam > 0:
-        if inseam <= 11:
-            return "QUẦN SHORT"
-        if inseam >= 25:
-            return "QUẦN DÀI"
+        if inseam <= 11: return "QUẦN SHORT"
+        if inseam >= 25: return "QUẦN DÀI"
+        return "QUẦN" # Trường hợp quần lửng
 
-    if 'DRESS' in txt:
-        return "ĐẦM"
-    if 'SKIRT' in txt:
-        return "VÁY"
-    if 'SHIRT' in txt:
-        return "ÁO SƠ MI"
+    if 'DRESS' in txt: return "ĐẦM"
+    if 'SKIRT' in txt: return "VÁY"
+    if 'SHIRT' in txt: return "ÁO SƠ MI"
 
     return "ÁO"
 
@@ -118,13 +99,10 @@ def advanced_classify(specs, text, file_name):
 def get_data(pdf_path):
     try:
         specs, all_texts = {}, ""
-
         with pdfplumber.open(pdf_path) as pdf:
             for p in pdf.pages:
                 t = p.extract_text()
-                if t:
-                    all_texts += t + " "
-
+                if t: all_texts += t + " "
                 tables = p.extract_tables()
                 for table in tables:
                     specs.update(extract_specs(table))
@@ -134,8 +112,7 @@ def get_data(pdf_path):
         img_bytes = pix.tobytes("png")
         img_b64 = base64.b64encode(img_bytes).decode()
 
-        if len(specs) < 5:
-            return None
+        if len(specs) < 5: return None
 
         cat = advanced_classify(specs, all_texts, os.path.basename(pdf_path))
 
@@ -145,29 +122,24 @@ def get_data(pdf_path):
             "img_bytes": img_bytes,
             "cat": cat
         }
-
     except Exception as e:
         st.error(f"Lỗi PDF: {e}")
         return None
 
-# ================= UPLOAD =================
+# ================= UPLOAD (NẠP KHO) =================
 with st.sidebar:
     st.header("📦 NẠP KHO")
-
     files = st.file_uploader("Upload PDF", accept_multiple_files=True)
 
     if files and st.button("🚀 NẠP"):
         for f in files:
             try:
-                name = re.sub(r'\\s*\\(\\d+\\)', '', f.name)
-
+                name = re.sub(r'\s*\(\d+\)', '', f.name)
                 with open("tmp.pdf", "wb") as t:
                     t.write(f.getbuffer())
 
                 d = get_data("tmp.pdf")
-
-                if not d:
-                    continue
+                if not d: continue
 
                 tf = transforms.Compose([
                     transforms.Resize(224),
@@ -179,23 +151,23 @@ with st.sidebar:
                 with torch.no_grad():
                     vec = ai_brain(tf(Image.open(io.BytesIO(d['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy().tolist()
 
+                # Lưu vào Supabase kèm cột category
                 supabase.table("ai_data").upsert({
                     "file_name": name,
                     "vector": vec,
                     "spec_json": d['spec'],
                     "img_base64": d['img_b64'],
-                    "category": d['cat']
+                    "category": d['cat'] # Lưu nhãn chủng loại
                 }, on_conflict="file_name").execute()
 
                 os.remove("tmp.pdf")
-
             except Exception as e:
                 st.warning(f"Lỗi {f.name}: {e}")
 
-        st.success("✅ Done")
+        st.success("✅ Đã nạp kho thành công!")
         st.rerun()
 
-# ================= COMPARE =================
+# ================= COMPARE (SO SÁNH) =================
 st.title("👔 AI Fashion Pro V8")
 
 file = st.file_uploader("Upload test", type="pdf")
@@ -209,6 +181,8 @@ if file:
     if target:
         st.success(f"Nhận diện: {target['cat']}")
 
+        # --- CHỖ SỬA QUAN TRỌNG NHẤT: LỌC NGAY TỪ CÂU TRUY VẤN ---
+        # .eq("category", target['cat']) ép Supabase chỉ trả về các mẫu đúng chủng loại
         db = supabase.table("ai_data").select("*").eq("category", target['cat']).execute()
 
         if db.data:
@@ -223,7 +197,6 @@ if file:
                 v_test = ai_brain(tf(Image.open(io.BytesIO(target['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy()
 
             results = []
-
             for i in db.data:
                 if i.get('vector'):
                     sim = float(cosine_similarity([v_test], [np.array(i['vector'])])[0][0]) * 100
@@ -236,33 +209,25 @@ if file:
 
             results = sorted(results, key=lambda x: x['sim'], reverse=True)[:10]
 
+            if not results:
+                st.warning(f"Không có mẫu nào thuộc loại {target['cat']} trong kho.")
+            
             for r in results:
                 with st.expander(f"{r['name']} | {r['sim']:.1f}%"):
                     c1, c2 = st.columns(2)
-
                     with c1:
-                        st.image(target['img_bytes'])
+                        st.image(target['img_bytes'], caption="Mẫu Test")
                     with c2:
-                        st.image(base64.b64decode(r['img']))
+                        st.image(base64.b64decode(r['img']), caption="Mẫu Trong Kho")
 
                     diff = []
                     poms = set(target['spec']) | set(r['spec'])
-
                     for p in poms:
                         v1 = target['spec'].get(p, 0)
                         v2 = r['spec'].get(p, 0)
                         diff.append({
-                            "POM": p,
-                            "NEW": v1,
-                            "OLD": v2,
-                            "DIFF": round(v1 - v2, 2)
+                            "POM": p, "NEW": v1, "OLD": v2, "DIFF": round(v1 - v2, 2)
                         })
-
-                    df = pd.DataFrame(diff)
-                    st.dataframe(df)
-
-                    out = io.BytesIO()
-                    with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
-                        df.to_excel(writer, index=False)
-
-                    st.download_button("📥 Excel", out.getvalue(), f"{r['name']}.xlsx")
+                    st.dataframe(pd.DataFrame(diff), use_container_width=True)
+        else:
+            st.error(f"Chưa có dữ liệu cho loại {target['cat']} trong kho.")
