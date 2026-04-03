@@ -17,7 +17,7 @@ try:
 except:
     st.error("❌ Lỗi kết nối Supabase!")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.18", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.19", page_icon="👔")
 
 # ================= AI ENGINE =================
 @st.cache_resource
@@ -27,7 +27,7 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= HÀM QUÉT DỮ LIỆU TOÀN BỘ POM =================
+# ================= LOGIC PHÂN LOẠI KHẮT KHE (FIX LỖI LƯNG THUN) =================
 def parse_val(t):
     try:
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
@@ -39,6 +39,24 @@ def parse_val(t):
         return eval(v) if '/' in v else float(v)
     except: return 0
 
+def classify_logic(specs, text, name):
+    txt = (text + " " + name).upper()
+    inseam = specs.get('INSEAM', 0)
+    length = specs.get('LENGTH', specs.get('OUTSEAM', 0))
+    
+    # 1. Nhóm Quần
+    if any(k in txt for k in ['PANT', 'CARGO', 'TROUSER']) or length >= 25 or inseam >= 15:
+        # SỬA LỖI: Chỉ tính là Lưng Thun nếu thấy từ khóa ELASTIC rõ ràng ở thắt lưng
+        if any(k in txt for k in ['ELASTIC WAIST', 'RIB WAIST', 'FULL ELASTIC', 'LƯNG THUN']):
+            return "QUẦN DÀI LƯNG THUN"
+        # Còn lại mặc định là Lưng Thường
+        return "QUẦN DÀI LƯNG THƯỜNG"
+    
+    if 0 < length <= 23 or 0 < inseam <= 13 or 'SHORT' in txt:
+        return "QUẦN SHORT"
+        
+    return "HÀNG KHÁC"
+
 def get_data(pdf_path):
     try:
         specs, text = {}, ""
@@ -48,35 +66,21 @@ def get_data(pdf_path):
                 if t: text += t
                 for tb in p.extract_tables():
                     content_str = str(tb).upper()
-                    # Bỏ qua bảng phụ liệu BOM
                     if any(x in content_str for x in ['FABRIC', 'MATERIAL', 'THREAD', 'BOM']): continue
-                    
                     for r in tb:
                         if not r or len(r) < 2: continue
-                        # Lấy phần chữ mô tả, bỏ mã số D001, F001 ở đầu
-                        raw_label = " ".join([str(x) for x in r[:2] if x]).strip().upper().replace("\n", " ")
+                        raw_label = " ".join([str(x) for x in r[:2] if x]).strip().upper()
                         clean_label = re.sub(r'^[A-Z]\d{1,4}[A-Z]?(\.\d+)?\s*', '', raw_label)
-                        
-                        # Chỉ lấy những hàng có số đo kích thước thực tế (Inches: 3.0 - 100.0)
                         vals = [parse_val(x) for x in r[1:] if 3.0 <= parse_val(x) <= 100.0]
                         if vals and len(clean_label) > 3:
                             specs[clean_label[:60]] = round(float(np.median(vals)), 2)
-                            
         doc = fitz.open(pdf_path)
         img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.2, 2.2)).tobytes("png")
         doc.close()
-        
-        # Nhận diện loại nâng cao
-        cat = "ÁO"
-        if any(x in str(specs.keys()) for x in ['INSEAM', 'WAIST', 'HIP', 'THIGH', 'KNEE', 'LEG']):
-            cat = "QUẦN DÀI LƯNG THƯỜNG"
-            if 'ELASTIC' in text.upper() or 'WAISTBAND' in text.upper(): cat = "QUẦN DÀI LƯNG THUN"
-            if 0 < specs.get('INSEAM', 0) < 15: cat = "QUẦN SHORT"
-
-        return {"spec": specs, "img": img, "cat": cat, "name": os.path.basename(pdf_path)}
+        return {"spec": specs, "img": img, "cat": classify_logic(specs, text, os.path.basename(pdf_path))}
     except: return None
 
-# ================= SIDEBAR: QUẢN LÝ KHO =================
+# ================= SIDEBAR & QUẢN LÝ KHO =================
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     try:
@@ -92,13 +96,12 @@ with st.sidebar:
         p_bar = st.progress(0); s_text = st.empty()
         for idx, f in enumerate(files):
             p_bar.progress((idx + 1) / len(files))
-            s_text.info(f"Đang nạp ({idx+1}/{len(files)}): {f.name}")
+            s_text.info(f"Đang nạp: {f.name}")
             with open("tmp.pdf", "wb") as t: t.write(f.getbuffer())
             d = get_data("tmp.pdf")
             if d:
                 img_p = Image.open(io.BytesIO(d['img'])).convert("RGB")
-                buf = io.BytesIO()
-                img_p.save(buf, format="WEBP", quality=75)
+                buf = io.BytesIO(); img_p.save(buf, format="WEBP", quality=75)
                 fname = re.sub(r'[^a-zA-Z0-9]', '_', f.name) + ".webp"
                 supabase.storage.from_(BUCKET_NAME).upload(path=fname, file=buf.getvalue(), file_options={"upsert":"true"})
                 url = supabase.storage.from_(BUCKET_NAME).get_public_url(fname)
@@ -107,8 +110,8 @@ with st.sidebar:
                 supabase.table("ai_data").upsert({"file_name": f.name, "vector": vec, "spec_json": d['spec'], "img_url": url, "category": d['cat']}, on_conflict="file_name").execute()
         st.success("🏁 Hoàn tất!"); st.rerun()
 
-# ================= CHÍNH: SO SÁNH FULL THÔNG SỐ =================
-st.title("👔 AI Fashion Pro V11.18")
+# ================= CHÍNH: SO SÁNH =================
+st.title("👔 AI Fashion Pro V11.19")
 test_file = st.file_uploader("Tải file PDF Test (Đối chứng)", type="pdf")
 
 if test_file:
@@ -117,7 +120,6 @@ if test_file:
     if target:
         st.subheader(f"Nhận diện loại: {target['cat']}")
         
-        # --- CHỌN MÃ HÀNG ĐỂ SO SÁNH ---
         list_names = [item['file_name'] for item in all_samples]
         selected = st.selectbox("🎯 Chọn mã hàng trong kho (hoặc để AI tự tìm):", ["-- Tự động tìm mẫu tương đồng --"] + list_names)
         
@@ -129,8 +131,7 @@ if test_file:
                 for i in all_samples:
                     if i.get('vector'):
                         v_db = np.array(i['vector']).reshape(1, -1)
-                        # FIX LỖI TYPEERROR DÒNG 137: Lấy chính xác phần tử [0][0]
-                        sim_val = cosine_similarity(v_test.reshape(1, -1), v_db)[0][0] * 100
+                        sim_val = float(cosine_similarity(v_test.reshape(1, -1), v_db)[0][0]) * 100
                         if i['category'] == target['cat']: sim_val += 5
                         matches.append({"name": i['file_name'], "sim": sim_val, "url": i['img_url'], "spec": i['spec_json']})
                 matches = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
@@ -142,7 +143,7 @@ if test_file:
 
         if matches:
             for m in matches:
-                with st.expander(f"📌 ĐỐI CHIẾU CHI TIẾT: {m['name']} (Độ giống: {m['sim']:.1f}%)", expanded=True):
+                with st.expander(f"📌 ĐỐI CHIẾU CHI TIẾT: {m['name']} (Độ tương đồng: {m['sim']:.1f}%)", expanded=True):
                     c1, c2, c3 = st.columns([1, 1, 1.8])
                     with c1: st.image(target['img'], caption="Bản vẽ Test")
                     with c2: st.image(m['url'], caption="Mẫu Trong Kho")
@@ -153,8 +154,5 @@ if test_file:
                             v_t, v_d = target['spec'].get(k, 0), m['spec'].get(k, 0)
                             diff = round(v_t - v_d, 2)
                             comp.append({"Thông số": k, "Test": v_t, "Kho": v_d, "Lệch": diff})
-                        
                         df_res = pd.DataFrame(comp)
-                        # Hiển thị bảng so sánh full chữ, số làm tròn 2 chữ số thập phân
                         st.table(df_res.style.format(subset=['Test', 'Kho', 'Lệch'], precision=2).map(lambda x: 'color: red' if abs(x) > 0.25 else 'color: green', subset=['Lệch']))
-        else: st.warning("Kho chưa có mẫu phù hợp để so sánh.")
