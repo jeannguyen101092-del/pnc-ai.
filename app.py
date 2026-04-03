@@ -48,34 +48,41 @@ def get_data(pdf_path):
                 t = p.extract_text()
                 if t: text += t
                 for tb in p.extract_tables():
+                    # --- BỘ LỌC BẢNG POM (CHỐNG QUÉT NHẦM BOM) ---
+                    # Chuyển bảng thành chữ để kiểm tra từ khóa
+                    table_content = str(tb).upper()
+                    
+                    # Nếu thấy các chữ liên quan đến Phụ liệu (BOM) thì BỎ QUA NGAY
+                    if any(x in table_content for x in ['FABRIC', 'MATERIAL', 'THREAD', 'BUTTON', 'ZIPPER', 'BOM']):
+                        continue
+                        
+                    # CHỈ LẤY bảng nào có các từ khóa đo đạc (POM)
+                    if not any(x in table_content for x in ['WAIST', 'HIP', 'INSEAM', 'THIGH', 'LENGTH', 'POM', 'SPEC']):
+                        continue
+
                     for r in tb:
                         if not r or len(r) < 2: continue
-                        # Làm sạch dữ liệu trong hàng
                         clean_row = [str(x).strip() for x in r if x]
-                        if not clean_row: continue
-                        
-                        # Tên thông số thường nằm ở cột 1 hoặc 2
                         label = str(clean_row[0]).upper()
-                        # Lọc bỏ các hàng tiêu đề rác
-                        if any(x in label for x in ['SIZE', 'DATE', 'TOL', 'COLOR', 'FABRIC', 'PAGE']): continue
                         
-                        # Lấy tất cả các số đo thực tế trong hàng (Bỏ qua số quá nhỏ < 0.8 là dung sai)
-                        vals = [parse_val(x) for x in clean_row if parse_val(x) > 0.8]
+                        # Lấy các số đo thực tế (Inches thường từ 3.0 đến 60.0)
+                        # Bỏ qua các số quá lớn (>100) vì đó là mã phụ liệu
+                        vals = [parse_val(x) for x in clean_row[1:] if 2.5 <= parse_val(x) <= 120.0]
                         
                         if vals and len(label) > 2:
-                            # Lấy giá trị đầu tiên tìm thấy (thường là size chuẩn/base size)
                             specs[label[:50]] = round(float(vals[0]), 2)
                             
         doc = fitz.open(pdf_path)
-        img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
+        # TĂNG CHẤT LƯỢNG ẢNH: Để bạn nhìn bản vẽ POM rõ hơn
+        img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.5, 2.5)).tobytes("png")
         doc.close()
         
-        # Nhận diện loại đơn giản dựa trên thông số đã quét
+        # Nhận diện loại dựa trên POM thực
         cat = "ÁO"
-        if any(x in str(specs.keys()).upper() for x in ['INSEAM', 'THIGH', 'KNEE', 'LEG OPEN']):
+        if any(x in str(specs.keys()) for x in ['INSEAM', 'THIGH', 'HIP']):
             cat = "QUẦN DÀI LƯNG THƯỜNG"
             if 'ELASTIC' in text.upper(): cat = "QUẦN DÀI LƯNG THUN"
-            if specs.get('INSEAM', 0) < 15 and specs.get('INSEAM', 0) > 0: cat = "QUẦN SHORT"
+            if 0 < specs.get('INSEAM', 0) < 15: cat = "QUẦN SHORT"
 
         return {"spec": specs, "img": img, "cat": cat, "name": os.path.basename(pdf_path)}
     except: return None
