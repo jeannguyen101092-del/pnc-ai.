@@ -12,8 +12,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
 # ================= 1. CẤU HÌNH (THAY KEY CỦA BẠN) =================
-URL = "https://ewqqodsfvlvnrzsylawy.supabase.co" 
-KEY ="sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
+URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
+KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 
 # Lưu ý: Token ghp_ nên dán trực tiếp hoặc dùng st.secrets
 GH_TOKEN = "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"
@@ -49,8 +49,8 @@ def upload_to_github(img_bytes, filename):
             
         res = requests.put(url, headers=headers, json=data, timeout=15)
         if res.status_code in [200, 201]:
-            # Thay đổi dòng return này
-return f"https://githubusercontent.com{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.png"
+            return f"https://githubusercontent.com{GH_REPO}/{GH_BRANCH}/imgs/{clean_name}.png"
+        return None
     except:
         return None
 
