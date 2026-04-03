@@ -53,9 +53,9 @@ def classify_logic(specs, text, name):
         return "QUẦN DÀI LƯNG THƯỜNG"
     return "ÁO / KHÁC"
 
-def get_data(pdf_path):
+ get_data(pdf_path):
     try:
-        specs, text = {}, ""
+        specdefs, text = {}, ""
         with pdfplumber.open(pdf_path) as pdf:
             for p in pdf.pages:
                 t = p.extract_text()
@@ -76,7 +76,35 @@ def get_data(pdf_path):
         img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         doc.close()
         return {"spec": specs, "img": img, "cat": classify_logic(specs, text, os.path.basename(pdf_path))}
+    except: return Nonedef get_data(pdf_path):
+    try:
+        specs, text = {}, ""
+        with pdfplumber.open(pdf_path) as pdf:
+            for p in pdf.pages:
+                t = p.extract_text()
+                if t: text += t
+                for tb in p.extract_tables():
+                    content_str = str(tb).upper()
+                    if any(x in content_str for x in ['FABRIC', 'MATERIAL', 'BOM']): continue
+                    for r in tb:
+                        if not r or len(r) < 2: continue
+                        label = " ".join([str(x) for x in r[:2] if x]).strip().upper().replace("\n", " ")
+                        label = re.sub(r'^[A-Z]\d{1,4}.*?\s', '', label)
+                        
+                        # Lấy tất cả số đo thực tế
+                        vals = [parse_val(x) for x in r[1:] if 3.0 <= parse_val(x) <= 100.0]
+                        
+                        if vals and len(label) > 3:
+                            # THAY ĐỔI TẠI ĐÂY: Lấy vals[0] (số đầu tiên) thay vì median
+                            # Việc này đảm bảo luôn lấy đúng 1 cột size cố định
+                            specs[label[:100]] = round(float(vals[0]), 2) 
+                            
+        doc = fitz.open(pdf_path)
+        img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
+        doc.close()
+        return {"spec": specs, "img": img, "cat": classify_logic(specs, text, os.path.basename(pdf_path))}
     except: return None
+
 
 # ================= SIDEBAR & NẠP KHO =================
 with st.sidebar:
