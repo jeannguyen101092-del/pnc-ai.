@@ -5,7 +5,6 @@ from PIL import Image
 from torchvision import models, transforms
 from supabase import create_client, Client
 from sklearn.metrics.pairwise import cosine_similarity
-from difflib import SequenceMatcher
 import matplotlib.pyplot as plt
 
 # ================= CONFIG (Thay URL và KEY của bạn) =================
@@ -30,12 +29,14 @@ def load_vision_ai():
 
 ai_brain = load_vision_ai()
 
-# ================= HỆ THỐNG PHÂN TÍCH "SOI" CHI TIẾT =================
+# ================= HỆ THỐNG PHÂN TÍCH =================
 def get_vector(img_bytes):
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         tf = transforms.Compose([transforms.Resize(256), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-        with torch.no_grad(): return ai_brain(tf(img).unsqueeze(0)).flatten().numpy()
+        with torch.no_grad(): 
+            # Chuyển đổi sang list để lưu được vào Supabase
+            return ai_brain(tf(img).unsqueeze(0)).flatten().numpy().tolist()
     except: return None
 
 def analyze_garment_logic(text):
@@ -126,23 +127,34 @@ with st.sidebar:
             for ex in exls:
                 nums_e = set(re.findall(r'\d{3,}', ex.name)) - {str(x) for x in range(2023, 2027)}
                 common = nums_p.intersection(nums_e)
-                if common: f_e, ma = ex, str(max(common, key=len)); break
+                if common: 
+                    f_e, ma = ex, str(list(common)[0]) # Lấy mã đầu tiên và ép kiểu string
+                    break
             
-            if f_p and f_e:
+            if f_p and f_e and ma != "UNK":
                 with st.spinner(f"AI đang 'soi' mã {ma}..."):
                     with open("tmp.pdf", "wb") as t: t.write(f_p.getbuffer())
                     d, ex_img = extract_pdf_ultimate("tmp.pdf"), excel_to_img_matrix(f_e)
                     if d and ex_img:
-                        vec = get_vector(d['img']).tolist()
-                        # SỬA LỖI: Truyền d thay vì d
-                        details = analyze_garment_logic(d)
+                        vec = get_vector(d['img'])
+                        details = analyze_garment_logic(d) # FIX: Truyền text
                         try:
-                            # SỬA LỖI: Đảm bảo upload thành công với Content-Type
+                            # Upload ảnh spec và ảnh excel
                             supabase.storage.from_(BUCKET).upload(f"{ma}_t.png", d['img'], {"x-upsert": "true", "content-type": "image/png"})
                             supabase.storage.from_(BUCKET).upload(f"{ma}_e.png", ex_img, {"x-upsert": "true", "content-type": "image/png"})
+                            
                             u_t = supabase.storage.from_(BUCKET).get_public_url(f"{ma}_t.png")
                             u_e = supabase.storage.from_(BUCKET).get_public_url(f"{ma}_e.png")
-                            supabase.table("ai_data").upsert({"file_name": ma, "vector": vec, "spec_json": d['spec'], "img_url": u_t, "excel_img_url": u_e, "details": details}).execute()
+                            
+                            # Lưu vào Database
+                            supabase.table("ai_data").upsert({
+                                "file_name": ma, 
+                                "vector": vec, 
+                                "spec_json": d['spec'], 
+                                "img_url": u_t, 
+                                "excel_img_url": u_e, 
+                                "details": details
+                            }).execute()
                             st.toast(f"✅ Đã nạp thành công mã {ma}")
                         except Exception as e: st.error(f"Lỗi DB: {e}")
         st.session_state.up_key += 1; st.rerun()
@@ -157,52 +169,46 @@ if test_pdf:
     data_test = extract_pdf_ultimate("test.pdf")
     
     if data_test:
-        col_t1, col_t2 = st.columns(2)
-        with col_t1: st.image(data_test['img'], caption="Ảnh từ file PDF Test", use_container_width=True)
-        with col_t2: 
-            st.info("🔍 Chi tiết AI soi được từ file Test:")
-            st.write(analyze_garment_logic(data_test))
-
+        col1, col2 = st.columns(2)
+        with col1: st.image(data_test['img'], caption="FILE TEST")
+        
         if st.button("🤖 AI: TỰ ĐỘNG NHẬN DIỆN MÃ TƯƠNG ĐỒNG"):
             vec_test = get_vector(data_test['img'])
             best_score, best_match = 0, None
-            
             for s in samples:
                 score = cosine_similarity([vec_test], [s['vector']])[0][0]
                 if score > best_score:
                     best_score, best_match = score, s
-            
             if best_match:
-                st.success(f"✅ Đã tìm thấy mã tương đồng nhất: {best_match['file_name']} (Độ giống: {best_score:.2%})")
                 st.session_state.target = best_match
+                st.success(f"Đã tìm thấy mã {best_match['file_name']} (Giống {best_score:.1%})")
                 st.rerun()
 
-        # PHẦN SO SÁNH VÀ XUẤT FILE
         if target:
+            with col2: st.image(target['img_url'], caption=f"KHO GỐC: {target['file_name']}")
+            
+            # --- SO SÁNH THÔNG SỐ VÀ XUẤT FILE ---
             st.divider()
-            st.subheader(f"📊 KẾT QUẢ ĐỐI CHIẾU: TEST vs {target['file_name']}")
-            c1, c2 = st.columns(2)
-            with c1: st.image(data_test['img'], caption="FILE TEST")
-            with c2: st.image(target['img_url'], caption=f"KHO GỐC ({target['file_name']})")
+            st.subheader("📏 BẢNG ĐỐI CHIẾU THÔNG SỐ")
             
-            # So sánh bảng thông số
-            st.write("### 📏 So sánh thông số kỹ thuật")
-            spec_diff = []
-            for key, val in data_test['spec'].items():
-                match_val = target['spec_json'].get(key, "N/A")
-                status = "✅ Khớp" if val == match_val else "❌ Lệch"
-                spec_diff.append({"Hạng mục": key, "Test": val, "Kho Gốc": match_val, "Kết quả": status})
+            comparison = []
+            for item, val in data_test['spec'].items():
+                val_goc = target['spec_json'].get(item, "---")
+                status = "✅ Khớp" if str(val) == str(val_goc) else "❌ Lệch"
+                comparison.append({"Hạng mục": item, "Giá trị Test": val, "Giá trị Gốc": val_goc, "Kết quả": status})
             
-            df_compare = pd.DataFrame(spec_diff)
+            df_compare = pd.DataFrame(comparison)
             st.table(df_compare)
 
             # NÚT XUẤT FILE
+            st.write("### 📤 XUẤT BÁO CÁO")
             csv = df_compare.to_csv(index=False).encode('utf-8-sig')
             st.download_button(
-                label="📥 XUẤT KẾT QUẢ SO SÁNH (CSV)",
+                label="📥 TẢI FILE SO SÁNH (.CSV)",
                 data=csv,
                 file_name=f"SoSanh_{target['file_name']}.csv",
                 mime='text/csv',
             )
 
-# Lưu ý: Nhớ tạo Policy trên Supabase để cho phép Insert dữ liệu và Storage.
+if not target:
+    st.info("💡 Hãy chọn một mã đối chiếu ở Sidebar hoặc bấm 'Tự động nhận diện' sau khi up file Test.")
