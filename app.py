@@ -9,7 +9,7 @@ from supabase import create_client, Client
 from difflib import SequenceMatcher
 import matplotlib.pyplot as plt
 
-# ================= CONFIG (Thay bằng thông tin của bạn) =================
+# ================= CONFIG (Giữ nguyên của bạn) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET_NAME = "fashion-imgs"
@@ -45,7 +45,7 @@ def excel_to_img_bytes(file_obj):
         return buf.getvalue()
     except: return None
 
-# ================= TRÍCH XUẤT DỮ LIỆU (Giữ nguyên logic của bạn) =================
+# ================= LOGIC TRÍCH XUẤT (Giữ nguyên của bạn) =================
 def parse_val(t):
     try:
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
@@ -111,41 +111,33 @@ with st.sidebar:
             match = re.search(r'^\d+', f.name)
             if match:
                 ma_hang = match.group()
-                ext = os.path.splitext(f.name)[1].lower()
+                ext = os.path.splitext(f.name).lower()
                 if ma_hang not in groups: groups[ma_hang] = {}
                 groups[ma_hang][ext] = f
 
         for ma_hang, parts in groups.items():
-            f_pdf = parts.get('.pdf')
-            f_exl = parts.get('.xlsx') or parts.get('.xls')
-
+            f_pdf = parts.get('.pdf'); f_exl = parts.get('.xlsx') or parts.get('.xls')
             if f_pdf and f_exl:
                 with st.spinner(f"Đang xử lý mã: {ma_hang}..."):
                     with open("tmp.pdf", "wb") as t: t.write(f_pdf.getbuffer())
                     d = get_data("tmp.pdf")
                     exl_img_bytes = excel_to_img_bytes(f_exl)
-
                     if d and exl_img_bytes:
                         img_p = Image.open(io.BytesIO(d['img'])).convert("RGB")
                         buf_pdf = io.BytesIO(); img_p.save(buf_pdf, format="WEBP", quality=60)
                         fname_pdf = f"{ma_hang}_tech.webp"
                         supabase.storage.from_(BUCKET_NAME).upload(fname_pdf, buf_pdf.getvalue(), {"upsert":"true"})
                         url_pdf = supabase.storage.from_(BUCKET_NAME).get_public_url(fname_pdf)
-
                         fname_exl = f"{ma_hang}_dm.webp"
                         supabase.storage.from_(BUCKET_NAME).upload(fname_exl, exl_img_bytes, {"upsert":"true"})
                         url_exl = supabase.storage.from_(BUCKET_NAME).get_public_url(fname_exl)
-
                         tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
                         with torch.no_grad(): vec = ai_brain(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
-                        
                         supabase.table("ai_data").upsert({
                             "file_name": ma_hang, "vector": vec, "spec_json": d['spec'], 
                             "img_url": url_pdf, "excel_img_url": url_exl, "category": d['cat']
                         }, on_conflict="file_name").execute()
                 if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
-            else:
-                st.warning(f"Bỏ qua mã {ma_hang}: Thiếu file PDF hoặc Excel tương ứng.")
         st.rerun()
 
 # ================= CHÍNH: SO SÁNH =================
@@ -170,8 +162,8 @@ if test_file:
                 if item.get('vector'):
                     try:
                         v_raw = item['vector']
-                        # Ép kiểu vector về float array để so sánh
-                        if isinstance(v_raw, str):
+                        # ÉP KIỂU VECTOR VỀ MẢNG SỐ ĐỂ SO SÁNH
+                        if isinstance(v_raw, str): 
                             v_raw = [float(x) for x in v_raw.strip('[]').split(',')]
                         v_db = np.array(v_raw, dtype=np.float32).reshape(1, -1)
                         sim_val = float(cosine_similarity(v_test.reshape(1, -1), v_db)) * 100
@@ -193,24 +185,16 @@ if test_file:
                         for kt, vt in test_specs.items():
                             match_key = next((kd for kd in db_specs.keys() if SequenceMatcher(None, kt, kd).ratio() > 0.8), None)
                             if match_key:
-                                vd = db_specs[match_key]
-                                comp_list.append({"Thông số": kt, "Test": vt, "Kho": vd, "Lệch": round(vt - vd, 2)})
-                            else:
-                                comp_list.append({"Thông số": kt, "Test": vt, "Kho": 0.0, "Lệch": vt})
+                                vd = db_specs[match_key]; comp_list.append({"Thông số": kt, "Test": vt, "Kho": vd, "Lệch": round(vt - vd, 2)})
+                            else: comp_list.append({"Thông số": kt, "Test": vt, "Kho": 0.0, "Lệch": vt})
                         
                         df_res = pd.DataFrame(comp_list)
                         st.table(df_res)
-
-                        # --- NÚT XUẤT EXCEL KẾT QUẢ ---
+                        
                         output = io.BytesIO()
                         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                            df_res.to_excel(writer, index=False, sheet_name='KetQuaSoSanh')
-                        st.download_button(
-                            label="📥 XUẤT KẾT QUẢ SO SÁNH (EXCEL)",
-                            data=output.getvalue(),
-                            file_name=f"SoSanh_{m['file_name']}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
+                            df_res.to_excel(writer, index=False, sheet_name='SoSanh')
+                        st.download_button(label="📥 XUẤT FILE EXCEL KẾT QUẢ", data=output.getvalue(), file_name=f"SoSanh_{m['file_name']}.xlsx", mime="application/vnd.ms-excel")
 
 if os.path.exists("test.pdf"): os.remove("test.pdf")
 gc.collect()
