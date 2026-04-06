@@ -1,5 +1,4 @@
 streamlit
-supabase
 PyMuPDF
 pdfplumber
 pandas
@@ -8,5 +7,6 @@ Pillow
 torch
 torchvision
 scikit-learn
-requests
-xlsxwriter
+supabase
+matplotlib
+openpyxl
