@@ -114,14 +114,25 @@ with st.sidebar:
     st.divider()
     files = st.file_uploader("Nạp PDF & Excel (Tên file phải giống nhau)", accept_multiple_files=True, type=['pdf', 'xlsx', 'xls'])
     
-    if files and st.button("🚀 BẮT ĐẦU NẠP"):
-        # Bước 1: Gom nhóm file theo tên đầy đủ (không lấy đuôi)
+        if files and st.button("🚀 BẮT ĐẦU NẠP"):
         groups = {}
         for f in files:
-            name_no_ext = os.path.splitext(f.name)[0]
-            ext = os.path.splitext(f.name)[1].lower()
-            if name_no_ext not in groups: groups[name_no_ext] = {}
-            groups[name_no_ext][ext] = f
+            # Lấy các chữ số đầu tiên làm mã định danh (Ví dụ: '5651')
+            match = re.search(r'^\d+', f.name)
+            if match:
+                ma_hang = match.group()
+                ext = os.path.splitext(f.name).lower()
+                if ma_hang not in groups: groups[ma_hang] = {}
+                groups[ma_hang][ext] = f
+
+        for ma_hang, parts in groups.items():
+            f_pdf = parts.get('.pdf')
+            f_exl = parts.get('.xlsx') or parts.get('.xls')
+
+            if f_pdf and f_exl:
+                with st.spinner(f"Đang xử lý mã: {ma_hang}..."):
+                    # --- Giữ nguyên logic xử lý PDF, Excel và Supabase của bạn ---
+                    # Dùng ma_hang để làm file_name lưu vào database
 
         # Bước 2: Chỉ xử lý nếu có đủ cặp PDF và Excel
         for name, parts in groups.items():
