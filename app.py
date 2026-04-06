@@ -8,7 +8,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # ================= CONFIG (Thay URL và KEY thực tế) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
-KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"                  
+KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"                 
 BUCKET = "fashion-imgs"
 
 try:
@@ -17,7 +17,7 @@ except Exception as e:
     st.error(f"❌ Lỗi kết nối Database: {e}")
     st.stop()
 
-st.set_page_config(layout="wide", page_title="AI POM CHECKER V22.0", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="AI POM CHECKER V23.0", page_icon="🛡️")
 
 # ================= HỆ THỐNG AI VISION (ƯU TIÊN HÌNH ẢNH) =================
 @st.cache_resource
@@ -60,9 +60,9 @@ def extract_valid_techpack(pdf_file):
                     for row in tb:
                         row_c = [str(x).strip() for x in row if x]
                         if len(row_c) >= 2:
-                            key = row_c[0].upper()
-                            val = row_c[-1]
-                            # Lọc POM: Có chữ cái ở key và có số đo thực tế
+                            key = str(row_c[0]).upper()
+                            val = str(row_c[-1])
+                            # Lọc POM: Phải có chữ cái ở key và có số đo thực tế
                             if len(key) > 4 and any(c.isdigit() for c in val):
                                 specs[key] = val
         
@@ -99,7 +99,7 @@ with st.sidebar:
         st.rerun()
 
 # ================= MAIN UI: AUTO-MATCH & SIÊU SO SÁNH =================
-st.title("🛡️ AI POM CHECKER V22.0 - SIÊU SO SÁNH")
+st.title("🛡️ AI POM CHECKER V23.0 - SIÊU SO SÁNH")
 st.info("💡 Hệ thống tự động bỏ qua file lỗi. Ưu tiên khớp hình dáng rồi mới đối chiếu thông số.")
 
 test_files = st.file_uploader("1. Tải các file cần kiểm tra (Hàng loạt)", type="pdf", accept_multiple_files=True)
@@ -114,11 +114,10 @@ if test_files:
         with st.expander(f"🔍 ĐANG ĐỐI CHIẾU: {t_file.name}", expanded=True):
             v_test = get_vector(data_test['img'])
             
-            # --- TÌM MÃ GIỐNG NHẤT (FIX LỖI TYPE ERROR TẠI ĐÂY) ---
+            # --- TÌM MÃ GIỐNG NHẤT ---
             best_s, best_m = 0.0, None
             if samples and v_test:
                 for s in samples:
-                    # Lấy giá trị float từ mảng kết quả của cosine_similarity
                     score = float(cosine_similarity([v_test], [s['vector']])[0][0])
                     if score > best_s:
                         best_s, best_m = score, s
@@ -142,14 +141,17 @@ if test_files:
                 
                 df_res = pd.DataFrame(res)
 
-                # HIỂN THỊ BẢNG MÀU SẮC
+                # --- FIX LỖI HIỂN THỊ MÀU SẮC TẠI ĐÂY ---
                 def style_result(val):
-                    if val == "❌ LỆCH": return 'background-color: #f8d7da; color: #721c24'
-                    return 'background-color: #d4edda; color: #155724'
+                    if val == "❌ LỆCH":
+                        return 'background-color: #f8d7da; color: #721c24; font-weight: bold' # Màu đỏ
+                    return 'background-color: #d4edda; color: #155724; font-weight: bold' # Màu xanh
 
+                # Dùng st.dataframe thay cho st.table để hỗ trợ .style
                 st.dataframe(
                     df_res.style.applymap(style_result, subset=['Kết quả']),
-                    use_container_width=True
+                    use_container_width=True,
+                    height=min(len(df_res) * 35 + 40, 600)
                 )
                 
                 csv = df_res.to_csv(index=False).encode('utf-8-sig')
