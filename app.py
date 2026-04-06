@@ -118,12 +118,15 @@ with st.sidebar:
         for f in files:
             m = re.search(r'^\d+', f.name)
             if m:
-                ma = m.group(); ext = os.path.splitext(f.name).lower()
+                ma = m.group()
+                # SỬA LỖI TẠI ĐÂY: Lấy phần tử [1] của tuple splitext
+                ext = os.path.splitext(f.name)[1].lower() 
                 if ma not in groups: groups[ma] = {}
                 groups[ma][ext] = f
         
         for ma, parts in groups.items():
-            f_p, f_e = parts.get('.pdf'), (parts.get('.xlsx') or parts.get('.xls'))
+            f_p = parts.get('.pdf')
+            f_e = parts.get('.xlsx') or parts.get('.xls')
             if f_p and f_e:
                 with st.spinner(f"Đang nạp mã: {ma}"):
                     with open("tmp.pdf", "wb") as t: t.write(f_p.getbuffer())
