@@ -31,7 +31,7 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= HÀM HỖ TRỢ =================
+# ================= HÀM HỖ TRỢ AI =================
 def get_vector(img_bytes):
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     tf = transforms.Compose([
@@ -130,7 +130,6 @@ with st.sidebar:
                 ma = m.group(); ext = os.path.splitext(f.name)[1].lower()
                 if ma not in groups: groups[ma] = {}
                 groups[ma][ext] = f
-        
         for ma, parts in groups.items():
             f_p, f_e = parts.get('.pdf'), (parts.get('.xlsx') or parts.get('.xls'))
             if f_p and f_e:
@@ -145,9 +144,7 @@ with st.sidebar:
                             url_t = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_t.webp")
                             url_e = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_e.webp")
                             supabase.table("ai_data").upsert({"file_name": ma, "vector": vec, "spec_json": d['spec'], "img_url": url_t, "excel_img_url": url_e}, on_conflict="file_name").execute()
-                            st.toast(f"✅ Đã nạp thành công mã {ma}")
-                        except Exception as e: st.error(f"Lỗi database mã {ma}: {e}")
-                if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
+                        except: pass
         st.session_state.uploader_key += 1; st.rerun()
 
 # ================= MAIN UI =================
@@ -160,6 +157,7 @@ if test_file:
     data_test = get_data("test.pdf")
     
     if data_test:
+        # TỰ ĐỘNG TÌM MÃ GIỐNG NHẤT BẰNG AI
         if st.button("🤖 TỰ ĐỘNG TÌM MÃ TƯƠNG ĐỒNG NHẤT"):
             test_vec = get_vector(data_test['img'])
             best_sim, best_item = -1, None
@@ -196,8 +194,18 @@ if test_file:
                     diff = round(v_test - v_db, 3) if isinstance(v_db, (int, float)) else "N/A"
                     status = "✅ OK" if diff == 0 else ("❌ SAI" if diff != "N/A" else "❓ MỚI")
                     rows.append({"Thông số PDF Test": k_test, "Số đo Test": v_test, "Số đo Kho": v_db, "Chênh lệch": diff, "Trạng thái": status})
+                
                 df_compare = pd.DataFrame(rows)
-                st.dataframe(df_compare.style.map(lambda x: 'background-color: #ffcccc' if x == "❌ SAI" else ('background-color: #ccffcc' if x == "✅ OK" else ''), subset=['Trạng thái']), use_container_width=True, height=550)
+                
+                # FIX LỖI KEYERROR: Kiểm tra bảng có dữ liệu mới tô màu
+                if not df_compare.empty and 'Trạng thái' in df_compare.columns:
+                    st.dataframe(df_compare.style.map(
+                        lambda x: 'background-color: #ffcccc' if x == "❌ SAI" else ('background-color: #ccffcc' if x == "✅ OK" else ''), 
+                        subset=['Trạng thái']
+                    ), use_container_width=True, height=550)
+                else:
+                    st.dataframe(df_compare, use_container_width=True)
+                
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer: df_compare.to_excel(writer, index=False)
                 st.download_button("📥 XUẤT EXCEL", output.getvalue(), f"SoSanh_{target['file_name']}.xlsx")
