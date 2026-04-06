@@ -9,8 +9,8 @@ from supabase import create_client, Client
 from difflib import SequenceMatcher
 import matplotlib.pyplot as plt
 
-# ================= CONFIG (Giữ nguyên) =================
-URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
+# ================= CONFIG (Thay bằng thông tin của bạn) =================
+URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET_NAME = "fashion-imgs"
 
@@ -28,24 +28,29 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= HÀM CHỤP ẢNH EXCEL =================
+# ================= HÀM CHỤP ẢNH EXCEL ĐỊNH MỨC =================
 def excel_to_img_bytes(file_obj):
     try:
+        # Đọc file Excel, lấy tối đa 30 dòng để ảnh rõ nét
         df = pd.read_excel(file_obj).fillna("")
-        df = df.head(30) # Chụp 30 dòng đầu
-        fig, ax = plt.subplots(figsize=(8, len(df) * 0.4))
+        df_display = df.head(30)
+        
+        fig, ax = plt.subplots(figsize=(10, len(df_display) * 0.5))
         ax.axis('off')
-        table = ax.table(cellText=df.values, colLabels=df.columns, loc='center', cellLoc='left')
+        table = ax.table(cellText=df_display.values, colLabels=df_display.columns, loc='center', cellLoc='left')
         table.auto_set_font_size(False)
-        table.set_fontsize(9)
+        table.set_fontsize(10)
+        table.scale(1.2, 1.2)
+        
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', dpi=120)
+        plt.savefig(buf, format='png', bbox_inches='tight', dpi=150)
         plt.close(fig)
         return buf.getvalue()
-    except:
+    except Exception as e:
+        st.error(f"Lỗi chụp ảnh Excel: {e}")
         return None
 
-# ================= LOGIC TRÍCH XUẤT (Giữ nguyên của bạn) =================
+# ================= TRÍCH XUẤT DỮ LIỆU (Giữ nguyên logic của bạn) =================
 def parse_val(t):
     try:
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
@@ -96,7 +101,7 @@ def get_data(pdf_path):
         return {"spec": specs, "img": img, "cat": classify_logic(specs, text, os.path.basename(pdf_path))}
     except: return None
 
-# ================= SIDEBAR & QUẢN LÝ KHO (Đã cập nhật logic nạp song song) =================
+# ================= SIDEBAR & QUẢN LÝ KHO (Logic nạp cặp PDF+Excel) =================
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     try:
@@ -107,46 +112,46 @@ with st.sidebar:
         all_samples = []; st.metric("Tổng mẫu trong kho", "0 mẫu")
     
     st.divider()
-    files = st.file_uploader("Nạp PDF & Excel (Cùng tên file)", accept_multiple_files=True, type=['pdf', 'xlsx', 'xls'])
+    files = st.file_uploader("Nạp PDF & Excel (Tên file phải giống nhau)", accept_multiple_files=True, type=['pdf', 'xlsx', 'xls'])
     
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
-        # Phân loại file theo tên gốc (không bao gồm đuôi)
+        # Bước 1: Gom nhóm file theo tên đầy đủ (không lấy đuôi)
         groups = {}
         for f in files:
-            name_part = os.path.splitext(f.name)[0]
-            ext_part = os.path.splitext(f.name)[1].lower()
-            if name_part not in groups: groups[name_part] = {}
-            groups[name_part][ext_part] = f
+            name_no_ext = os.path.splitext(f.name)[0]
+            ext = os.path.splitext(f.name)[1].lower()
+            if name_no_ext not in groups: groups[name_no_ext] = {}
+            groups[name_no_ext][ext] = f
 
+        # Bước 2: Chỉ xử lý nếu có đủ cặp PDF và Excel
         for name, parts in groups.items():
-            # ĐIỀU KIỆN: Có PDF và có EXCEL mới làm
-            pdf_file = parts.get('.pdf')
-            exl_file = parts.get('.xlsx') or parts.get('.xls')
+            f_pdf = parts.get('.pdf')
+            f_exl = parts.get('.xlsx') or parts.get('.xls')
 
-            if pdf_file and exl_file:
+            if f_pdf and f_exl:
                 with st.spinner(f"Đang xử lý mã: {name}..."):
-                    with open("tmp.pdf", "wb") as t: t.write(pdf_file.getbuffer())
+                    with open("tmp.pdf", "wb") as t: t.write(f_pdf.getbuffer())
                     d = get_data("tmp.pdf")
-                    exl_img_data = excel_to_img_bytes(exl_file)
+                    exl_img_bytes = excel_to_img_bytes(f_exl)
 
-                    if d and exl_img_data:
-                        # 1. Lưu ảnh PDF
+                    if d and exl_img_bytes:
+                        # Upload ảnh PDF kỹ thuật
                         img_p = Image.open(io.BytesIO(d['img'])).convert("RGB")
                         buf_pdf = io.BytesIO(); img_p.save(buf_pdf, format="WEBP", quality=60)
-                        fname_pdf = f"{name}_tech.webp"
+                        fname_pdf = re.sub(r'[^a-zA-Z0-9]', '_', name) + "_tech.webp"
                         supabase.storage.from_(BUCKET_NAME).upload(fname_pdf, buf_pdf.getvalue(), {"upsert":"true"})
                         url_pdf = supabase.storage.from_(BUCKET_NAME).get_public_url(fname_pdf)
 
-                        # 2. Lưu ảnh Excel định mức
-                        fname_exl = f"{name}_dm.webp"
-                        supabase.storage.from_(BUCKET_NAME).upload(fname_exl, exl_img_data, {"upsert":"true"})
+                        # Upload ảnh định mức Excel
+                        fname_exl = re.sub(r'[^a-zA-Z0-9]', '_', name) + "_dm.webp"
+                        supabase.storage.from_(BUCKET_NAME).upload(fname_exl, exl_img_bytes, {"upsert":"true"})
                         url_exl = supabase.storage.from_(BUCKET_NAME).get_public_url(fname_exl)
 
-                        # 3. Vector ảnh
+                        # Xử lý Vector AI
                         tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
                         with torch.no_grad(): vec = ai_brain(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
                         
-                        # 4. Lưu DB
+                        # Lưu DB
                         supabase.table("ai_data").upsert({
                             "file_name": name, 
                             "vector": vec, 
@@ -155,10 +160,9 @@ with st.sidebar:
                             "excel_img_url": url_exl,
                             "category": d['cat']
                         }, on_conflict="file_name").execute()
-                    
-                    if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
+                if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
             else:
-                st.warning(f"Bỏ qua {name}: Thiếu file PDF hoặc Excel tương ứng.")
+                st.warning(f"Bỏ qua mã '{name}': Thiếu file PDF hoặc Excel tương ứng.")
         st.rerun()
 
 # ================= CHÍNH: SO SÁNH =================
@@ -173,7 +177,7 @@ if test_file:
         same_cat_samples = [i for i in all_samples if i['category'] == target['cat']]
         
         if not same_cat_samples:
-            st.warning(f"⚠️ Không tìm thấy mẫu cùng loại '{target['cat']}'")
+            st.warning(f"⚠️ Không tìm thấy mẫu cùng loại '{target['cat']}' trong kho.")
         else:
             tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
             with torch.no_grad(): v_test = ai_brain(tf(Image.open(io.BytesIO(target['img']))).unsqueeze(0)).flatten().numpy()
@@ -194,7 +198,7 @@ if test_file:
                     with c2: 
                         st.image(m['img_url'], caption="Ảnh mẫu trong kho")
                         if m.get('excel_img_url'):
-                            st.image(m['excel_img_url'], caption="Định mức mã hàng")
+                            st.image(m['excel_img_url'], caption="Ảnh định mức (Excel)")
                     with c3:
                         comp_list = []
                         test_specs, db_specs = target['spec'], m['spec_json']
@@ -206,3 +210,6 @@ if test_file:
                             else:
                                 comp_list.append({"Thông số": kt, "Test": vt, "Kho": 0.0, "Lệch": vt})
                         st.table(pd.DataFrame(comp_list))
+
+if os.path.exists("test.pdf"): os.remove("test.pdf")
+gc.collect()
