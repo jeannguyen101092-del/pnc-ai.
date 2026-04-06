@@ -20,6 +20,9 @@ except:
 
 st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.49", page_icon="👔")
 
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
+
 @st.cache_resource
 def load_ai():
     model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
@@ -112,21 +115,18 @@ with st.sidebar:
         st.session_state.target_sample = random.choice(all_samples)
     
     st.divider()
-    files = st.file_uploader("Nạp PDF & Excel mới", accept_multiple_files=True, type=['pdf', 'xlsx'])
+    files = st.file_uploader("Nạp PDF & Excel mới", accept_multiple_files=True, type=['pdf', 'xlsx'], key=f"uploader_{st.session_state.uploader_key}")
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         groups = {}
         for f in files:
             m = re.search(r'^\d+', f.name)
             if m:
-                ma = m.group()
-                # SỬA LỖI TẠI ĐÂY: Lấy phần tử [1] của tuple splitext
-                ext = os.path.splitext(f.name)[1].lower() 
+                ma = m.group(); ext = os.path.splitext(f.name)[1].lower()
                 if ma not in groups: groups[ma] = {}
                 groups[ma][ext] = f
         
         for ma, parts in groups.items():
-            f_p = parts.get('.pdf')
-            f_e = parts.get('.xlsx') or parts.get('.xls')
+            f_p, f_e = parts.get('.pdf'), (parts.get('.xlsx') or parts.get('.xls'))
             if f_p and f_e:
                 with st.spinner(f"Đang nạp mã: {ma}"):
                     with open("tmp.pdf", "wb") as t: t.write(f_p.getbuffer())
@@ -145,6 +145,7 @@ with st.sidebar:
                             st.toast(f"✅ Đã nạp mã {ma}")
                         except Exception as e: st.error(f"Lỗi: {e}")
                 if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
+        st.session_state.uploader_key += 1
         st.rerun()
 
 # ================= MAIN UI =================
@@ -156,15 +157,22 @@ if test_file:
     with open("test.pdf", "wb") as f: f.write(test_file.getbuffer())
     data_test = get_data("test.pdf")
     if data_test:
-        col_img, col_info = st.columns([1, 1.5])
-        with col_img:
-            st.image(data_test['img'], caption="🖼️ Ảnh thiết kế (Từ PDF Test)", use_container_width=True)
-            if target and 'excel_img_url' in target:
-                st.divider()
-                st.image(target['excel_img_url'], caption=f"📊 Định mức Excel (Mã: {target['file_name']})", use_container_width=True)
+        col_test, col_target, col_info = st.columns([1, 1, 1.5])
+        
+        with col_test:
+            st.image(data_test['img'], caption="🖼️ 1. ẢNH PDF ĐANG TEST", use_container_width=True)
+        
+        with col_target:
+            if target:
+                st.image(target['img_url'], caption=f"📁 2. ẢNH KHO ({target['file_name']})", use_container_width=True)
+                if 'excel_img_url' in target:
+                    st.divider()
+                    st.image(target['excel_img_url'], caption="📊 3. ĐỊNH MỨC EXCEL KHO", use_container_width=True)
+            else: st.warning("👈 Chọn mã ở Sidebar")
+
         with col_info:
             if target:
-                st.subheader(f"📊 Đối chiếu với Mã Kho: {target['file_name']}")
+                st.subheader(f"📊 Đối chiếu: {target['file_name']}")
                 rows = []
                 test_specs, db_specs = data_test['spec'], target['spec_json']
                 for k_test, v_test in test_specs.items():
@@ -175,12 +183,9 @@ if test_file:
                     v_db = db_specs.get(best_match, 0) if highest_ratio > 0.6 else "N/A"
                     diff = round(v_test - v_db, 3) if isinstance(v_db, (int, float)) else "N/A"
                     status = "✅ OK" if diff == 0 else ("❌ SAI" if diff != "N/A" else "❓ MỚI")
-                    rows.append({"Thông số PDF Test": k_test, "Số đo Test": v_test, "Độ tương đồng (%)": f"{round(highest_ratio * 100, 1)}%", "Số đo Kho": v_db, "Chênh lệch": diff, "Trạng thái": status})
+                    rows.append({"Thông số PDF Test": k_test, "Số đo Test": v_test, "Số đo Kho": v_db, "Chênh lệch": diff, "Trạng thái": status})
                 df_compare = pd.DataFrame(rows)
-                st.dataframe(df_compare.style.map(lambda x: 'background-color: #ffcccc' if x == "❌ SAI" else ('background-color: #ccffcc' if x == "✅ OK" else ''), subset=['Trạng thái']), use_container_width=True, height=500)
+                st.dataframe(df_compare.style.map(lambda x: 'background-color: #ffcccc' if x == "❌ SAI" else ('background-color: #ccffcc' if x == "✅ OK" else ''), subset=['Trạng thái']), use_container_width=True, height=550)
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer: df_compare.to_excel(writer, index=False)
-                st.download_button("📥 XUẤT FILE EXCEL SO SÁNH", output.getvalue(), f"SoSanh_{target['file_name']}.xlsx")
-            else:
-                st.warning("👈 Chọn mã hàng ở Sidebar để so sánh.")
-                st.dataframe(pd.DataFrame(data_test['spec'].items(), columns=['Thông số', 'Số đo']), use_container_width=True)
+                st.download_button("📥 XUẤT FILE EXCEL SO SÁNH", output.getvalue(), f"Result_{target['file_name']}.xlsx")
