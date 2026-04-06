@@ -9,7 +9,7 @@ from supabase import create_client, Client
 from difflib import SequenceMatcher
 import matplotlib.pyplot as plt
 
-# ================= CONFIG =================
+# ================= CONFIG (Thay bằng thông tin của bạn) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET_NAME = "fashion-imgs"
@@ -28,6 +28,7 @@ def load_ai():
 
 ai_brain = load_ai()
 
+# ================= HÀM CHỤP ẢNH EXCEL ĐỊNH MỨC =================
 def excel_to_img_bytes(file_obj):
     try:
         df = pd.read_excel(file_obj).fillna("")
@@ -44,6 +45,7 @@ def excel_to_img_bytes(file_obj):
         return buf.getvalue()
     except: return None
 
+# ================= TRÍCH XUẤT DỮ LIỆU =================
 def parse_val(t):
     try:
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
@@ -75,13 +77,9 @@ def get_data(pdf_path):
                 t = p.extract_text()
                 if t: text += t
                 for tb in p.extract_tables():
-                    content_str = str(tb).upper()
-                    if any(x in content_str for x in ['FABRIC', 'MATERIAL', 'BOM']): continue
                     for r in tb:
                         if not r or len(r) < 2: continue
-                        label = " ".join([str(x) for x in r[:2] if x]).strip().upper().replace("\n", " ")
-                        if any(x in label for x in ['DESCRIPTION', 'TOLERANCE', 'PAGE', 'DATE']): continue
-                        label = re.sub(r'^[A-Z]\d{1,4}.*?\s', '', label)
+                        label = " ".join([str(x) for x in r[:2] if x]).strip().upper()
                         vals = [parse_val(x) for x in r[1:] if 3.0 <= parse_val(x) <= 100.0]
                         if vals and len(label) > 3: specs[label[:100]] = round(float(vals[0]), 2)
         doc = fitz.open(pdf_path)
@@ -149,7 +147,10 @@ if test_file:
             matches = []
             for item in same_cat:
                 if item.get('vector'):
-                    v_db = np.array(item['vector']).reshape(1, -1)
+                    v_raw = item['vector']
+                    if isinstance(v_raw, str): # Ép kiểu nếu vector bị lưu dạng chuỗi
+                        v_raw = [float(x) for x in v_raw.strip('[]').split(',')]
+                    v_db = np.array(v_raw, dtype=np.float32).reshape(1, -1)
                     sim = float(cosine_similarity(v_test.reshape(1, -1), v_db)) * 100
                     matches.append(item | {"sim": sim})
             
@@ -171,3 +172,6 @@ if test_file:
                         out = io.BytesIO()
                         with pd.ExcelWriter(out, engine='xlsxwriter') as wr: df.to_excel(wr, index=False)
                         st.download_button("📥 XUẤT EXCEL", out.getvalue(), f"SoSanh_{m['file_name']}.xlsx")
+
+if os.path.exists("test.pdf"): os.remove("test.pdf")
+gc.collect()
