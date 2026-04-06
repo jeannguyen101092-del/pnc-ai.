@@ -1,6 +1,6 @@
 import streamlit as st
 import os, fitz, io, pdfplumber, re, pandas as pd, numpy as np
-import torch, random, datetime, logging
+import torch, random, datetime, time
 from PIL import Image
 from torchvision import models, transforms
 from supabase import create_client, Client
@@ -10,147 +10,150 @@ import matplotlib.pyplot as plt
 
 # ================= CONFIG (Thay URL và KEY của bạn) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
-KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"                  
+KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"            
 BUCKET = "fashion-imgs"
 
-st.set_page_config(layout="wide", page_title="AI FASHION PRO V15.8", page_icon="🛡️")
-
-# CSS Pro giao diện tối giản
-st.markdown("""<style>.stMetric {background: white; border: 1px solid #ddd; padding: 10px; border-radius: 8px;}</style>""", unsafe_allow_html=True)
+st.set_page_config(layout="wide", page_title="AI FASHION PRO V16.0", page_icon="🛡️")
 
 if "target" not in st.session_state: st.session_state.target = None
-if "up_key" not in st.session_state: st.session_state.up_key = 100
+if "up_key" not in st.session_state: st.session_state.up_key = 1000
 
 @st.cache_resource
-def load_ai():
-    model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
-    return torch.nn.Sequential(*(list(model.features.children()) + [torch.nn.AdaptiveAvgPool2d(1)])).eval()
+def load_ai_v16():
+    # Sử dụng ResNet50 mạnh mẽ để soi chi tiết túi, nắp, dáng sản phẩm
+    model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+    return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 
-ai_brain = load_ai()
+ai_brain = load_ai_v16()
 
-# ================= HÀM XỬ LÝ DỮ LIỆU CHUẨN KỸ THUẬT =================
+# ================= HỆ THỐNG PHÂN TÍCH "SOI" CHI TIẾT =================
 def get_vector(img_bytes):
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+        tf = transforms.Compose([transforms.Resize(256), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
         with torch.no_grad(): return ai_brain(tf(img).unsqueeze(0)).flatten().numpy()
     except: return None
 
-def parse_val(t):
-    try:
-        t_str = str(t).strip().replace('-', ' ')
-        nums = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', t_str)
-        if not nums: return 0
-        v = nums[0]
-        if ' ' in v:
-            p = v.split()
-            return float(p[0]) + eval(p[1])
-        return eval(v) if '/' in v else float(v)
-    except: return 0
+def analyze_garment_details(text):
+    """AI soi văn bản kỹ thuật để nhận diện đặc điểm chi tiết"""
+    t = str(text).upper()
+    details = []
+    # Soi đặc điểm Quần
+    if 'CARGO' in t: details.append("📦 Túi Hộp (Cargo)")
+    if 'SLANT' in t: details.append("📐 Túi Xéo")
+    if 'SCOOP' in t or 'HAM ECH' in t: details.append("🐸 Túi Hàm Ếch")
+    if 'ELASTIC' in t: details.append("🧶 Lưng Thun")
+    # Soi đặc điểm Áo
+    if 'LONG SLEEVE' in t: details.append("🧥 Áo Dài Tay")
+    if 'SHORT SLEEVE' in t: details.append("👕 Áo Ngắn Tay")
+    # Soi đặc điểm Váy
+    if 'A-LINE' in t or 'FLARE' in t: details.append("💃 Váy Xòe")
+    if 'PENCIL' in t or 'TUM' in t: details.append("👗 Váy Túm/Bút Chì")
+    return details
 
-def excel_to_img(file_obj):
-    """Sửa lỗi XLS bằng cách ép engine xlrd"""
+def excel_to_img_v16(file_obj):
+    """Xử lý triệt để lỗi XLS bằng engine xlrd"""
     try:
         ext = file_obj.name.split('.')[-1].lower()
         engine = 'xlrd' if ext == 'xls' else 'openpyxl'
         df = pd.read_excel(file_obj, engine=engine).dropna(how='all', axis=0).fillna("")
         
-        fig, ax = plt.subplots(figsize=(20, len(df.head(60)) * 0.6 + 2))
+        fig, ax = plt.subplots(figsize=(24, len(df.head(70)) * 0.7 + 2))
         ax.axis('off')
-        ax.table(cellText=df.head(60).values, colLabels=df.columns, loc='center', cellLoc='left').scale(1, 2.5)
+        ax.table(cellText=df.head(70).values, colLabels=df.columns, loc='center', cellLoc='left').scale(1.2, 3)
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', dpi=160); plt.close(fig)
+        plt.savefig(buf, format='png', bbox_inches='tight', dpi=180); plt.close(fig)
         return buf.getvalue()
     except Exception as e:
-        st.error(f"❌ Lỗi định dạng Excel: {e}. Hãy cài 'pip install xlrd'")
+        st.error(f"❌ Lỗi Excel: {e}. Hãy cài 'pip install xlrd'")
         return None
 
-def extract_pdf(pdf_path):
+def extract_pdf_v16(pdf_path):
     specs, text, base_size = {}, "", "8"
     try:
         with pdfplumber.open(pdf_path) as pdf:
             for page in pdf.pages:
                 txt = page.extract_text() or ""
                 text += txt
+                # Tìm Base Size
                 m = re.search(r'(?:Base|Sample)\s*Size\s*[:\s]\s*(\w+)', txt, re.I)
                 if m: base_size = m.group(1).upper()
-
+                # Quét bảng ma trận
                 for tb in page.extract_tables():
                     if not tb or len(tb) < 2: continue
                     h_idx, header = -1, []
                     for i, row in enumerate(tb[:10]):
                         row_up = [str(x or "").strip().upper() for x in row]
-                        if any(base_size == x or (base_size in x and len(x) < 5) for x in row_up):
+                        if any(base_size in x and len(x) < 6 for x in row_up):
                             h_idx, header = i, row_up; break
                     if h_idx != -1:
                         b_idx = next((idx for idx, v in enumerate(header) if base_size in v and len(v) < 6), -1)
                         if b_idx != -1:
                             for r in tb[h_idx + 1:]:
                                 desc = " ".join([str(x or "") for x in r[:b_idx]]).strip().upper()
-                                val = parse_val(r[b_idx])
-                                if val > 0.1 and len(desc) > 5:
-                                    specs[re.sub(r'[^A-Z0-9\s/]', '', desc)[:120]] = round(float(val), 3)
+                                val = str(r[b_idx]).strip()
+                                if val and len(desc) > 5: specs[re.sub(r'[^A-Z0-9\s/]', '', desc)[:120]] = val
         doc = fitz.open(pdf_path)
-        img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
+        img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.5, 2.5)).tobytes("png")
         doc.close()
-        return {"spec": specs, "img": img}
+        return {"spec": specs, "img": img, "text": text}
     except: return None
 
-# ================= SIDEBAR: QUẢN LÝ KHO =================
+# ================= SIDEBAR: QUẢN LÝ KHO SIÊU CẤP =================
 supabase: Client = create_client(URL, KEY)
 
 with st.sidebar:
-    st.header("📦 QUẢN LÝ KHO")
+    st.header("📦 KHO DỮ LIỆU V16.0")
     res = supabase.table("ai_data").select("*").execute()
     samples = res.data if res else []
-    st.metric("Tổng mẫu trong kho", len(samples))
+    st.metric("TỔNG MẪU", len(samples))
     
     list_ma = [s['file_name'] for s in samples]
-    sel = st.selectbox("🎯 CHỌN MÃ ĐỐI CHIẾU", ["-- Chọn mã --"] + list_ma)
-    if sel != "-- Chọn mã --": st.session_state.target = next(s for s in samples if s['file_name'] == sel)
+    sel = st.selectbox("🎯 CHỌN MÃ ĐỐI CHIẾU", ["-- Click chọn --"] + list_ma)
+    if sel != "-- Click chọn --": st.session_state.target = next(s for s in samples if s['file_name'] == sel)
 
     st.divider()
     up_files = st.file_uploader("Nạp PDF & Excel mới", accept_multiple_files=True, type=['pdf', 'xlsx', 'xls'], key=st.session_state.up_key)
     
-    if up_files and st.button("🚀 BẮT ĐẦU NẠP & XỬ LÝ"):
+    if up_files and st.button("🚀 NẠP & PHÂN TÍCH CHI TIẾT"):
         pdfs = [f for f in up_files if f.name.lower().endswith('.pdf')]
         exls = [f for f in up_files if f.name.lower().endswith(('.xls', '.xlsx'))]
         
         for f_p in pdfs:
-            ma_p = set(re.findall(r'\d{3,}', f_p.name))
-            f_e = None
+            # Tìm mã số thực (bỏ qua các năm 2023, 2024, 2025, 2026)
+            nums_p = set(re.findall(r'\d{3,}', f_p.name)) - {'2023', '2024', '2025', '2026'}
+            f_e, ma = None, "UNK"
             for ex in exls:
-                ma_e = set(re.findall(r'\d{3,}', ex.name))
-                common = ma_p.intersection(ma_e)
-                if common:
-                    f_e = ex; ma = max(common, key=len); break
+                nums_e = set(re.findall(r'\d{3,}', ex.name)) - {'2023', '2024', '2025', '2026'}
+                common = nums_p.intersection(nums_e)
+                if common: f_e, ma = ex, max(common, key=len); break
             
             if f_p and f_e:
-                with st.spinner(f"Đang xử lý mã {ma}..."):
+                with st.spinner(f"AI đang soi mã {ma}..."):
                     with open("tmp.pdf", "wb") as t: t.write(f_p.getbuffer())
-                    d, ex_img = extract_pdf("tmp.pdf"), excel_to_img(f_e)
+                    d, ex_img = extract_pdf_v16("tmp.pdf"), excel_to_img_v16(f_e)
                     if d and ex_img:
                         vec = get_vector(d['img']).tolist()
+                        details = analyze_garment_details(d)
                         try:
                             supabase.storage.from_(BUCKET).upload(f"{ma}_t.webp", d['img'], {"x-upsert": "true"})
                             supabase.storage.from_(BUCKET).upload(f"{ma}_e.webp", ex_img, {"x-upsert": "true"})
                             u_t, u_e = supabase.storage.from_(BUCKET).get_public_url(f"{ma}_t.webp"), supabase.storage.from_(BUCKET).get_public_url(f"{ma}_e.webp")
-                            supabase.table("ai_data").upsert({"file_name": ma, "vector": vec, "spec_json": d['spec'], "img_url": u_t, "excel_img_url": u_e}, on_conflict="file_name").execute()
+                            supabase.table("ai_data").upsert({"file_name": ma, "vector": vec, "spec_json": d['spec'], "img_url": u_t, "excel_img_url": u_e, "details": details}).execute()
                             st.toast(f"✅ Xong mã {ma}")
                         except Exception as e: st.error(f"Lỗi: {e}")
-                if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
         st.session_state.up_key += 1; st.rerun()
 
-# ================= MAIN UI =================
-st.title("👔 AI FASHION PRO - SO SÁNH THÔNG MINH")
+# ================= MAIN DASHBOARD =================
+st.title("🛡️ AI FASHION PRO - SO SÁNH SIÊU CẤP")
 test_pdf = st.file_uploader("1. Tải PDF Test", type="pdf")
 target = st.session_state.target
 
 if test_pdf:
     with open("test.pdf", "wb") as f: f.write(test_pdf.getbuffer())
-    data_test = extract_pdf("test.pdf")
+    data_test = extract_pdf_v16("test.pdf")
     if data_test:
-        if st.button("🤖 AI: TỰ ĐỘNG TÌM MÃ GIỐNG NHẤT"):
+        if st.button("🤖 AI: TỰ ĐỘNG NHẬN DIỆN MÃ TƯƠNG ĐỒNG"):
             test_vec = get_vector(data_test['img'])
             best_sim, best_s = -1, None
             for s in samples:
@@ -160,11 +163,14 @@ if test_pdf:
             st.session_state.target = best_s; st.rerun()
 
         c1, c2, c3 = st.columns([1, 1, 1.5])
-        with c1: st.image(data_test['img'], caption="🖼️ ẢNH TEST", use_container_width=True)
+        with c1: 
+            st.image(data_test['img'], caption="🖼️ ẢNH TEST", use_container_width=True)
+            for d in analyze_garment_details(data_test): st.info(f"🔍 {d}")
         with c2:
             if target:
                 st.image(target['img_url'], caption=f"📁 KHO ({target['file_name']})", use_container_width=True)
-                if target.get('excel_img_url'): st.divider(); st.image(target['excel_img_url'], caption="📊 ĐỊNH MỨC KHO", use_container_width=True)
+                for d in (target.get('details') or []): st.success(f"📌 {d}")
+                st.image(target['excel_img_url'], caption="📊 ĐỊNH MỨC KHO", use_container_width=True)
         with c3:
             if target:
                 st.subheader(f"📊 Đối chiếu: {target['file_name']}")
@@ -174,11 +180,9 @@ if test_pdf:
                     for k_db in target['spec_json'].keys():
                         r = SequenceMatcher(None, k_t, k_db).ratio()
                         if r > high_r: high_r, best_m = r, k_db
-                    v_db = target['spec_json'].get(best_m, 0) if high_r > 0.6 else "N/A"
-                    diff = round(v_t - v_db, 3) if isinstance(v_db, (int, float)) else "N/A"
-                    rows.append({"Thông số PDF": k_t, "Test": v_t, "Kho": v_db, "Chênh lệch": diff, "Trạng thái": "✅ OK" if diff == 0 else "❌ SAI"})
+                    v_db = target['spec_json'].get(best_m, "N/A") if high_r > 0.6 else "N/A"
+                    rows.append({"Thông số": k_t, "Test": v_t, "Kho": v_db, "Trạng thái": "✅ OK" if str(v_t) == str(v_db) else "❌ SAI"})
                 df = pd.DataFrame(rows)
-                if not df.empty:
-                    st.dataframe(df.style.map(lambda x: 'background-color: #ffcccc' if x == "❌ SAI" else ('background-color: #ccffcc' if x == "✅ OK" else ''), subset=['Trạng thái']), use_container_width=True, height=550)
+                st.dataframe(df.style.map(lambda x: 'background-color: #ffcccc' if x == "❌ SAI" else ('background-color: #ccffcc' if x == "✅ OK" else ''), subset=['Trạng thái']), use_container_width=True, height=600)
                 output = io.BytesIO()
                 df.to_excel(output, index=False); st.download_button("📥 XUẤT EXCEL", output.getvalue(), f"Result_{target['file_name']}.xlsx")
