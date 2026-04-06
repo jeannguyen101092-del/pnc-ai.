@@ -44,13 +44,13 @@ def parse_val(t):
 def excel_to_img_bytes(file_obj):
     try:
         df = pd.read_excel(file_obj).dropna(how='all', axis=0).fillna("")
-        df_display = df.head(50)
+        df_display = df.head(60)
         fig, ax = plt.subplots(figsize=(20, len(df_display) * 0.6 + 2)) 
         ax.axis('off')
         table = ax.table(cellText=df_display.values, colLabels=df_display.columns, loc='center', cellLoc='left')
         table.auto_set_font_size(False)
         table.set_fontsize(14) 
-        table.scale(1.2, 2.5) 
+        table.scale(1.2, 2.8) 
         buf = io.BytesIO()
         plt.savefig(buf, format='png', bbox_inches='tight', dpi=200)
         plt.close(fig)
@@ -112,13 +112,13 @@ with st.sidebar:
         st.session_state.target_sample = random.choice(all_samples)
     
     st.divider()
-    files = st.file_uploader("Nạp PDF & Excel mới vào kho", accept_multiple_files=True, type=['pdf', 'xlsx'])
+    files = st.file_uploader("Nạp PDF & Excel mới", accept_multiple_files=True, type=['pdf', 'xlsx'])
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         groups = {}
         for f in files:
             m = re.search(r'^\d+', f.name)
             if m:
-                ma = m.group(); ext = os.path.splitext(f.name)[1].lower()
+                ma = m.group(); ext = os.path.splitext(f.name).lower()
                 if ma not in groups: groups[ma] = {}
                 groups[ma][ext] = f
         
@@ -140,7 +140,7 @@ with st.sidebar:
                             with torch.no_grad(): vec = ai_brain(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
                             supabase.table("ai_data").upsert({"file_name": ma, "vector": vec, "spec_json": d['spec'], "img_url": url_t, "excel_img_url": url_e}, on_conflict="file_name").execute()
                             st.toast(f"✅ Đã nạp mã {ma}")
-                        except Exception as e: st.error(f"Lỗi nạp mã {ma}: {e}")
+                        except Exception as e: st.error(f"Lỗi: {e}")
                 if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
         st.rerun()
 
@@ -155,7 +155,10 @@ if test_file:
     if data_test:
         col_img, col_info = st.columns([1, 1.5])
         with col_img:
-            st.image(data_test['img'], caption="Ảnh từ PDF đang kiểm tra", use_container_width=True)
+            st.image(data_test['img'], caption="🖼️ Ảnh thiết kế (Từ PDF Test)", use_container_width=True)
+            if target and 'excel_img_url' in target:
+                st.divider()
+                st.image(target['excel_img_url'], caption=f"📊 Định mức Excel (Mã: {target['file_name']})", use_container_width=True)
         with col_info:
             if target:
                 st.subheader(f"📊 Đối chiếu với Mã Kho: {target['file_name']}")
