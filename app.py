@@ -19,7 +19,7 @@ try:
 except:
     st.error("❌ Lỗi kết nối Supabase!")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.29", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.30", page_icon="👔")
 
 @st.cache_resource
 def load_ai():
@@ -28,26 +28,36 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= HÀM CHỤP ẢNH EXCEL ĐỊNH MỨC =================
+# ================= HÀM CHỤP ẢNH EXCEL ĐỊNH MỨC SIÊU NÉT (DPI 300) =================
 def excel_to_img_bytes(file_obj):
     try:
-        df = pd.read_excel(file_obj).fillna("")
-        df_display = df.head(30)
-        fig, ax = plt.subplots(figsize=(10, len(df_display) * 0.5))
+        df = pd.read_excel(file_obj).dropna(how='all').fillna("")
+        df_display = df.head(50) # Chụp tối đa 50 dòng để đảm bảo độ nét
+        
+        fig, ax = plt.subplots(figsize=(14, len(df_display) * 0.4 + 1))
         ax.axis('off')
+        
         table = ax.table(cellText=df_display.values, colLabels=df_display.columns, loc='center', cellLoc='left')
         table.auto_set_font_size(False)
-        table.set_fontsize(10)
-        table.scale(1.2, 1.2)
+        table.set_fontsize(11)
+        table.scale(1.2, 1.8) # Giãn dòng cho thoáng chữ
+        
+        # Trang trí tiêu đề bảng
+        for (row, col), cell in table.get_celld().items():
+            if row == 0:
+                cell.set_text_props(weight='bold', color='white')
+                cell.set_facecolor('#333333')
+        
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', dpi=150)
+        plt.savefig(buf, format='png', bbox_inches='tight', dpi=300) # Tăng DPI lên 300
         plt.close(fig)
         return buf.getvalue()
     except: return None
 
-# ================= TRÍCH XUẤT DỮ LIỆU PDF =================
+# ================= TRÍCH XUẤT THÔNG SỐ THEO SIZE CHUẨN =================
 def parse_val(t):
     try:
+        if not t or str(t).strip() == "": return 0
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
         if not found: return 0
         v = found[0]
@@ -57,18 +67,6 @@ def parse_val(t):
         return eval(v) if '/' in v else float(v)
     except: return 0
 
-def classify_logic(specs, text, name):
-    txt = (text + " " + name).upper()
-    inseam = specs.get('INSEAM', 0)
-    length = 0
-    for k, v in specs.items():
-        if 'LENGTH' in k or 'OUTSEAM' in k: length = max(length, v)
-    if 'SHORT' in txt or (0 < length < 24) or (0 < inseam < 14): return "QUẦN SHORT"
-    if any(k in txt for k in ['PANT', 'CARGO', 'TROUSER', 'JOGGER']) or length >= 24 or inseam >= 14:
-        if any(k in txt for k in ['ELASTIC', 'RIB WAIST', 'THUN']): return "QUẦN DÀI LƯNG THUN"
-        return "QUẦN DÀI LƯNG THƯỜNG"
-    return "ÁO / KHÁC"
-
 def get_data(pdf_path):
     try:
         specs, text = {}, ""
@@ -77,26 +75,58 @@ def get_data(pdf_path):
                 t = p.extract_text()
                 if t: text += t
                 for tb in p.extract_tables():
-                    for r in tb:
-                        if not r or len(r) < 2: continue
-                        label = " ".join([str(x) for x in r[:2] if x]).strip().upper()
-                        vals = [parse_val(x) for x in r[1:] if 3.0 <= parse_val(x) <= 100.0]
-                        if vals and len(label) > 3: specs[label[:100]] = round(float(vals[0]), 2)
+                    if not tb or len(tb) < 2: continue
+                    
+                    # 1. Tìm cột Base Size (8, M, L, 10...)
+                    header = [str(x).strip().upper() for x in tb[0]]
+                    base_idx = -1
+                    for target_size in ['8', 'M', 'L', '10', 'S', 'MEDIUM', '6']:
+                        if target_size in header:
+                            base_idx = header.index(target_size)
+                            break
+                    
+                    # Nếu không tìm thấy tên cột, mặc định lấy cột số 2 (thường sau Description)
+                    if base_idx == -1: base_idx = 2 if len(header) > 2 else 1
+                    
+                    # 2. Lấy Description và giá trị tại cột Base Size
+                    for r in tb[1:]:
+                        if not r or len(r) <= base_idx: continue
+                        # Ghép cột 0 và 1 để lấy Description đầy đủ nhất
+                        label = (str(r[0] or "") + " " + str(r[1] or "")).strip().upper()
+                        label = label.replace("\n", " ")
+                        
+                        # Bỏ qua các dòng tiêu đề rác
+                        if any(x in label for x in ['DATE', 'PAGE', 'TOLERANCE', 'DESCRIPTION']) or len(label) < 5:
+                            continue
+                            
+                        val = parse_val(r[base_idx])
+                        if val > 0:
+                            specs[label[:150]] = round(float(val), 3)
+                            
         doc = fitz.open(pdf_path)
         img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         doc.close()
         return {"spec": specs, "img": img, "cat": classify_logic(specs, text, os.path.basename(pdf_path))}
     except: return None
 
-# ================= SIDEBAR & NẠP KHO =================
+def classify_logic(specs, text, name):
+    txt = (text + " " + name).upper()
+    length = 0
+    for k, v in specs.items():
+        if 'LENGTH' in k or 'OUTSEAM' in k: length = max(length, v)
+    if 'SHORT' in txt or (0 < length < 24): return "QUẦN SHORT"
+    if any(k in txt for k in ['PANT', 'CARGO', 'TROUSER', 'JOGGER']) or length >= 24:
+        return "QUẦN DÀI LƯNG THUN" if any(k in txt for k in ['ELASTIC', 'THUN']) else "QUẦN DÀI LƯNG THƯỜNG"
+    return "ÁO / KHÁC"
+
+# ================= SIDEBAR & QUẢN LÝ KHO =================
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     try:
         db_res = supabase.table("ai_data").select("*").execute()
         all_samples = db_res.data
         st.metric("Tổng mẫu trong kho", f"{len(all_samples)} mẫu")
-    except: 
-        all_samples = []; st.metric("Tổng mẫu trong kho", "0 mẫu")
+    except: all_samples = []; st.metric("Tổng mẫu trong kho", "0 mẫu")
     
     st.divider()
     files = st.file_uploader("Nạp PDF & Excel (Cùng mã số đầu)", accept_multiple_files=True, type=['pdf', 'xlsx', 'xls'])
@@ -112,8 +142,7 @@ with st.sidebar:
                 groups[ma][ext] = f
 
         for ma, parts in groups.items():
-            f_pdf = parts.get('.pdf')
-            f_exl = parts.get('.xlsx') or parts.get('.xls')
+            f_pdf, f_exl = parts.get('.pdf'), (parts.get('.xlsx') or parts.get('.xls'))
             if f_pdf and f_exl:
                 with st.spinner(f"Đang nạp mã: {ma}..."):
                     with open("tmp.pdf", "wb") as t: t.write(f_pdf.getbuffer())
@@ -122,8 +151,10 @@ with st.sidebar:
                     if d and exl_img:
                         img_p = Image.open(io.BytesIO(d['img'])).convert("RGB")
                         buf = io.BytesIO(); img_p.save(buf, format="WEBP")
+                        # Upload Technical Image
                         supabase.storage.from_(BUCKET_NAME).upload(f"{ma}_t.webp", buf.getvalue(), {"upsert":"true"})
                         url_t = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_t.webp")
+                        # Upload Consumption Image
                         supabase.storage.from_(BUCKET_NAME).upload(f"{ma}_e.webp", exl_img, {"upsert":"true"})
                         url_e = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_e.webp")
                         
@@ -138,8 +169,8 @@ with st.sidebar:
         st.rerun()
 
 # ================= CHÍNH: SO SÁNH =================
-st.title("👔 AI Fashion Pro V11.29")
-test_file = st.file_uploader("Tải PDF Test", type="pdf")
+st.title("👔 AI Fashion Pro V11.30")
+test_file = st.file_uploader("Tải PDF Test đối chiếu", type="pdf")
 
 if test_file:
     with open("test.pdf", "wb") as f: f.write(test_file.getbuffer())
@@ -148,24 +179,18 @@ if test_file:
         st.subheader(f"Nhận diện chủng loại: **{target['cat']}**")
         same_cat = [i for i in all_samples if i['category'] == target['cat']]
         
-        if not same_cat:
-            st.warning(f"⚠️ Không tìm thấy mẫu cùng loại '{target['cat']}' trong kho.")
-        else:
+        if same_cat:
             tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
             v_test = ai_brain(tf(Image.open(io.BytesIO(target['img']))).unsqueeze(0)).flatten().detach().numpy()
             
             matches = []
             for item in same_cat:
                 if item.get('vector'):
-                    try:
-                        v_raw = item['vector']
-                        if isinstance(v_raw, str): 
-                            v_raw = [float(x) for x in v_raw.strip('[]').split(',')]
-                        v_db = np.array(v_raw, dtype=np.float32).reshape(1, -1)
-                        # SỬA LỖI TẠI ĐÂY: Thêm [0][0] để lấy giá trị số từ mảng kết quả
-                        sim = float(cosine_similarity(v_test.reshape(1, -1), v_db)[0][0]) * 100
-                        matches.append(item | {"sim": sim})
-                    except: continue
+                    v_raw = item['vector']
+                    if isinstance(v_raw, str): v_raw = [float(x) for x in v_raw.strip('[]').split(',')]
+                    v_db = np.array(v_raw, dtype=np.float32).reshape(1, -1)
+                    sim = float(cosine_similarity(v_test.reshape(1, -1), v_db)[0][0]) * 100
+                    matches.append(item | {"sim": sim})
             
             for m in sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]:
                 with st.expander(f"📌 ĐỐI CHIẾU: {m['file_name']} ({m['sim']:.1f}%)", expanded=True):
@@ -176,25 +201,18 @@ if test_file:
                         if m.get('excel_img_url'): st.image(m['excel_img_url'], caption="Định mức (Excel)")
                     with c3:
                         res = []
-                        test_specs, db_specs = target['spec'], m['spec_json']
-                        for kt, vt in test_specs.items():
-                            mk = next((k for k in db_specs.keys() if SequenceMatcher(None, kt, k).ratio() > 0.8), None)
-                            vd = db_specs[mk] if mk else 0.0
-                            res.append({"Thông số": kt, "Test": vt, "Kho": vd, "Lệch": round(vt - vd, 2)})
+                        t_specs, d_specs = target['spec'], m['spec_json']
+                        for kt, vt in t_specs.items():
+                            mk = next((k for k in d_specs.keys() if SequenceMatcher(None, kt, k).ratio() > 0.85), None)
+                            vd = d_specs[mk] if mk else 0.0
+                            res.append({"Thông số": kt, "Test": vt, "Kho": vd, "Lệch": round(vt - vd, 3)})
                         
                         df_res = pd.DataFrame(res)
                         st.table(df_res)
-                        
-                        # XUẤT EXCEL
+                        # Xuất file Excel kết quả
                         out = io.BytesIO()
-                        with pd.ExcelWriter(out, engine='xlsxwriter') as wr: 
-                            df_res.to_excel(wr, index=False, sheet_name='Comparison')
-                        st.download_button(
-                            label=f"📥 XUẤT EXCEL KẾT QUẢ: {m['file_name']}",
-                            data=out.getvalue(),
-                            file_name=f"SoSanh_{m['file_name']}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
+                        with pd.ExcelWriter(out, engine='xlsxwriter') as wr: df_res.to_excel(wr, index=False)
+                        st.download_button(f"📥 XUẤT EXCEL: {m['file_name']}", out.getvalue(), f"SoSanh_{m['file_name']}.xlsx")
 
 if os.path.exists("test.pdf"): os.remove("test.pdf")
 gc.collect()
