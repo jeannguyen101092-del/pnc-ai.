@@ -9,7 +9,7 @@ from supabase import create_client, Client
 from difflib import SequenceMatcher
 import matplotlib.pyplot as plt
 
-# ================= CONFIG (Thay bằng thông tin của bạn) =================
+# ================= CONFIG =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET_NAME = "fashion-imgs"
@@ -28,7 +28,6 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= HÀM CHỤP ẢNH EXCEL ĐỊNH MỨC =================
 def excel_to_img_bytes(file_obj):
     try:
         df = pd.read_excel(file_obj).fillna("")
@@ -45,12 +44,11 @@ def excel_to_img_bytes(file_obj):
         return buf.getvalue()
     except: return None
 
-# ================= TRÍCH XUẤT DỮ LIỆU (Giữ nguyên logic của bạn) =================
 def parse_val(t):
     try:
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
         if not found: return 0
-        v = str(found[0])
+        v = found[0]
         if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
@@ -92,113 +90,84 @@ def get_data(pdf_path):
         return {"spec": specs, "img": img, "cat": classify_logic(specs, text, os.path.basename(pdf_path))}
     except: return None
 
-# ================= SIDEBAR & QUẢN LÝ KHO =================
+# ================= SIDEBAR =================
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     try:
         db_res = supabase.table("ai_data").select("*").execute()
         all_samples = db_res.data
         st.metric("Tổng mẫu trong kho", f"{len(all_samples)} mẫu")
-    except: 
-        all_samples = []; st.metric("Tổng mẫu trong kho", "0 mẫu")
+    except: all_samples = []; st.metric("Tổng mẫu trong kho", "0 mẫu")
     
     st.divider()
-    files = st.file_uploader("Nạp PDF & Excel (Cùng mã số đầu file)", accept_multiple_files=True, type=['pdf', 'xlsx', 'xls'])
+    files = st.file_uploader("Nạp PDF & Excel", accept_multiple_files=True, type=['pdf', 'xlsx', 'xls'])
     
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         groups = {}
         for f in files:
-            # Sửa lỗi: Lấy mã số đầu file
-            match = re.search(r'^\d+', f.name)
-            if match:
-                ma_hang = match.group()
-                ext = os.path.splitext(f.name)[1].lower() # Sửa lỗi AttributeError tại đây
-                if ma_hang not in groups: groups[ma_hang] = {}
-                groups[ma_hang][ext] = f
+            m = re.search(r'^\d+', f.name)
+            if m:
+                ma = m.group()
+                ext = os.path.splitext(f.name)[1].lower()
+                if ma not in groups: groups[ma] = {}
+                groups[ma][ext] = f
 
-        for ma_hang, parts in groups.items():
-            f_pdf = parts.get('.pdf')
-            f_exl = parts.get('.xlsx') or parts.get('.xls')
+        for ma, parts in groups.items():
+            f_pdf = parts.get('.pdf'); f_exl = parts.get('.xlsx') or parts.get('.xls')
             if f_pdf and f_exl:
-                with st.spinner(f"Đang xử lý mã: {ma_hang}..."):
+                with st.spinner(f"Đang nạp mã: {ma}..."):
                     with open("tmp.pdf", "wb") as t: t.write(f_pdf.getbuffer())
                     d = get_data("tmp.pdf")
-                    exl_img_bytes = excel_to_img_bytes(f_exl)
-                    if d and exl_img_bytes:
+                    exl_img = excel_to_img_bytes(f_exl)
+                    if d and exl_img:
                         img_p = Image.open(io.BytesIO(d['img'])).convert("RGB")
-                        buf_pdf = io.BytesIO(); img_p.save(buf_pdf, format="WEBP", quality=60)
-                        fname_pdf = f"{ma_hang}_tech.webp"
-                        supabase.storage.from_(BUCKET_NAME).upload(fname_pdf, buf_pdf.getvalue(), {"upsert":"true"})
-                        url_pdf = supabase.storage.from_(BUCKET_NAME).get_public_url(fname_pdf)
-                        
-                        fname_exl = f"{ma_hang}_dm.webp"
-                        supabase.storage.from_(BUCKET_NAME).upload(fname_exl, exl_img_bytes, {"upsert":"true"})
-                        url_exl = supabase.storage.from_(BUCKET_NAME).get_public_url(fname_exl)
-                        
+                        buf = io.BytesIO(); img_p.save(buf, format="WEBP")
+                        supabase.storage.from_(BUCKET_NAME).upload(f"{ma}_t.webp", buf.getvalue(), {"upsert":"true"})
+                        url_t = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_t.webp")
+                        supabase.storage.from_(BUCKET_NAME).upload(f"{ma}_e.webp", exl_img, {"upsert":"true"})
+                        url_e = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_e.webp")
                         tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
                         with torch.no_grad(): vec = ai_brain(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
-                        
-                        supabase.table("ai_data").upsert({
-                            "file_name": ma_hang, "vector": vec, "spec_json": d['spec'], 
-                            "img_url": url_pdf, "excel_img_url": url_exl, "category": d['cat']
-                        }, on_conflict="file_name").execute()
+                        supabase.table("ai_data").upsert({"file_name": ma, "vector": vec, "spec_json": d['spec'], "img_url": url_t, "excel_img_url": url_e, "category": d['cat']}, on_conflict="file_name").execute()
                 if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
         st.rerun()
 
-# ================= CHÍNH: SO SÁNH =================
+# ================= MAIN =================
 st.title("👔 AI Fashion Pro V11.29")
-test_file = st.file_uploader("Tải file PDF Test đối chiếu", type="pdf")
+test_file = st.file_uploader("Tải PDF Test", type="pdf")
 
 if test_file:
     with open("test.pdf", "wb") as f: f.write(test_file.getbuffer())
     target = get_data("test.pdf")
     if target:
         st.subheader(f"Nhận diện chủng loại: **{target['cat']}**")
-        same_cat_samples = [i for i in all_samples if i['category'] == target['cat']]
-        
-        if not same_cat_samples:
-            st.warning(f"⚠️ Không tìm thấy mẫu cùng loại '{target['cat']}'")
-        else:
+        same_cat = [i for i in all_samples if i['category'] == target['cat']]
+        if same_cat:
             tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
-            with torch.no_grad(): v_test = ai_brain(tf(Image.open(io.BytesIO(target['img']))).unsqueeze(0)).flatten().numpy()
+            v_test = ai_brain(tf(Image.open(io.BytesIO(target['img']))).unsqueeze(0)).flatten().detach().numpy()
             
             matches = []
-            for item in same_cat_samples:
+            for item in same_cat:
                 if item.get('vector'):
-                    try:
-                        v_raw = item['vector']
-                        if isinstance(v_raw, str): 
-                            v_raw = [float(x) for x in v_raw.strip('[]').split(',')]
-                        v_db = np.array(v_raw, dtype=np.float32).reshape(1, -1)
-                        sim_val = float(cosine_similarity(v_test.reshape(1, -1), v_db)) * 100
-                        matches.append(item | {"sim": sim_val})
-                    except: continue
+                    v_db = np.array(item['vector']).reshape(1, -1)
+                    sim = float(cosine_similarity(v_test.reshape(1, -1), v_db)) * 100
+                    matches.append(item | {"sim": sim})
             
-            matches = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
-
-            for m in matches:
-                with st.expander(f"📌 ĐỐI CHIẾU: {m['file_name']} (Độ giống: {m['sim']:.1f}%)", expanded=True):
+            for m in sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]:
+                with st.expander(f"📌 ĐỐI CHIẾU: {m['file_name']} ({m['sim']:.1f}%)", expanded=True):
                     c1, c2, c3 = st.columns([1, 1, 1.8])
-                    with c1: st.image(target['img'], caption="Bản vẽ Test")
+                    with c1: st.image(target['img'], caption="Test")
                     with c2: 
-                        st.image(m['img_url'], caption="Ảnh mẫu trong kho")
-                        if m.get('excel_img_url'): st.image(m['excel_img_url'], caption="Định mức (Excel)")
+                        st.image(m['img_url'], caption="Kho")
+                        if m.get('excel_img_url'): st.image(m['excel_img_url'], caption="Định mức")
                     with c3:
-                        comp_list = []
-                        test_specs, db_specs = target['spec'], m['spec_json']
-                        for kt, vt in test_specs.items():
-                            match_key = next((kd for kd in db_specs.keys() if SequenceMatcher(None, kt, kd).ratio() > 0.8), None)
-                            if match_key:
-                                vd = db_specs[match_key]; comp_list.append({"Thông số": kt, "Test": vt, "Kho": vd, "Lệch": round(vt - vd, 2)})
-                            else: comp_list.append({"Thông số": kt, "Test": vt, "Kho": 0.0, "Lệch": vt})
-                        
-                        df_res = pd.DataFrame(comp_list)
-                        st.table(df_res)
-                        
-                        output = io.BytesIO()
-                        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                            df_res.to_excel(writer, index=False, sheet_name='SoSanh')
-                        st.download_button(label="📥 XUẤT FILE EXCEL KẾT QUẢ", data=output.getvalue(), file_name=f"SoSanh_{m['file_name']}.xlsx", mime="application/vnd.ms-excel")
-
-if os.path.exists("test.pdf"): os.remove("test.pdf")
-gc.collect()
+                        res = []
+                        for kt, vt in target['spec'].items():
+                            mk = next((k for k in m['spec_json'].keys() if SequenceMatcher(None, kt, k).ratio() > 0.8), None)
+                            vd = m['spec_json'][mk] if mk else 0.0
+                            res.append({"Thông số": kt, "Test": vt, "Kho": vd, "Lệch": round(vt-vd, 2)})
+                        df = pd.DataFrame(res)
+                        st.table(df)
+                        out = io.BytesIO()
+                        with pd.ExcelWriter(out, engine='xlsxwriter') as wr: df.to_excel(wr, index=False)
+                        st.download_button("📥 XUẤT EXCEL", out.getvalue(), f"SoSanh_{m['file_name']}.xlsx")
