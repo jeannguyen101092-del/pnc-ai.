@@ -47,7 +47,7 @@ def parse_val(t):
         t_str = str(t).strip().replace('-', ' ')
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', t_str)
         if not found: return 0
-        v = found[0] if isinstance(found, list) else found
+        v = found[0]
         if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
@@ -56,7 +56,7 @@ def parse_val(t):
 
 def excel_to_img_bytes(file_obj):
     try:
-        # Hỗ trợ cả xls và xlsx bằng cách tự động chọn engine
+        # Tự động hỗ trợ xls (engine xlrd) và xlsx (openpyxl)
         df = pd.read_excel(file_obj).dropna(how='all', axis=0).fillna("")
         fig, ax = plt.subplots(figsize=(20, len(df.head(60)) * 0.6 + 2)) 
         ax.axis('off')
@@ -66,7 +66,9 @@ def excel_to_img_bytes(file_obj):
         buf = io.BytesIO()
         plt.savefig(buf, format='png', bbox_inches='tight', dpi=200); plt.close(fig)
         return buf.getvalue()
-    except: return None
+    except Exception as e:
+        st.error(f"Lỗi đọc file Excel: {e}")
+        return None
 
 def get_data(pdf_path):
     try:
@@ -117,22 +119,22 @@ with st.sidebar:
         st.session_state.target_sample = next(item for item in all_samples if item['file_name'] == selected_ma)
 
     st.divider()
-    # SỬA LỖI: Thêm 'xls' vào danh sách type cho phép
+    # Cho phép cả xls, xlsx và pdf
     files = st.file_uploader("Nạp PDF & Excel mới", accept_multiple_files=True, type=['pdf', 'xlsx', 'xls'], key=f"up_{st.session_state.uploader_key}")
     
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         groups = {}
         for f in files:
-            m = re.search(r'^\d+', f.name)
-            if m:
-                ma = m.group()
-                ext = os.path.splitext(f.name)[1].lower() # Lấy đúng phần mở rộng
+            # Tìm tất cả chuỗi số có độ dài từ 3 trở lên trong tên file để làm mã hàng
+            nums = re.findall(r'\d{3,}', f.name)
+            if nums:
+                ma = nums[0] # Lấy chuỗi số đầu tiên tìm thấy (ví dụ 5651 hoặc 2023)
+                ext = os.path.splitext(f.name)[1].lower() # SỬA LỖI: Thêm [1] ở đây
                 if ma not in groups: groups[ma] = {}
                 groups[ma][ext] = f
         
         for ma, parts in groups.items():
             f_p = parts.get('.pdf')
-            # Kiểm tra linh hoạt cả xlsx và xls
             f_e = parts.get('.xlsx') or parts.get('.xls')
             
             if f_p and f_e:
@@ -148,7 +150,7 @@ with st.sidebar:
                             url_e = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_e.webp")
                             supabase.table("ai_data").upsert({"file_name": ma, "vector": vec, "spec_json": d['spec'], "img_url": url_t, "excel_img_url": url_e}, on_conflict="file_name").execute()
                             st.toast(f"✅ Đã nạp thành công mã {ma}")
-                        except Exception as e: st.error(f"Lỗi: {e}")
+                        except Exception as e: st.error(f"Lỗi nạp mã {ma}: {e}")
                 if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
         st.session_state.uploader_key += 1; st.rerun()
 
@@ -167,7 +169,7 @@ if test_file:
             best_sim, best_item = -1, None
             for item in all_samples:
                 if item.get('vector'):
-                    sim = cosine_similarity([test_vec], [np.array(item['vector'])])[0][0]
+                    sim = cosine_similarity([test_vec], [np.array(item['vector'])])
                     if sim > best_sim: best_sim, best_item = sim, item
             if best_item:
                 st.session_state.target_sample = best_item
