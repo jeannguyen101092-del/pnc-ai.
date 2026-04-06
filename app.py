@@ -19,7 +19,7 @@ try:
 except:
     st.error("❌ Lỗi kết nối Supabase!")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.41", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.42", page_icon="👔")
 
 @st.cache_resource
 def load_ai():
@@ -28,14 +28,13 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= HÀM CHỤP ẢNH EXCEL SIÊU NÉT (DPI 500) =================
+# ================= HÀM CHỤP ẢNH EXCEL SIÊU NÉT =================
 def excel_to_img_bytes(file_obj):
     try:
         df = pd.read_excel(file_obj).dropna(how='all', axis=0).fillna("")
-        df_display = df.head(80)
-        fig, ax = plt.subplots(figsize=(24, len(df_display) * 0.6 + 2)) 
+        fig, ax = plt.subplots(figsize=(24, len(df.head(80)) * 0.6 + 2)) 
         ax.axis('off')
-        table = ax.table(cellText=df_display.values, colLabels=df_display.columns, loc='center', cellLoc='left')
+        table = ax.table(cellText=df.head(80).values, colLabels=df.columns, loc='center', cellLoc='left')
         table.auto_set_font_size(False)
         table.set_fontsize(16) 
         table.scale(1.2, 3.2) 
@@ -49,7 +48,7 @@ def excel_to_img_bytes(file_obj):
         return buf.getvalue()
     except: return None
 
-# ================= TRÍCH XUẤT THÔNG SỐ (CHỈ LẤY CỘT CHÍNH - BỎ DUNG SAI) =================
+# ================= TRÍCH XUẤT THÔNG SỐ (BỎ QUA CỘT DUNG SAI) =================
 def parse_val(t):
     try:
         if not t or str(t).strip() == "": return 0
@@ -77,35 +76,32 @@ def get_data(pdf_path):
                     if not tb or len(tb) < 2: continue
                     header = [str(x).strip().upper() for x in tb[0]]
                     
-                    # 1. TÌM VỊ TRÍ CỘT THÔNG SỐ (TRÁNH CỘT TOLERANCE)
+                    # 1. LOGIC TÌM CỘT THÔNG SỐ CHÍNH (LOẠI BỎ DUNG SAI)
                     base_idx = -1
-                    skip_keywords = ['TOL', 'TOLERANCE', '+', '-', '/', 'LIMIT', 'DUNG SAI']
+                    skip_keywords = ['TOL', 'TOLERANCE', '+', '-', '/', 'LIMIT']
                     
-                    # Ưu tiên tìm cột có tên trùng Base Size và KHÔNG chứa từ khóa dung sai
-                    for i, h_val in enumerate(header):
+                    # Tìm cột Base Size (màu vàng) từ phải qua trái để tránh cột dung sai phía trước
+                    for i in range(len(header)-1, 1, -1):
+                        h_val = header[i]
                         if base_size_detected in h_val and not any(sk in h_val for sk in skip_keywords):
                             base_idx = i
                             break
                     
-                    # Nếu không thấy, tìm cột đầu tiên sau Description có giá trị trung bình lớn
-                    if base_idx == -1:
+                    if base_idx == -1: # Nếu không thấy, lấy cột đầu tiên có giá trị lớn (>5)
                         for i in range(2, len(header)):
                             if not any(sk in header[i] for sk in skip_keywords):
-                                base_idx = i
-                                break
+                                base_idx = i; break
 
-                    # 2. TRÍCH XUẤT DỮ LIỆU TỪ CỘT ĐÃ CHỌN
+                    # 2. TRÍCH XUẤT
                     if base_idx != -1:
                         for r in tb[1:]:
                             if not r or len(r) <= base_idx: continue
-                            # Lấy mô tả (Cột 1 hoặc 2)
-                            desc = (str(r[1] or "") + " " + str(r[2] or "")).strip().upper().replace("\n", " ")
+                            desc = (str(r[0] or "") + " " + str(r[1] or "")).strip().upper().replace("\n", " ")
                             if len(desc) < 5 or any(x in desc for x in ['DATE', 'PAGE', 'PDM']): continue
                             
                             val = parse_val(r[base_idx])
-                            # CHỈ LẤY THÔNG SỐ CHÍNH (Thường quần có thông số > 4 inch)
-                            # Bỏ qua các số nhỏ kiểu dung sai 0.25, 0.5, 1.0 trừ khi mô tả là các vị trí đặc biệt
-                            if val > 1.5: 
+                            # CHỈ LẤY THÔNG SỐ LỚN (Bỏ qua các số nhỏ kiểu dung sai 1.0, 2.0)
+                            if val > 3.0: 
                                 specs[desc[:150]] = round(float(val), 3)
                             
         doc = fitz.open(pdf_path)
@@ -123,7 +119,7 @@ def classify_logic(specs, text, name):
     if 'SHORT' in txt or (0 < length < 24): return "QUẦN SHORT"
     return "QUẦN DÀI" if any(k in txt for k in ['PANT', 'TROUSER']) or length >= 24 else "ÁO / KHÁC"
 
-# ================= SIDEBAR & KHO =================
+# ================= SIDEBAR & CHÍNH (Giữ nguyên logic của bạn) =================
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     try:
@@ -139,10 +135,9 @@ with st.sidebar:
         for f in files:
             m = re.search(r'^\d+', f.name)
             if m:
-                ma = m.group(); ext = os.path.splitext(f.name)[1].lower()
+                ma = m.group(); ext = os.path.splitext(f.name).lower()
                 if ma not in groups: groups[ma] = {}
                 groups[ma][ext] = f
-        
         for ma, parts in groups.items():
             f_p, f_e = parts.get('.pdf'), (parts.get('.xlsx') or parts.get('.xls'))
             if f_p and f_e:
@@ -163,8 +158,7 @@ with st.sidebar:
                 if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
         st.rerun()
 
-# ================= MAIN =================
-st.title("👔 AI Fashion Pro V11.41")
+st.title("👔 AI Fashion Pro V11.42")
 test_file = st.file_uploader("Tải PDF Test", type="pdf")
 
 if test_file:
@@ -182,7 +176,7 @@ if test_file:
                     v_raw = item['vector']
                     if isinstance(v_raw, str): v_raw = [float(x) for x in v_raw.strip('[]').split(',')]
                     v_db = np.array(v_raw, dtype=np.float32).reshape(1, -1)
-                    sim = float(cosine_similarity(v_t, v_db)[0][0]) * 100
+                    sim = float(cosine_similarity(v_t, v_db)) * 100
                     matches.append(item | {"sim": sim})
             
             for m in sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]:
@@ -204,7 +198,3 @@ if test_file:
                             out = io.BytesIO()
                             with pd.ExcelWriter(out, engine='xlsxwriter') as wr: df_final.to_excel(wr, index=False)
                             st.download_button(f"📥 XUẤT EXCEL: {m['file_name']}", out.getvalue(), f"SoSanh_{m['file_name']}.xlsx")
-                        else: st.warning("⚠️ Không tìm thấy bảng thông số.")
-
-if os.path.exists("test.pdf"): os.remove("test.pdf")
-gc.collect()
