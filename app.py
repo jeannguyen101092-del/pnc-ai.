@@ -9,17 +9,17 @@ from supabase import create_client, Client
 from difflib import SequenceMatcher
 import matplotlib.pyplot as plt
 
-# ================= CONFIG (Kiểm tra kỹ URL/KEY và tên BUCKET) =================
+# ================= CONFIG (Thay URL/KEY của bạn) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
-BUCKET_NAME = "fashion-imgs" 
+BUCKET_NAME = "fashion-imgs"
 
 try:
     supabase: Client = create_client(URL, KEY)
 except:
     st.error("❌ Lỗi kết nối Supabase!")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.47", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.48", page_icon="👔")
 
 @st.cache_resource
 def load_ai():
@@ -33,7 +33,7 @@ def excel_to_img_bytes(file_obj):
     try:
         df = pd.read_excel(file_obj).dropna(how='all', axis=0).fillna("")
         df_display = df.head(80)
-        fig, ax = plt.subplots(figsize=(24, len(df_display) * 0.6 + 2)) 
+        fig, ax = plt.subplots(figsize=(22, len(df_display) * 0.6 + 2)) 
         ax.axis('off')
         table = ax.table(cellText=df_display.values, colLabels=df_display.columns, loc='center', cellLoc='left')
         table.auto_set_font_size(False)
@@ -44,12 +44,12 @@ def excel_to_img_bytes(file_obj):
                 cell.set_text_props(weight='bold', color='white', size=18)
                 cell.set_facecolor('#000000')
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', dpi=400)
+        plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.3, dpi=450)
         plt.close(fig)
         return buf.getvalue()
     except: return None
 
-# ================= TRÍCH XUẤT THÔNG SỐ (LẤY CỘT GIÁ TRỊ LỚN NHẤT) =================
+# ================= TRÍCH XUẤT THÔNG SỐ (LẤY CỘT GIÁ TRỊ LỚN - SIZE CHUẨN) =================
 def parse_val(t):
     try:
         t_str = str(t).strip()
@@ -58,8 +58,8 @@ def parse_val(t):
         if not found: return 0
         v = found[0]
         if ' ' in v:
-            parts = v.split()
-            return float(parts[0]) + eval(parts[1])
+            p = v.split()
+            return float(p[0]) + eval(p[1])
         return eval(v) if '/' in v else float(v)
     except: return 0
 
@@ -72,28 +72,26 @@ def get_data(pdf_path):
                 if t: text += t
                 for tb in p.extract_tables():
                     if not tb or len(tb) < 2: continue
-                    
-                    # LOGIC: Tìm cột có giá trị trung bình từ 10-50 (Cột thông số chính)
+                    # Tìm cột có giá trị trung bình từ 5-60 (Cột thông số chính)
                     col_stats = {}
                     for i in range(2, len(tb[0])):
                         vals = [parse_val(r[i]) for r in tb[1:] if len(r) > i]
-                        valid_vals = [v for v in vals if 5.0 < v < 60.0]
-                        if valid_vals:
-                            col_stats[i] = sum(valid_vals) / len(valid_vals)
+                        valid_vals = [v for v in vals if 4.0 < v < 70.0]
+                        if valid_vals: col_stats[i] = sum(valid_vals) / len(valid_vals)
                     
                     if not col_stats: continue
-                    # Chọn cột có giá trị trung bình lớn nhất (Tránh nhầm cột dung sai 1.0, 2.0)
+                    # Chọn cột có giá trị trung bình cao nhất (Cột màu vàng)
                     base_idx = max(col_stats, key=col_stats.get)
 
                     for r in tb[1:]:
                         if not r or len(r) <= base_idx: continue
-                        desc = (str(r[1] or "") + " " + str(r[2] or "")).strip().upper().replace("\n", " ")
+                        desc = (str(r[0] or "") + " " + str(r[1] or "")).strip().upper().replace("\n", " ")
                         val = parse_val(r[base_idx])
                         if val > 1.0 and len(desc) > 5 and not any(x in desc for x in ['DATE', 'PAGE']):
                             specs[desc[:150]] = round(float(val), 3)
                             
         doc = fitz.open(pdf_path)
-        img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
+        img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.8, 1.8)).tobytes("png")
         doc.close()
         return {"spec": specs, "img": img, "cat": classify_logic(specs, text, os.path.basename(pdf_path))}
     except: return None
@@ -107,7 +105,7 @@ def classify_logic(specs, text, name):
     if 'SHORT' in txt or (0 < length < 24): return "QUẦN SHORT"
     return "QUẦN DÀI" if any(k in txt for k in ['PANT', 'TROUSER']) or length >= 24 else "ÁO / KHÁC"
 
-# ================= SIDEBAR & QUẢN LÝ KHO =================
+# ================= SIDEBAR: NẠP KHO (LOGIC PDF + EXCEL) =================
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     try:
@@ -130,6 +128,7 @@ with st.sidebar:
         
         for ma, parts in groups.items():
             f_p, f_e = parts.get('.pdf'), (parts.get('.xlsx') or parts.get('.xls'))
+            # CHỈ NẠP KHI CÓ ĐỦ CẢ 2 FILE
             if f_p and f_e:
                 with st.spinner(f"Đang nạp mã: {ma}"):
                     with open("tmp.pdf", "wb") as t: t.write(f_p.getbuffer())
@@ -139,21 +138,35 @@ with st.sidebar:
                         img_p = Image.open(io.BytesIO(d['img'])).convert("RGB")
                         buf = io.BytesIO(); img_p.save(buf, format="WEBP")
                         
-                        # SỬA LỖI: Chuyển {"upsert": "true"} thành {"upsert": True}
-                        supabase.storage.from_(BUCKET_NAME).upload(f"{ma}_t.webp", buf.getvalue(), {"file_options": {"upsert": True}})
+                        # SỬA LỖI TYPEERROR: Sử dụng Boolean True và cấu hình đúng tham số
+                        supabase.storage.from_(BUCKET_NAME).upload(
+                            path=f"{ma}_t.webp", 
+                            file=buf.getvalue(), 
+                            file_options={"upsert": True}
+                        )
                         url_t = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_t.webp")
                         
-                        supabase.storage.from_(BUCKET_NAME).upload(f"{ma}_e.webp", exl, {"file_options": {"upsert": True}})
+                        supabase.storage.from_(BUCKET_NAME).upload(
+                            path=f"{ma}_e.webp", 
+                            file=exl, 
+                            file_options={"upsert": True}
+                        )
                         url_e = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_e.webp")
                         
                         tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
                         with torch.no_grad(): vec = ai_brain(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
-                        supabase.table("ai_data").upsert({"file_name": ma, "vector": vec, "spec_json": d['spec'], "img_url": url_t, "excel_img_url": url_e, "category": d['cat']}, on_conflict="file_name").execute()
+                        
+                        supabase.table("ai_data").upsert({
+                            "file_name": ma, "vector": vec, "spec_json": d['spec'], 
+                            "img_url": url_t, "excel_img_url": url_e, "category": d['cat']
+                        }, on_conflict="file_name").execute()
                 if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
+            else:
+                st.warning(f"⚠️ Bỏ qua mã {ma}: Thiếu file PDF hoặc Excel tương ứng.")
         st.rerun()
 
-# ================= PHẦN CHÍNH: SO SÁNH =================
-st.title("👔 AI Fashion Pro V11.47")
+# ================= CHÍNH: SO SÁNH =================
+st.title("👔 AI Fashion Pro V11.48")
 test_file = st.file_uploader("Tải PDF Test", type="pdf")
 
 if test_file:
@@ -180,7 +193,7 @@ if test_file:
                     with c1: st.image(target['img'], caption="Bản vẽ Test", use_container_width=True)
                     with c2: 
                         st.image(m['img_url'], caption="Kho", use_container_width=True)
-                        if m.get('excel_img_url'): st.image(m['excel_img_url'], caption="Định mức", use_container_width=True)
+                        if m.get('excel_img_url'): st.image(m['excel_img_url'], caption="Định mức (Excel)", use_container_width=True)
                     with c3:
                         res = []
                         if target['spec'] and m['spec_json']:
@@ -193,3 +206,6 @@ if test_file:
                             out = io.BytesIO()
                             with pd.ExcelWriter(out, engine='xlsxwriter') as wr: df_final.to_excel(wr, index=False)
                             st.download_button(f"📥 XUẤT EXCEL: {m['file_name']}", out.getvalue(), f"SoSanh_{m['file_name']}.xlsx")
+
+if os.path.exists("test.pdf"): os.remove("test.pdf")
+gc.collect()
