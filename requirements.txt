@@ -3,11 +3,11 @@ PyMuPDF
 pdfplumber
 pandas
 numpy
-Pillow
 torch
 torchvision
-scikit-learn
+pillow
 supabase
+scikit-learn
 matplotlib
 openpyxl
-xlsxwriter
+xlrd
