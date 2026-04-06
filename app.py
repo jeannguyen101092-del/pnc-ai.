@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 # ================= CONFIG (Thay URL và KEY của bạn) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
-KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"            
+KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"                
 BUCKET = "fashion-imgs"
 
 st.set_page_config(layout="wide", page_title="AI FASHION PRO V16.0", page_icon="🛡️")
@@ -84,7 +84,7 @@ def extract_pdf_v16(pdf_path):
                     h_idx, header = -1, []
                     for i, row in enumerate(tb[:10]):
                         row_up = [str(x or "").strip().upper() for x in row]
-                        if any(base_size in x and len(x) < 6 for x in row_up):
+                        if any(base_size == x and len(x) < 6 for x in row_up):
                             h_idx, header = i, row_up; break
                     if h_idx != -1:
                         b_idx = next((idx for idx, v in enumerate(header) if base_size in v and len(v) < 6), -1)
