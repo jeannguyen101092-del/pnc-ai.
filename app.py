@@ -41,6 +41,22 @@ def parse_val(t):
         return eval(v) if '/' in v else float(v)
     except: return 0
 
+def excel_to_img_bytes(file_obj):
+    try:
+        df = pd.read_excel(file_obj).dropna(how='all', axis=0).fillna("")
+        df_display = df.head(50)
+        fig, ax = plt.subplots(figsize=(20, len(df_display) * 0.6 + 2)) 
+        ax.axis('off')
+        table = ax.table(cellText=df_display.values, colLabels=df_display.columns, loc='center', cellLoc='left')
+        table.auto_set_font_size(False)
+        table.set_fontsize(14) 
+        table.scale(1.2, 2.5) 
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', dpi=200)
+        plt.close(fig)
+        return buf.getvalue()
+    except: return None
+
 def get_data(pdf_path):
     try:
         specs, text, base_size = {}, "", "8"
@@ -98,61 +114,67 @@ with st.sidebar:
     st.divider()
     files = st.file_uploader("Nạp PDF & Excel mới vào kho", accept_multiple_files=True, type=['pdf', 'xlsx'])
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
-        st.info("Đang xử lý nạp kho...")
-        # Code nạp kho có thể viết thêm ở đây tùy logic upload của bạn
+        groups = {}
+        for f in files:
+            m = re.search(r'^\d+', f.name)
+            if m:
+                ma = m.group(); ext = os.path.splitext(f.name)[1].lower()
+                if ma not in groups: groups[ma] = {}
+                groups[ma][ext] = f
+        
+        for ma, parts in groups.items():
+            f_p, f_e = parts.get('.pdf'), (parts.get('.xlsx') or parts.get('.xls'))
+            if f_p and f_e:
+                with st.spinner(f"Đang nạp mã: {ma}"):
+                    with open("tmp.pdf", "wb") as t: t.write(f_p.getbuffer())
+                    d, exl = get_data("tmp.pdf"), excel_to_img_bytes(f_e)
+                    if d and exl:
+                        img_p = Image.open(io.BytesIO(d['img'])).convert("RGB")
+                        buf = io.BytesIO(); img_p.save(buf, format="WEBP")
+                        try:
+                            supabase.storage.from_(BUCKET_NAME).upload(f"{ma}_t.webp", buf.getvalue(), {"content-type": "image/webp", "x-upsert": "true"})
+                            supabase.storage.from_(BUCKET_NAME).upload(f"{ma}_e.webp", exl, {"content-type": "image/webp", "x-upsert": "true"})
+                            url_t = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_t.webp")
+                            url_e = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_e.webp")
+                            tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
+                            with torch.no_grad(): vec = ai_brain(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
+                            supabase.table("ai_data").upsert({"file_name": ma, "vector": vec, "spec_json": d['spec'], "img_url": url_t, "excel_img_url": url_e}, on_conflict="file_name").execute()
+                            st.toast(f"✅ Đã nạp mã {ma}")
+                        except Exception as e: st.error(f"Lỗi nạp mã {ma}: {e}")
+                if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
+        st.rerun()
 
 # ================= MAIN UI =================
 st.title("👔 AI Fashion Pro - So Sánh Thông Số")
-
 test_file = st.file_uploader("Tải PDF Test", type="pdf")
 target = st.session_state.get('target_sample')
 
 if test_file:
     with open("test.pdf", "wb") as f: f.write(test_file.getbuffer())
     data_test = get_data("test.pdf")
-    
     if data_test:
         col_img, col_info = st.columns([1, 1.5])
         with col_img:
             st.image(data_test['img'], caption="Ảnh từ PDF đang kiểm tra", use_container_width=True)
-        
         with col_info:
             if target:
                 st.subheader(f"📊 Đối chiếu với Mã Kho: {target['file_name']}")
                 rows = []
-                test_specs = data_test['spec']
-                db_specs = target['spec_json']
-                
+                test_specs, db_specs = data_test['spec'], target['spec_json']
                 for k_test, v_test in test_specs.items():
                     best_match, highest_ratio = None, 0
                     for k_db in db_specs.keys():
                         ratio = SequenceMatcher(None, k_test, k_db).ratio()
                         if ratio > highest_ratio: highest_ratio, best_match = ratio, k_db
-                    
                     v_db = db_specs.get(best_match, 0) if highest_ratio > 0.6 else "N/A"
                     diff = round(v_test - v_db, 3) if isinstance(v_db, (int, float)) else "N/A"
                     status = "✅ OK" if diff == 0 else ("❌ SAI" if diff != "N/A" else "❓ MỚI")
-                    
-                    rows.append({
-                        "Thông số PDF Test": k_test,
-                        "Số đo Test": v_test,
-                        "Độ tương đồng (%)": f"{round(highest_ratio * 100, 1)}%",
-                        "Số đo Kho": v_db,
-                        "Chênh lệch": diff,
-                        "Trạng thái": status
-                    })
-                
+                    rows.append({"Thông số PDF Test": k_test, "Số đo Test": v_test, "Độ tương đồng (%)": f"{round(highest_ratio * 100, 1)}%", "Số đo Kho": v_db, "Chênh lệch": diff, "Trạng thái": status})
                 df_compare = pd.DataFrame(rows)
-                st.dataframe(df_compare.style.map(
-                    lambda x: 'background-color: #ffcccc' if x == "❌ SAI" else ('background-color: #ccffcc' if x == "✅ OK" else ''),
-                    subset=['Trạng thái']
-                ), use_container_width=True, height=500)
-                
+                st.dataframe(df_compare.style.map(lambda x: 'background-color: #ffcccc' if x == "❌ SAI" else ('background-color: #ccffcc' if x == "✅ OK" else ''), subset=['Trạng thái']), use_container_width=True, height=500)
                 output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df_compare.to_excel(writer, index=False)
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer: df_compare.to_excel(writer, index=False)
                 st.download_button("📥 XUẤT FILE EXCEL SO SÁNH", output.getvalue(), f"SoSanh_{target['file_name']}.xlsx")
             else:
-                st.warning("👈 Vui lòng chọn một mã hàng ở bên trái để bắt đầu so sánh.")
-                st.subheader("Thông số trích xuất từ PDF:")
+                st.warning("👈 Chọn mã hàng ở Sidebar để so sánh.")
                 st.dataframe(pd.DataFrame(data_test['spec'].items(), columns=['Thông số', 'Số đo']), use_container_width=True)
