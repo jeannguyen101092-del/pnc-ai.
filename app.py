@@ -19,7 +19,7 @@ try:
 except:
     st.error("❌ Lỗi kết nối Supabase!")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.39", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.40", page_icon="👔")
 
 @st.cache_resource
 def load_ai():
@@ -32,9 +32,10 @@ ai_brain = load_ai()
 def excel_to_img_bytes(file_obj):
     try:
         df = pd.read_excel(file_obj).dropna(how='all', axis=0).fillna("")
-        fig, ax = plt.subplots(figsize=(24, len(df.head(80)) * 0.6 + 2)) 
+        df_display = df.head(80)
+        fig, ax = plt.subplots(figsize=(24, len(df_display) * 0.6 + 2)) 
         ax.axis('off')
-        table = ax.table(cellText=df.head(80).values, colLabels=df.columns, loc='center', cellLoc='left')
+        table = ax.table(cellText=df_display.values, colLabels=df_display.columns, loc='center', cellLoc='left')
         table.auto_set_font_size(False)
         table.set_fontsize(16) 
         table.scale(1.2, 3.2) 
@@ -48,7 +49,7 @@ def excel_to_img_bytes(file_obj):
         return buf.getvalue()
     except: return None
 
-# ================= TRÍCH XUẤT THÔNG SỐ (LẤY CỘT MÀU VÀNG - BASE SIZE) =================
+# ================= TRÍCH XUẤT THÔNG SỐ (LẤY CỘT MÀU VÀNG) =================
 def parse_val(t):
     try:
         if not t or str(t).strip() == "": return 0
@@ -77,7 +78,6 @@ def get_data(pdf_path):
                     header = [str(x).strip().upper() for x in tb[0]]
                     base_idx = -1
                     if base_size_detected in header:
-                        # Lấy cột cuối cùng trùng tên (thường là cột màu vàng sau Tolerance)
                         base_idx = len(header) - 1 - header[::-1].index(base_size_detected)
                     else:
                         for ts in ['8', 'M', 'L', '10', 'S']:
@@ -88,8 +88,8 @@ def get_data(pdf_path):
                     if base_idx != -1:
                         for r in tb[1:]:
                             if not r or len(r) <= base_idx: continue
-                            desc = (str(r[0] or "") + " " + str(r[1] or "")).strip().upper().replace("\n", " ")
-                            if len(desc) < 4 or any(x in desc for x in ['DATE', 'PAGE']): continue
+                            desc = (str(r[1] or "") + " " + str(r[2] or "")).strip().upper().replace("\n", " ")
+                            if len(desc) < 4: continue
                             val = parse_val(r[base_idx])
                             if val > 0.5: specs[desc[:150]] = round(float(val), 3)
                             
@@ -150,7 +150,7 @@ with st.sidebar:
         st.rerun()
 
 # ================= CHÍNH =================
-st.title("👔 AI Fashion Pro V11.39")
+st.title("👔 AI Fashion Pro V11.40")
 test_file = st.file_uploader("Tải PDF Test", type="pdf")
 
 if test_file:
@@ -168,7 +168,8 @@ if test_file:
                     v_raw = item['vector']
                     if isinstance(v_raw, str): v_raw = [float(x) for x in v_raw.strip('[]').split(',')]
                     v_db = np.array(v_raw, dtype=np.float32).reshape(1, -1)
-                    sim = float(cosine_similarity(v_t, v_db)) * 100
+                    # SỬA LỖI TYPEERROR TẠI ĐÂY
+                    sim = float(cosine_similarity(v_t, v_db)[0][0]) * 100
                     matches.append(item | {"sim": sim})
             
             for m in sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]:
@@ -190,7 +191,7 @@ if test_file:
                             out = io.BytesIO()
                             with pd.ExcelWriter(out, engine='xlsxwriter') as wr: df_final.to_excel(wr, index=False)
                             st.download_button(f"📥 XUẤT EXCEL: {m['file_name']}", out.getvalue(), f"SoSanh_{m['file_name']}.xlsx")
-                        else: st.warning("⚠️ Thiếu dữ liệu thông số.")
+                        else: st.warning("⚠️ Không tìm thấy bảng thông số.")
 
 if os.path.exists("test.pdf"): os.remove("test.pdf")
 gc.collect()
