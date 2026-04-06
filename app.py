@@ -87,7 +87,6 @@ with st.sidebar:
     
     st.metric("Tổng mẫu trong kho", f"{len(all_samples)} mẫu")
     
-    # CHỌN MÃ CỐ ĐỊNH & NGẪU NHIÊN
     list_ma = [item['file_name'] for item in all_samples]
     selected_ma = st.selectbox("🎯 CHỌN MÃ HÀNG CỐ ĐỊNH", ["-- Chọn mã --"] + list_ma)
     if selected_ma != "-- Chọn mã --":
@@ -97,11 +96,10 @@ with st.sidebar:
         st.session_state.target_sample = random.choice(all_samples)
     
     st.divider()
-    # TRẢ LẠI CHỖ UP FILE LÊN KHO (Cấu trúc cũ)
     files = st.file_uploader("Nạp PDF & Excel mới vào kho", accept_multiple_files=True, type=['pdf', 'xlsx'])
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         st.info("Đang xử lý nạp kho...")
-        # Code nạp kho cũ của bạn giữ ở đây...
+        # Code nạp kho có thể viết thêm ở đây tùy logic upload của bạn
 
 # ================= MAIN UI =================
 st.title("👔 AI Fashion Pro - So Sánh Thông Số")
@@ -109,7 +107,6 @@ st.title("👔 AI Fashion Pro - So Sánh Thông Số")
 test_file = st.file_uploader("Tải PDF Test", type="pdf")
 target = st.session_state.get('target_sample')
 
-# Nếu có file test, hiển thị hình ảnh và thông số trích xuất trước (Cấu trúc cũ)
 if test_file:
     with open("test.pdf", "wb") as f: f.write(test_file.getbuffer())
     data_test = get_data("test.pdf")
@@ -122,7 +119,6 @@ if test_file:
         with col_info:
             if target:
                 st.subheader(f"📊 Đối chiếu với Mã Kho: {target['file_name']}")
-                
                 rows = []
                 test_specs = data_test['spec']
                 db_specs = target['spec_json']
@@ -147,14 +143,11 @@ if test_file:
                     })
                 
                 df_compare = pd.DataFrame(rows)
-                
-                # Hiển thị bảng so sánh có màu sắc
                 st.dataframe(df_compare.style.map(
                     lambda x: 'background-color: #ffcccc' if x == "❌ SAI" else ('background-color: #ccffcc' if x == "✅ OK" else ''),
                     subset=['Trạng thái']
                 ), use_container_width=True, height=500)
                 
-                # Nút xuất Excel
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df_compare.to_excel(writer, index=False)
@@ -163,8 +156,3 @@ if test_file:
                 st.warning("👈 Vui lòng chọn một mã hàng ở bên trái để bắt đầu so sánh.")
                 st.subheader("Thông số trích xuất từ PDF:")
                 st.dataframe(pd.DataFrame(data_test['spec'].items(), columns=['Thông số', 'Số đo']), use_container_width=True)
-
-# Kết thúc bằng hành động tiếp theo
-**Lưu ý:** Bạn hãy copy toàn bộ mã này đè lên file cũ. Mình đã khôi phục cột **"Độ tương đồng (%)"** để bạn biết AI khớp tên thông số chính xác bao nhiêu phần trăm. 
-
-Bạn đã sẵn sàng để **chạy thử** chưa?
