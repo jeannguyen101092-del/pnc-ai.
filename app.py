@@ -9,7 +9,7 @@ from supabase import create_client, Client
 from difflib import SequenceMatcher
 import matplotlib.pyplot as plt
 
-# ================= CONFIG (Giữ nguyên của bạn) =================
+# ================= CONFIG (Thay bằng thông tin của bạn) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET_NAME = "fashion-imgs"
@@ -45,12 +45,12 @@ def excel_to_img_bytes(file_obj):
         return buf.getvalue()
     except: return None
 
-# ================= LOGIC TRÍCH XUẤT (Giữ nguyên của bạn) =================
+# ================= TRÍCH XUẤT DỮ LIỆU (Giữ nguyên logic của bạn) =================
 def parse_val(t):
     try:
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
         if not found: return 0
-        v = found[0]
+        v = str(found[0])
         if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
@@ -108,15 +108,17 @@ with st.sidebar:
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         groups = {}
         for f in files:
+            # Sửa lỗi: Lấy mã số đầu file
             match = re.search(r'^\d+', f.name)
             if match:
                 ma_hang = match.group()
-                ext = os.path.splitext(f.name).lower()
+                ext = os.path.splitext(f.name)[1].lower() # Sửa lỗi AttributeError tại đây
                 if ma_hang not in groups: groups[ma_hang] = {}
                 groups[ma_hang][ext] = f
 
         for ma_hang, parts in groups.items():
-            f_pdf = parts.get('.pdf'); f_exl = parts.get('.xlsx') or parts.get('.xls')
+            f_pdf = parts.get('.pdf')
+            f_exl = parts.get('.xlsx') or parts.get('.xls')
             if f_pdf and f_exl:
                 with st.spinner(f"Đang xử lý mã: {ma_hang}..."):
                     with open("tmp.pdf", "wb") as t: t.write(f_pdf.getbuffer())
@@ -128,11 +130,14 @@ with st.sidebar:
                         fname_pdf = f"{ma_hang}_tech.webp"
                         supabase.storage.from_(BUCKET_NAME).upload(fname_pdf, buf_pdf.getvalue(), {"upsert":"true"})
                         url_pdf = supabase.storage.from_(BUCKET_NAME).get_public_url(fname_pdf)
+                        
                         fname_exl = f"{ma_hang}_dm.webp"
                         supabase.storage.from_(BUCKET_NAME).upload(fname_exl, exl_img_bytes, {"upsert":"true"})
                         url_exl = supabase.storage.from_(BUCKET_NAME).get_public_url(fname_exl)
+                        
                         tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
                         with torch.no_grad(): vec = ai_brain(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
+                        
                         supabase.table("ai_data").upsert({
                             "file_name": ma_hang, "vector": vec, "spec_json": d['spec'], 
                             "img_url": url_pdf, "excel_img_url": url_exl, "category": d['cat']
@@ -162,7 +167,6 @@ if test_file:
                 if item.get('vector'):
                     try:
                         v_raw = item['vector']
-                        # ÉP KIỂU VECTOR VỀ MẢNG SỐ ĐỂ SO SÁNH
                         if isinstance(v_raw, str): 
                             v_raw = [float(x) for x in v_raw.strip('[]').split(',')]
                         v_db = np.array(v_raw, dtype=np.float32).reshape(1, -1)
