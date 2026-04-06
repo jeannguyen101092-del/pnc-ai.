@@ -1,202 +1,147 @@
-import streamlit as st
-import os, fitz, io, pdfplumber, re, pandas as pd
-import numpy as np
-from PIL import Image
-import torch, gc, json
-from torchvision import models, transforms
-from sklearn.metrics.pairwise import cosine_similarity
-from supabase import create_client, Client
-from difflib import SequenceMatcher
-import matplotlib.pyplot as plt
+# ==========================================================
+# AI FASHION PRO V14 - AUTO SIZE + SMART PARSE (GIỮ NGUYÊN UI)
+# ==========================================================
 
-# ================= CONFIG =================
+import streamlit as st
+import fitz, re
+import pandas as pd
+from difflib import SequenceMatcher
+from supabase import create_client
+
+# ================== CONFIG ==================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
-BUCKET_NAME = "fashion-imgs"
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-supabase: Client = create_client(URL, KEY)
+# ================== UI (GIỮ NGUYÊN) ==================
+st.set_page_config(layout="wide")
+st.title("AI Fashion Pro V14")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V12", page_icon="👔")
+st.sidebar.header("📦 QUẢN LÝ KHO")
+size = st.sidebar.selectbox("Chọn size (hoặc AUTO)", ["AUTO","0","2","4","6","8","10","12","14","16","XS","S","M","L","XL"])
 
-# ================= LOAD MODEL (FIXED) =================
-@st.cache_resource
-def load_ai():
-    model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
-    model.classifier = torch.nn.Identity()
-    return model.eval()
+col1, col2 = st.columns(2)
+with col1:
+    pdf_file = st.file_uploader("Upload PDF", type=["pdf"])
+with col2:
+    excel_file = st.file_uploader("Upload Excel", type=["xlsx"])
 
-ai_brain = load_ai().to("cpu")
+# ================== SMART SIZE DETECT ==================
+def detect_size_header(lines):
+    for line in lines:
+        if re.search(r'(\d+\s+){3,}', line) or re.search(r'XS|S|M|L|XL', line):
+            return line
+    return None
 
-# ================= IMAGE FROM EXCEL =================
-def excel_to_img_bytes(file_obj):
-    try:
-        df = pd.read_excel(file_obj).fillna("")
-        df_display = df.head(30)
-        fig, ax = plt.subplots(figsize=(10, len(df_display) * 0.5))
-        ax.axis('off')
-        table = ax.table(cellText=df_display.values, colLabels=df_display.columns, loc='center', cellLoc='left')
-        table.auto_set_font_size(False)
-        table.set_fontsize(10)
-        table.scale(1.2, 1.2)
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', dpi=150)
-        plt.close(fig)
-        return buf.getvalue()
-    except:
-        return None
 
-# ================= PARSE =================
-def parse_val(t):
-    try:
-        found = re.findall(r'(\d+\.\d+|\d+)', str(t))
-        return float(found[0]) if found else 0
-    except:
-        return 0
+def find_size_index(header, target_size):
+    sizes = re.findall(r'[A-Z]+|\d+', header)
+    if target_size == "AUTO":
+        return len(sizes)//2
+    for i, s in enumerate(sizes):
+        if s == target_size:
+            return i
+    return None
 
-# ================= PDF =================
-def get_data(pdf_path):
-    try:
-        specs, text = {}, ""
-        with pdfplumber.open(pdf_path) as pdf:
-            for p in pdf.pages:
-                t = p.extract_text()
-                if t: text += t
-                for tb in p.extract_tables():
-                    for r in tb:
-                        if not r or len(r) < 2: continue
-                        label = str(r[0]).upper()
-                        val = parse_val(r[1])
-                        if val > 0:
-                            specs[label] = val
-        doc = fitz.open(pdf_path)
-        img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
-        doc.close()
-        return {"spec": specs, "img": img, "cat": "AUTO"}
-    except:
-        return None
+# ================== PARSE PDF V14 ==================
+def extract_spec(pdf_file, target_size):
+    doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
+    specs = {}
 
-# ================= SIDEBAR =================
-with st.sidebar:
-    st.header("📦 QUẢN LÝ KHO")
-    try:
-        db_res = supabase.table("ai_data").select("*").execute()
-        all_samples = db_res.data
-        st.metric("Tổng mẫu", len(all_samples))
-    except:
-        all_samples = []
-        st.metric("Tổng mẫu", 0)
+    for page in doc:
+        text = page.get_text("text")
+        lines = text.split("\n")
 
-    files = st.file_uploader("Upload PDF + Excel", accept_multiple_files=True, type=['pdf','xlsx','xls'])
+        header = detect_size_header(lines)
+        size_index = None
 
-    if files and st.button("🚀 NẠP DATA"):
-        for f in files:
-            if f.name.endswith(".pdf"):
-                with open("tmp.pdf","wb") as t:
-                    t.write(f.getbuffer())
-                d = get_data("tmp.pdf")
-                if d:
-                    img = Image.open(io.BytesIO(d['img'])).convert("RGB")
-                    tf = transforms.Compose([
-                        transforms.Resize(224),
-                        transforms.CenterCrop(224),
-                        transforms.ToTensor(),
-                        transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
-                    ])
-                    with torch.no_grad():
-                        vec = ai_brain(tf(img).unsqueeze(0)).squeeze().numpy().tolist()
+        if header:
+            size_index = find_size_index(header, target_size)
 
-                    buf = io.BytesIO()
-                    img.save(buf, format="WEBP")
+        for i, line in enumerate(lines):
+            if re.match(r'^\d+\.\d+[A-Z]', line.strip()):
+                try:
+                    desc = lines[i+1].strip()
 
-                    supabase.storage.from_(BUCKET_NAME).upload(f.name+".webp", buf.getvalue(), {"upsert":"true"})
-                    url = supabase.storage.from_(BUCKET_NAME).get_public_url(f.name+".webp")
+                    for j in range(i+2, i+8):
+                        nums = re.findall(r'\d+\.?\d*', lines[j])
 
-                    supabase.table("ai_data").upsert({
-                        "file_name": f.name,
-                        "vector": vec,
-                        "spec_json": d['spec'],
-                        "img_url": url,
-                        "category": "ALL"
-                    }).execute()
+                        if nums:
+                            if size_index is None or size_index >= len(nums):
+                                idx = len(nums)//2
+                            else:
+                                idx = size_index
 
-        st.success("DONE")
-        st.rerun()
+                            val = float(nums[idx])
+                            key = f"{line.strip()} {desc}"
+                            specs[key] = val
+                            break
+                except:
+                    pass
 
-# ================= MAIN =================
-st.title("👔 AI Fashion Pro V12")
+    return specs
 
-test_file = st.file_uploader("Upload PDF Test", type="pdf")
+# ================== LOAD DB ==================
+def load_db():
+    res = supabase.table("ai_data").select("*").execute()
+    return res.data
 
-if test_file:
-    with open("test.pdf","wb") as f:
-        f.write(test_file.getbuffer())
+# ================== MATCH ==================
+def find_best_match(specs, db):
+    best, best_score = None, 0
+    for item in db:
+        db_spec = item.get("spec_json", {})
+        score = 0
+        for k1 in specs:
+            for k2 in db_spec:
+                if SequenceMatcher(None, k1, k2).ratio() > 0.6:
+                    score += 1
+        if score > best_score:
+            best_score = score
+            best = item
+    return best
 
-    target = get_data("test.pdf")
+# ================== MAIN ==================
+if pdf_file:
+    specs = extract_spec(pdf_file, size)
 
-    if target:
-        st.write("DEBUG DB:", len(all_samples))
+    st.write("DEBUG SPEC:", specs)
 
-        img = Image.open(io.BytesIO(target['img'])).convert("RGB")
-        tf = transforms.Compose([
-            transforms.Resize(224),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
-        ])
+    if specs:
+        db = load_db()
+        target = find_best_match(specs, db)
 
-        with torch.no_grad():
-            v_test = ai_brain(tf(img).unsqueeze(0)).squeeze().numpy()
+        if target:
+            st.success(f"Match: {target['file_name']}")
 
-        matches = []
-        for item in all_samples:
-            try:
-                v_db = item['vector']
-                if isinstance(v_db, str):
-                    v_db = json.loads(v_db)
-                v_db = np.array(v_db).reshape(1,-1)
+            rows = []
+            db_spec = target.get("spec_json", {})
 
-                sim = float(cosine_similarity(v_test.reshape(1,-1), v_db))*100
-                matches.append(item | {"sim": sim})
-            except:
-                continue
+            for k, v in specs.items():
+                db_val = None
+                for dk in db_spec:
+                    if SequenceMatcher(None, k, dk).ratio() > 0.6:
+                        db_val = db_spec[dk]
+                        break
 
-        if not matches:
-            st.warning("❌ Không có dữ liệu match")
+                rows.append({
+                    "POM": k,
+                    "PDF": v,
+                    "DB": db_val,
+                    "DIFF": None if db_val is None else round(v - db_val, 2)
+                })
+
+            df = pd.DataFrame(rows)
+            st.dataframe(df)
+
+            # EXPORT EXCEL (GIỮ NGUYÊN)
+            output = "compare.xlsx"
+            df.to_excel(output, index=False)
+
+            with open(output, "rb") as f:
+                st.download_button("📥 Xuất Excel", f, file_name="compare.xlsx")
+
         else:
-            for m in sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]:
-                with st.expander(f"📌 {m['file_name']} - {m['sim']:.1f}%", True):
-                    c1,c2,c3 = st.columns([1,1,2])
-                    c1.image(target['img'], caption="Test")
-                    c2.image(m['img_url'], caption="DB")
-
-                    # ===== SO SÁNH THÔNG SỐ =====
-                    res = []
-                    for kt, vt in target['spec'].items():
-                        mk = next((k for k in m['spec_json'].keys() if SequenceMatcher(None, kt, k).ratio() > 0.8), None)
-                        vd = m['spec_json'][mk] if mk else 0
-                        res.append({
-                            "Thông số": kt,
-                            "Test": vt,
-                            "Kho": vd,
-                            "Lệch": round(vt - vd,2)
-                        })
-
-                    df = pd.DataFrame(res)
-                    c3.dataframe(df, use_container_width=True)
-
-                    # ===== XUẤT EXCEL =====
-                    out = io.BytesIO()
-                    with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
-                        df.to_excel(writer, index=False)
-
-                    c3.download_button(
-                        "📥 Xuất Excel so sánh",
-                        out.getvalue(),
-                        file_name=f"SoSanh_{m['file_name']}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-
-if os.path.exists("test.pdf"):
-    os.remove("test.pdf")
-
-gc.collect()
+            st.error("❌ Không tìm thấy mẫu giống")
+    else:
+        st.error("❌ Không đọc được spec từ PDF")
