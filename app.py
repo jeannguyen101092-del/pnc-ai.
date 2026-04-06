@@ -5,6 +5,7 @@ from PIL import Image
 import torch, random
 from torchvision import models, transforms
 from supabase import create_client, Client
+from sklearn.metrics.pairwise import cosine_similarity
 from difflib import SequenceMatcher
 import matplotlib.pyplot as plt
 
@@ -30,11 +31,20 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= HÀM HỖ TRỢ =================
+# ================= HÀM HỖ TRỢ AI =================
+def get_vector(img_bytes):
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    tf = transforms.Compose([
+        transforms.Resize(224), transforms.CenterCrop(224), 
+        transforms.ToTensor(), 
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+    with torch.no_grad():
+        return ai_brain(tf(img).unsqueeze(0)).flatten().numpy()
+
 def parse_val(t):
     try:
         t_str = str(t).strip().replace('-', ' ')
-        if not t_str: return 0
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', t_str)
         if not found: return 0
         v = found[0]
@@ -47,16 +57,13 @@ def parse_val(t):
 def excel_to_img_bytes(file_obj):
     try:
         df = pd.read_excel(file_obj).dropna(how='all', axis=0).fillna("")
-        df_display = df.head(60)
-        fig, ax = plt.subplots(figsize=(20, len(df_display) * 0.6 + 2)) 
+        fig, ax = plt.subplots(figsize=(20, len(df.head(60)) * 0.6 + 2)) 
         ax.axis('off')
-        table = ax.table(cellText=df_display.values, colLabels=df_display.columns, loc='center', cellLoc='left')
+        table = ax.table(cellText=df.head(60).values, colLabels=df.columns, loc='center', cellLoc='left')
         table.auto_set_font_size(False)
-        table.set_fontsize(14) 
-        table.scale(1.2, 2.8) 
+        table.set_fontsize(14); table.scale(1.2, 2.8) 
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', dpi=200)
-        plt.close(fig)
+        plt.savefig(buf, format='png', bbox_inches='tight', dpi=200); plt.close(fig)
         return buf.getvalue()
     except: return None
 
@@ -77,8 +84,7 @@ def get_data(pdf_path):
                     for i, row in enumerate(tb[:10]):
                         row_up = [str(x or "").strip().upper() for x in row]
                         if any(base_size in x for x in row_up):
-                            h_idx, header = i, row_up
-                            break
+                            h_idx, header = i, row_up; break
                     if h_idx == -1: continue
                     base_idx = -1
                     for idx, h_val in enumerate(header):
@@ -90,9 +96,7 @@ def get_data(pdf_path):
                             val = parse_val(r[base_idx])
                             if val > 0.1 and len(desc) > 5:
                                 specs[re.sub(r'[^A-Z0-9\s/]', '', desc)[:150]] = round(float(val), 3)
-        doc = fitz.open(pdf_path)
-        img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
-        doc.close()
+        doc = fitz.open(pdf_path); img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png"); doc.close()
         return {"spec": specs, "img": img}
     except: return None
 
@@ -110,12 +114,14 @@ with st.sidebar:
     selected_ma = st.selectbox("🎯 CHỌN MÃ HÀNG CỐ ĐỊNH", ["-- Chọn mã --"] + list_ma)
     if selected_ma != "-- Chọn mã --":
         st.session_state.target_sample = next(item for item in all_samples if item['file_name'] == selected_ma)
+        st.session_state.match_score = 100.0
     
     if st.button("🎲 CHỌN MÃ NGẪU NHIÊN") and all_samples:
         st.session_state.target_sample = random.choice(all_samples)
-    
+        st.session_state.match_score = 0.0
+
     st.divider()
-    files = st.file_uploader("Nạp PDF & Excel mới", accept_multiple_files=True, type=['pdf', 'xlsx'], key=f"uploader_{st.session_state.uploader_key}")
+    files = st.file_uploader("Nạp PDF & Excel mới", accept_multiple_files=True, type=['pdf', 'xlsx'], key=f"up_{st.session_state.uploader_key}")
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         groups = {}
         for f in files:
@@ -124,7 +130,6 @@ with st.sidebar:
                 ma = m.group(); ext = os.path.splitext(f.name)[1].lower()
                 if ma not in groups: groups[ma] = {}
                 groups[ma][ext] = f
-        
         for ma, parts in groups.items():
             f_p, f_e = parts.get('.pdf'), (parts.get('.xlsx') or parts.get('.xls'))
             if f_p and f_e:
@@ -132,21 +137,15 @@ with st.sidebar:
                     with open("tmp.pdf", "wb") as t: t.write(f_p.getbuffer())
                     d, exl = get_data("tmp.pdf"), excel_to_img_bytes(f_e)
                     if d and exl:
-                        img_p = Image.open(io.BytesIO(d['img'])).convert("RGB")
-                        buf = io.BytesIO(); img_p.save(buf, format="WEBP")
+                        vec = get_vector(d['img']).tolist()
                         try:
-                            supabase.storage.from_(BUCKET_NAME).upload(f"{ma}_t.webp", buf.getvalue(), {"content-type": "image/webp", "x-upsert": "true"})
+                            supabase.storage.from_(BUCKET_NAME).upload(f"{ma}_t.webp", d['img'], {"content-type": "image/webp", "x-upsert": "true"})
                             supabase.storage.from_(BUCKET_NAME).upload(f"{ma}_e.webp", exl, {"content-type": "image/webp", "x-upsert": "true"})
                             url_t = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_t.webp")
                             url_e = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_e.webp")
-                            tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
-                            with torch.no_grad(): vec = ai_brain(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
                             supabase.table("ai_data").upsert({"file_name": ma, "vector": vec, "spec_json": d['spec'], "img_url": url_t, "excel_img_url": url_e}, on_conflict="file_name").execute()
-                            st.toast(f"✅ Đã nạp mã {ma}")
-                        except Exception as e: st.error(f"Lỗi: {e}")
-                if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
-        st.session_state.uploader_key += 1
-        st.rerun()
+                        except: pass
+        st.session_state.uploader_key += 1; st.rerun()
 
 # ================= MAIN UI =================
 st.title("👔 AI Fashion Pro - So Sánh Thông Số")
@@ -156,20 +155,34 @@ target = st.session_state.get('target_sample')
 if test_file:
     with open("test.pdf", "wb") as f: f.write(test_file.getbuffer())
     data_test = get_data("test.pdf")
+    
     if data_test:
+        # --- LOGIC TÌM MÃ GIỐNG NHẤT BẰNG AI ---
+        if st.button("🤖 TỰ ĐỘNG TÌM MÃ TƯƠNG ĐỒNG NHẤT"):
+            test_vec = get_vector(data_test['img'])
+            best_sim, best_item = -1, None
+            for item in all_samples:
+                if item.get('vector'):
+                    sim = cosine_similarity([test_vec], [np.array(item['vector'])])[0][0]
+                    if sim > best_sim:
+                        best_sim, best_item = sim, item
+            if best_item:
+                st.session_state.target_sample = best_item
+                st.session_state.match_score = round(best_sim * 100, 1)
+                st.rerun()
+
+        # HIỂN THỊ 3 CỘT (Cấu trúc cũ)
         col_test, col_target, col_info = st.columns([1, 1, 1.5])
-        
         with col_test:
-            st.image(data_test['img'], caption="🖼️ 1. ẢNH PDF ĐANG TEST", use_container_width=True)
-        
+            st.image(data_test['img'], caption="🖼️ 1. ẢNH ĐANG TEST", use_container_width=True)
         with col_target:
             if target:
-                st.image(target['img_url'], caption=f"📁 2. ẢNH KHO ({target['file_name']})", use_container_width=True)
-                if 'excel_img_url' in target:
-                    st.divider()
-                    st.image(target['excel_img_url'], caption="📊 3. ĐỊNH MỨC EXCEL KHO", use_container_width=True)
-            else: st.warning("👈 Chọn mã ở Sidebar")
-
+                score = st.session_state.get('match_score', 0)
+                st.image(target['img_url'], caption=f"📁 2. ẢNH KHO ({target['file_name']}) - GIỐNG {score}%", use_container_width=True)
+                if target.get('excel_img_url'):
+                    st.divider(); st.image(target['excel_img_url'], caption="📊 3. ĐỊNH MỨC EXCEL KHO", use_container_width=True)
+            else: st.warning("👈 Chọn mã ở Sidebar hoặc bấm nút Tìm mã tương đồng")
+        
         with col_info:
             if target:
                 st.subheader(f"📊 Đối chiếu: {target['file_name']}")
@@ -188,4 +201,4 @@ if test_file:
                 st.dataframe(df_compare.style.map(lambda x: 'background-color: #ffcccc' if x == "❌ SAI" else ('background-color: #ccffcc' if x == "✅ OK" else ''), subset=['Trạng thái']), use_container_width=True, height=550)
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer: df_compare.to_excel(writer, index=False)
-                st.download_button("📥 XUẤT FILE EXCEL SO SÁNH", output.getvalue(), f"Result_{target['file_name']}.xlsx")
+                st.download_button("📥 XUẤT EXCEL", output.getvalue(), f"SoSanh_{target['file_name']}.xlsx")
