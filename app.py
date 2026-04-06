@@ -9,8 +9,8 @@ from difflib import SequenceMatcher
 from supabase import create_client
 
 # ================== CONFIG ==================
-URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
-KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
+SUPABASE_URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
+SUPABASE_KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ================== UI (GIỮ NGUYÊN) ==================
