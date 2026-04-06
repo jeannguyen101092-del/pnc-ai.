@@ -145,7 +145,7 @@ with st.sidebar:
                         }, on_conflict="file_name").execute()
                 if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
             else:
-                st.warning(f"Bỏ qua {ma_hang}: Phải có cả PDF và Excel.")
+                st.warning(f"Bỏ qua mã {ma_hang}: Thiếu file PDF hoặc Excel tương ứng.")
         st.rerun()
 
 # ================= CHÍNH: SO SÁNH =================
@@ -160,7 +160,7 @@ if test_file:
         same_cat_samples = [i for i in all_samples if i['category'] == target['cat']]
         
         if not same_cat_samples:
-            st.warning(f"⚠️ Không tìm thấy mẫu cùng loại '{target['cat']}' trong kho.")
+            st.warning(f"⚠️ Không tìm thấy mẫu cùng loại '{target['cat']}'")
         else:
             tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
             with torch.no_grad(): v_test = ai_brain(tf(Image.open(io.BytesIO(target['img']))).unsqueeze(0)).flatten().numpy()
@@ -170,11 +170,10 @@ if test_file:
                 if item.get('vector'):
                     try:
                         v_raw = item['vector']
-                        # Sửa lỗi: Nếu vector bị lưu dạng chuỗi văn bản, chuyển về list số thực
-                        if isinstance(v_raw, str): 
+                        # Ép kiểu vector về float array để so sánh
+                        if isinstance(v_raw, str):
                             v_raw = [float(x) for x in v_raw.strip('[]').split(',')]
-                        
-                        v_db = np.array(v_raw).reshape(1, -1)
+                        v_db = np.array(v_raw, dtype=np.float32).reshape(1, -1)
                         sim_val = float(cosine_similarity(v_test.reshape(1, -1), v_db)) * 100
                         matches.append(item | {"sim": sim_val})
                     except: continue
@@ -198,7 +197,20 @@ if test_file:
                                 comp_list.append({"Thông số": kt, "Test": vt, "Kho": vd, "Lệch": round(vt - vd, 2)})
                             else:
                                 comp_list.append({"Thông số": kt, "Test": vt, "Kho": 0.0, "Lệch": vt})
-                        st.table(pd.DataFrame(comp_list))
+                        
+                        df_res = pd.DataFrame(comp_list)
+                        st.table(df_res)
+
+                        # --- NÚT XUẤT EXCEL KẾT QUẢ ---
+                        output = io.BytesIO()
+                        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                            df_res.to_excel(writer, index=False, sheet_name='KetQuaSoSanh')
+                        st.download_button(
+                            label="📥 XUẤT KẾT QUẢ SO SÁNH (EXCEL)",
+                            data=output.getvalue(),
+                            file_name=f"SoSanh_{m['file_name']}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
 
 if os.path.exists("test.pdf"): os.remove("test.pdf")
 gc.collect()
