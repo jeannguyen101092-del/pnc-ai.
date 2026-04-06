@@ -31,7 +31,7 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= HÀM HỖ TRỢ AI =================
+# ================= HÀM HỖ TRỢ =================
 def get_vector(img_bytes):
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     tf = transforms.Compose([
@@ -130,6 +130,7 @@ with st.sidebar:
                 ma = m.group(); ext = os.path.splitext(f.name)[1].lower()
                 if ma not in groups: groups[ma] = {}
                 groups[ma][ext] = f
+        
         for ma, parts in groups.items():
             f_p, f_e = parts.get('.pdf'), (parts.get('.xlsx') or parts.get('.xls'))
             if f_p and f_e:
@@ -144,7 +145,9 @@ with st.sidebar:
                             url_t = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_t.webp")
                             url_e = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_e.webp")
                             supabase.table("ai_data").upsert({"file_name": ma, "vector": vec, "spec_json": d['spec'], "img_url": url_t, "excel_img_url": url_e}, on_conflict="file_name").execute()
-                        except: pass
+                            st.toast(f"✅ Đã nạp thành công mã {ma}")
+                        except Exception as e: st.error(f"Lỗi database mã {ma}: {e}")
+                if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
         st.session_state.uploader_key += 1; st.rerun()
 
 # ================= MAIN UI =================
@@ -157,31 +160,27 @@ if test_file:
     data_test = get_data("test.pdf")
     
     if data_test:
-        # --- LOGIC TÌM MÃ GIỐNG NHẤT BẰNG AI ---
         if st.button("🤖 TỰ ĐỘNG TÌM MÃ TƯƠNG ĐỒNG NHẤT"):
             test_vec = get_vector(data_test['img'])
             best_sim, best_item = -1, None
             for item in all_samples:
                 if item.get('vector'):
                     sim = cosine_similarity([test_vec], [np.array(item['vector'])])[0][0]
-                    if sim > best_sim:
-                        best_sim, best_item = sim, item
+                    if sim > best_sim: best_sim, best_item = sim, item
             if best_item:
                 st.session_state.target_sample = best_item
-                st.session_state.match_score = round(best_sim * 100, 1)
-                st.rerun()
+                st.session_state.match_score = round(best_sim * 100, 1); st.rerun()
 
-        # HIỂN THỊ 3 CỘT (Cấu trúc cũ)
         col_test, col_target, col_info = st.columns([1, 1, 1.5])
         with col_test:
             st.image(data_test['img'], caption="🖼️ 1. ẢNH ĐANG TEST", use_container_width=True)
         with col_target:
             if target:
                 score = st.session_state.get('match_score', 0)
-                st.image(target['img_url'], caption=f"📁 2. ẢNH KHO ({target['file_name']}) - GIỐNG {score}%", use_container_width=True)
+                st.image(target.get('img_url', ""), caption=f"📁 2. ẢNH KHO ({target['file_name']}) - GIỐNG {score}%", use_container_width=True)
                 if target.get('excel_img_url'):
                     st.divider(); st.image(target['excel_img_url'], caption="📊 3. ĐỊNH MỨC EXCEL KHO", use_container_width=True)
-            else: st.warning("👈 Chọn mã ở Sidebar hoặc bấm nút Tìm mã tương đồng")
+            else: st.warning("👈 Chọn mã ở Sidebar")
         
         with col_info:
             if target:
