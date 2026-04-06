@@ -92,11 +92,11 @@ def get_data(pdf_path):
         return {"spec": specs, "img": img, "cat": classify_logic(specs, text, os.path.basename(pdf_path))}
     except: return None
 
-# ================= SIDEBAR & QUẢN LÝ KHO (Logic nhận diện mã số thông minh) =================
+# ================= SIDEBAR & QUẢN LÝ KHO =================
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     try:
-        db_res = supabase.table("ai_data").select("file_name, category, spec_json, img_url, vector, excel_img_url").execute()
+        db_res = supabase.table("ai_data").select("*").execute()
         all_samples = db_res.data
         st.metric("Tổng mẫu trong kho", f"{len(all_samples)} mẫu")
     except: 
@@ -108,7 +108,6 @@ with st.sidebar:
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         groups = {}
         for f in files:
-            # LẤY MÃ SỐ ĐẦU TIÊN (Ví dụ: '5651')
             match = re.search(r'^\d+', f.name)
             if match:
                 ma_hang = match.group()
@@ -146,7 +145,7 @@ with st.sidebar:
                         }, on_conflict="file_name").execute()
                 if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
             else:
-                st.warning(f"Bỏ qua mã {ma_hang}: Thiếu file PDF hoặc Excel.")
+                st.warning(f"Bỏ qua {ma_hang}: Phải có cả PDF và Excel.")
         st.rerun()
 
 # ================= CHÍNH: SO SÁNH =================
@@ -161,7 +160,7 @@ if test_file:
         same_cat_samples = [i for i in all_samples if i['category'] == target['cat']]
         
         if not same_cat_samples:
-            st.warning(f"⚠️ Không tìm thấy mẫu cùng loại '{target['cat']}'")
+            st.warning(f"⚠️ Không tìm thấy mẫu cùng loại '{target['cat']}' trong kho.")
         else:
             tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
             with torch.no_grad(): v_test = ai_brain(tf(Image.open(io.BytesIO(target['img']))).unsqueeze(0)).flatten().numpy()
@@ -169,9 +168,16 @@ if test_file:
             matches = []
             for item in same_cat_samples:
                 if item.get('vector'):
-                    v_db = np.array(item['vector']).reshape(1, -1)
-                    sim_val = float(cosine_similarity(v_test.reshape(1, -1), v_db)) * 100
-                    matches.append(item | {"sim": sim_val})
+                    try:
+                        v_raw = item['vector']
+                        # Sửa lỗi: Nếu vector bị lưu dạng chuỗi văn bản, chuyển về list số thực
+                        if isinstance(v_raw, str): 
+                            v_raw = [float(x) for x in v_raw.strip('[]').split(',')]
+                        
+                        v_db = np.array(v_raw).reshape(1, -1)
+                        sim_val = float(cosine_similarity(v_test.reshape(1, -1), v_db)) * 100
+                        matches.append(item | {"sim": sim_val})
+                    except: continue
             
             matches = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
 
@@ -193,3 +199,6 @@ if test_file:
                             else:
                                 comp_list.append({"Thông số": kt, "Test": vt, "Kho": 0.0, "Lệch": vt})
                         st.table(pd.DataFrame(comp_list))
+
+if os.path.exists("test.pdf"): os.remove("test.pdf")
+gc.collect()
