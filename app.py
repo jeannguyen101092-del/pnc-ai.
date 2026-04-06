@@ -31,7 +31,7 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= HÀM HỖ TRỢ AI =================
+# ================= HÀM HỖ TRỢ =================
 def get_vector(img_bytes):
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     tf = transforms.Compose([
@@ -47,7 +47,7 @@ def parse_val(t):
         t_str = str(t).strip().replace('-', ' ')
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', t_str)
         if not found: return 0
-        v = found[0]
+        v = found[0] if isinstance(found, list) else found
         if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
@@ -56,6 +56,7 @@ def parse_val(t):
 
 def excel_to_img_bytes(file_obj):
     try:
+        # Hỗ trợ cả xls và xlsx bằng cách tự động chọn engine
         df = pd.read_excel(file_obj).dropna(how='all', axis=0).fillna("")
         fig, ax = plt.subplots(figsize=(20, len(df.head(60)) * 0.6 + 2)) 
         ax.axis('off')
@@ -114,24 +115,26 @@ with st.sidebar:
     selected_ma = st.selectbox("🎯 CHỌN MÃ HÀNG CỐ ĐỊNH", ["-- Chọn mã --"] + list_ma)
     if selected_ma != "-- Chọn mã --":
         st.session_state.target_sample = next(item for item in all_samples if item['file_name'] == selected_ma)
-        st.session_state.match_score = 100.0
-    
-    if st.button("🎲 CHỌN MÃ NGẪU NHIÊN") and all_samples:
-        st.session_state.target_sample = random.choice(all_samples)
-        st.session_state.match_score = 0.0
 
     st.divider()
-    files = st.file_uploader("Nạp PDF & Excel mới", accept_multiple_files=True, type=['pdf', 'xlsx'], key=f"up_{st.session_state.uploader_key}")
+    # SỬA LỖI: Thêm 'xls' vào danh sách type cho phép
+    files = st.file_uploader("Nạp PDF & Excel mới", accept_multiple_files=True, type=['pdf', 'xlsx', 'xls'], key=f"up_{st.session_state.uploader_key}")
+    
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         groups = {}
         for f in files:
             m = re.search(r'^\d+', f.name)
             if m:
-                ma = m.group(); ext = os.path.splitext(f.name)[1].lower()
+                ma = m.group()
+                ext = os.path.splitext(f.name)[1].lower() # Lấy đúng phần mở rộng
                 if ma not in groups: groups[ma] = {}
                 groups[ma][ext] = f
+        
         for ma, parts in groups.items():
-            f_p, f_e = parts.get('.pdf'), (parts.get('.xlsx') or parts.get('.xls'))
+            f_p = parts.get('.pdf')
+            # Kiểm tra linh hoạt cả xlsx và xls
+            f_e = parts.get('.xlsx') or parts.get('.xls')
+            
             if f_p and f_e:
                 with st.spinner(f"Đang nạp mã: {ma}"):
                     with open("tmp.pdf", "wb") as t: t.write(f_p.getbuffer())
@@ -144,7 +147,9 @@ with st.sidebar:
                             url_t = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_t.webp")
                             url_e = supabase.storage.from_(BUCKET_NAME).get_public_url(f"{ma}_e.webp")
                             supabase.table("ai_data").upsert({"file_name": ma, "vector": vec, "spec_json": d['spec'], "img_url": url_t, "excel_img_url": url_e}, on_conflict="file_name").execute()
-                        except: pass
+                            st.toast(f"✅ Đã nạp thành công mã {ma}")
+                        except Exception as e: st.error(f"Lỗi: {e}")
+                if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
         st.session_state.uploader_key += 1; st.rerun()
 
 # ================= MAIN UI =================
@@ -157,7 +162,6 @@ if test_file:
     data_test = get_data("test.pdf")
     
     if data_test:
-        # TỰ ĐỘNG TÌM MÃ GIỐNG NHẤT BẰNG AI
         if st.button("🤖 TỰ ĐỘNG TÌM MÃ TƯƠNG ĐỒNG NHẤT"):
             test_vec = get_vector(data_test['img'])
             best_sim, best_item = -1, None
@@ -174,11 +178,9 @@ if test_file:
             st.image(data_test['img'], caption="🖼️ 1. ẢNH ĐANG TEST", use_container_width=True)
         with col_target:
             if target:
-                score = st.session_state.get('match_score', 0)
-                st.image(target.get('img_url', ""), caption=f"📁 2. ẢNH KHO ({target['file_name']}) - GIỐNG {score}%", use_container_width=True)
+                st.image(target.get('img_url', ""), caption=f"📁 2. ẢNH KHO ({target['file_name']})", use_container_width=True)
                 if target.get('excel_img_url'):
                     st.divider(); st.image(target['excel_img_url'], caption="📊 3. ĐỊNH MỨC EXCEL KHO", use_container_width=True)
-            else: st.warning("👈 Chọn mã ở Sidebar")
         
         with col_info:
             if target:
@@ -196,15 +198,8 @@ if test_file:
                     rows.append({"Thông số PDF Test": k_test, "Số đo Test": v_test, "Số đo Kho": v_db, "Chênh lệch": diff, "Trạng thái": status})
                 
                 df_compare = pd.DataFrame(rows)
-                
-                # FIX LỖI KEYERROR: Kiểm tra bảng có dữ liệu mới tô màu
-                if not df_compare.empty and 'Trạng thái' in df_compare.columns:
-                    st.dataframe(df_compare.style.map(
-                        lambda x: 'background-color: #ffcccc' if x == "❌ SAI" else ('background-color: #ccffcc' if x == "✅ OK" else ''), 
-                        subset=['Trạng thái']
-                    ), use_container_width=True, height=550)
-                else:
-                    st.dataframe(df_compare, use_container_width=True)
+                if not df_compare.empty:
+                    st.dataframe(df_compare.style.map(lambda x: 'background-color: #ffcccc' if x == "❌ SAI" else ('background-color: #ccffcc' if x == "✅ OK" else ''), subset=['Trạng thái']), use_container_width=True, height=550)
                 
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer: df_compare.to_excel(writer, index=False)
