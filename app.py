@@ -9,7 +9,7 @@ from supabase import create_client, Client
 from difflib import SequenceMatcher
 import matplotlib.pyplot as plt
 
-# ================= CONFIG =================
+# ================= CONFIG (Giữ nguyên) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET_NAME = "fashion-imgs"
@@ -19,7 +19,7 @@ try:
 except:
     st.error("❌ Lỗi kết nối Supabase!")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.40", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V11.41", page_icon="👔")
 
 @st.cache_resource
 def load_ai():
@@ -28,7 +28,7 @@ def load_ai():
 
 ai_brain = load_ai()
 
-# ================= HÀM CHỤP ẢNH EXCEL SIÊU NÉT =================
+# ================= HÀM CHỤP ẢNH EXCEL SIÊU NÉT (DPI 500) =================
 def excel_to_img_bytes(file_obj):
     try:
         df = pd.read_excel(file_obj).dropna(how='all', axis=0).fillna("")
@@ -49,7 +49,7 @@ def excel_to_img_bytes(file_obj):
         return buf.getvalue()
     except: return None
 
-# ================= TRÍCH XUẤT THÔNG SỐ (LẤY CỘT MÀU VÀNG) =================
+# ================= TRÍCH XUẤT THÔNG SỐ (CHỈ LẤY CỘT CHÍNH - BỎ DUNG SAI) =================
 def parse_val(t):
     try:
         if not t or str(t).strip() == "": return 0
@@ -76,22 +76,37 @@ def get_data(pdf_path):
                 for tb in p.extract_tables():
                     if not tb or len(tb) < 2: continue
                     header = [str(x).strip().upper() for x in tb[0]]
-                    base_idx = -1
-                    if base_size_detected in header:
-                        base_idx = len(header) - 1 - header[::-1].index(base_size_detected)
-                    else:
-                        for ts in ['8', 'M', 'L', '10', 'S']:
-                            if ts in header: 
-                                base_idx = len(header) - 1 - header[::-1].index(ts)
-                                break
                     
+                    # 1. TÌM VỊ TRÍ CỘT THÔNG SỐ (TRÁNH CỘT TOLERANCE)
+                    base_idx = -1
+                    skip_keywords = ['TOL', 'TOLERANCE', '+', '-', '/', 'LIMIT', 'DUNG SAI']
+                    
+                    # Ưu tiên tìm cột có tên trùng Base Size và KHÔNG chứa từ khóa dung sai
+                    for i, h_val in enumerate(header):
+                        if base_size_detected in h_val and not any(sk in h_val for sk in skip_keywords):
+                            base_idx = i
+                            break
+                    
+                    # Nếu không thấy, tìm cột đầu tiên sau Description có giá trị trung bình lớn
+                    if base_idx == -1:
+                        for i in range(2, len(header)):
+                            if not any(sk in header[i] for sk in skip_keywords):
+                                base_idx = i
+                                break
+
+                    # 2. TRÍCH XUẤT DỮ LIỆU TỪ CỘT ĐÃ CHỌN
                     if base_idx != -1:
                         for r in tb[1:]:
                             if not r or len(r) <= base_idx: continue
+                            # Lấy mô tả (Cột 1 hoặc 2)
                             desc = (str(r[1] or "") + " " + str(r[2] or "")).strip().upper().replace("\n", " ")
-                            if len(desc) < 4: continue
+                            if len(desc) < 5 or any(x in desc for x in ['DATE', 'PAGE', 'PDM']): continue
+                            
                             val = parse_val(r[base_idx])
-                            if val > 0.5: specs[desc[:150]] = round(float(val), 3)
+                            # CHỈ LẤY THÔNG SỐ CHÍNH (Thường quần có thông số > 4 inch)
+                            # Bỏ qua các số nhỏ kiểu dung sai 0.25, 0.5, 1.0 trừ khi mô tả là các vị trí đặc biệt
+                            if val > 1.5: 
+                                specs[desc[:150]] = round(float(val), 3)
                             
         doc = fitz.open(pdf_path)
         img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
@@ -108,7 +123,7 @@ def classify_logic(specs, text, name):
     if 'SHORT' in txt or (0 < length < 24): return "QUẦN SHORT"
     return "QUẦN DÀI" if any(k in txt for k in ['PANT', 'TROUSER']) or length >= 24 else "ÁO / KHÁC"
 
-# ================= SIDEBAR =================
+# ================= SIDEBAR & KHO =================
 with st.sidebar:
     st.header("📦 QUẢN LÝ KHO")
     try:
@@ -124,8 +139,7 @@ with st.sidebar:
         for f in files:
             m = re.search(r'^\d+', f.name)
             if m:
-                ma = m.group()
-                ext = os.path.splitext(f.name)[1].lower()
+                ma = m.group(); ext = os.path.splitext(f.name)[1].lower()
                 if ma not in groups: groups[ma] = {}
                 groups[ma][ext] = f
         
@@ -149,8 +163,8 @@ with st.sidebar:
                 if os.path.exists("tmp.pdf"): os.remove("tmp.pdf")
         st.rerun()
 
-# ================= CHÍNH =================
-st.title("👔 AI Fashion Pro V11.40")
+# ================= MAIN =================
+st.title("👔 AI Fashion Pro V11.41")
 test_file = st.file_uploader("Tải PDF Test", type="pdf")
 
 if test_file:
@@ -168,7 +182,6 @@ if test_file:
                     v_raw = item['vector']
                     if isinstance(v_raw, str): v_raw = [float(x) for x in v_raw.strip('[]').split(',')]
                     v_db = np.array(v_raw, dtype=np.float32).reshape(1, -1)
-                    # SỬA LỖI TYPEERROR TẠI ĐÂY
                     sim = float(cosine_similarity(v_t, v_db)[0][0]) * 100
                     matches.append(item | {"sim": sim})
             
@@ -177,7 +190,7 @@ if test_file:
                     c1, c2, c3 = st.columns([1, 1, 1.8])
                     with c1: st.image(target['img'], caption="Bản vẽ Test", use_container_width=True)
                     with c2: 
-                        st.image(m['img_url'], caption="Kho", use_container_width=True)
+                        st.image(m['img_url'], caption="Mẫu trong kho", use_container_width=True)
                         if m.get('excel_img_url'): st.image(m['excel_img_url'], caption="Định mức", use_container_width=True)
                     with c3:
                         res = []
