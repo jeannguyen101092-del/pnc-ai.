@@ -6,7 +6,7 @@ from torchvision import models, transforms
 from supabase import create_client, Client
 from sklearn.metrics.pairwise import cosine_similarity
 
-# ================= CONFIG =================
+# ================= CONFIG (Thay URL và KEY thực tế của bạn) =================
 URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"            
 BUCKET = "fashion-imgs"
@@ -19,9 +19,10 @@ except Exception as e:
 
 st.set_page_config(layout="wide", page_title="AI FASHION AUDITOR V32", page_icon="📊")
 
-# ================= 1. AI VISION & UTILS =================
+# ================= 1. HỆ THỐNG AI VISION =================
 @st.cache_resource
 def load_vision_ai():
+    # Sử dụng ResNet50 để trích xuất đặc trưng hình ảnh
     model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 
@@ -38,11 +39,12 @@ def get_vector(img_bytes):
             return ai_brain(tf(img).unsqueeze(0)).flatten().numpy().tolist()
     except: return None
 
-def to_excel(df_details, df_pom, file_name):
+# Hàm xuất Excel (Sửa lỗi ghi đè sheet)
+def to_excel(df_details, df_pom):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df_details.to_sheet(writer, sheet_name='Chi_Tiet_Thiet_Ke', index=False)
-        df_pom.to_sheet(writer, sheet_name='Thong_So_POM', index=False)
+        df_details.to_excel(writer, sheet_name='Chi_Tiet_Thiet_Ke', index=False)
+        df_pom.to_excel(writer, sheet_name='Thong_So_POM', index=False)
     return output.getvalue()
 
 # ================= 2. TRÍCH XUẤT ĐA DẠNG (QUẦN, ÁO, VÁY, ĐẦM) =================
@@ -50,26 +52,31 @@ def deep_detail_inspection(text):
     t = str(text).upper()
     details = {}
     
-    # Phân loại SP
-    if any(x in t for x in ['JACKET', 'VEST', 'COAT']): details['Loại'] = "🧥 Áo Khoác/Vest"
+    # Phân loại sản phẩm thông minh
+    if any(x in t for x in ['JACKET', 'VEST', 'COAT', 'BLAZER']): details['Loại'] = "🧥 Áo Khoác/Vest"
     elif any(x in t for x in ['DRESS', 'GOWN']): details['Loại'] = "👗 Đầm (Dress)"
     elif 'SKIRT' in t: details['Loại'] = "👗 Váy (Skirt)"
     elif any(x in t for x in ['SHIRT', 'TOP', 'TEE', 'POLO']): details['Loại'] = "👕 Áo Sơ mi/Thun"
-    else: details['Loại'] = "👖 Quần/Khác"
+    elif any(x in t for x in ['PANT', 'TROUSER', 'SHORT', 'JEAN']): details['Loại'] = "👖 Quần"
+    else: details['Loại'] = "📦 Khác/Phụ kiện"
 
-    # Chi tiết túi & phụ liệu
+    # Soi chi tiết thiết kế
     pockets = []
     if 'CHEST POCKET' in t: pockets.append("Túi Ngực")
     if 'CARGO' in t: pockets.append("Túi Hộp")
     if 'WELT' in t: pockets.append("Túi Mổ")
+    if 'SLANT' in t: pockets.append("Túi Xéo")
     details['Túi'] = ", ".join(pockets) if pockets else "Tiêu chuẩn"
     
-    details['Phụ liệu'] = "Dây kéo (Zipper)" if 'ZIPPER' in t else "Nút/Chun"
+    details['Phụ liệu'] = "Dây kéo (Zipper)" if 'ZIPPER' in t else "Cúc/Chun"
+    if 'HOODED' in t: details['Nón'] = "Có nón"
+    
     return details
 
 def extract_techpack(pdf_file):
     specs, img, raw_text = {}, None, ""
-    pom_keys = ['WAIST', 'HIP', 'CHEST', 'BUST', 'LENGTH', 'SHOULDER', 'SLEEVE', 'RISE', 'THIGH', 'LEG']
+    # Từ khóa POM cho cả áo và quần
+    pom_keys = ['WAIST', 'HIP', 'CHEST', 'BUST', 'LENGTH', 'SHOULDER', 'SLEEVE', 'RISE', 'THIGH', 'LEG', 'OPENING']
     
     try:
         pdf_bytes = pdf_file.read()
@@ -80,22 +87,26 @@ def extract_techpack(pdf_file):
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
                 raw_text += (page.extract_text() or "")
-                for tb in page.extract_tables():
+                tables = page.extract_tables()
+                for tb in tables:
                     for row in tb:
                         cells = [str(c).strip() for c in row if c]
                         if len(cells) < 2: continue
                         key = cells[0].upper()
                         if any(k in key for k in pom_keys):
-                            val = re.findall(r"\d+\.?\d*", "".join(cells[1:]))
-                            if val: specs[key] = val[0]
+                            # Tìm con số đầu tiên trong các cột còn lại
+                            val_match = re.findall(r"\d+\.?\d*", " ".join(cells[1:]))
+                            if val_match: specs[key] = val_match[0]
         
         return {"spec": specs, "img": img, "details": deep_detail_inspection(raw_text)}
-    except: return None
+    except Exception as e:
+        st.error(f"Lỗi đọc PDF: {e}")
+        return None
 
-# ================= 3. UI CHÍNH =================
+# ================= 3. GIAO DIỆN CHÍNH =================
 st.title("📊 AI FASHION AUDITOR - REPORTING V32")
 
-# Lấy dữ liệu kho
+# Tải dữ liệu kho mẫu
 try:
     res = supabase.table("ai_data").select("*").execute()
     samples = res.data if res else []
@@ -105,65 +116,91 @@ with st.sidebar:
     st.header("⚙️ Cấu hình & Kho")
     st.info(f"Đang có {len(samples)} mẫu chuẩn trong kho.")
     up_pdfs = st.file_uploader("Nạp mẫu mới (Bulk)", type=['pdf'], accept_multiple_files=True)
-    # (Phần code nạp dữ liệu giữ nguyên như cũ)
+    
+    if up_pdfs and st.button("🚀 NẠP VÀO KHO"):
+        for f in up_pdfs:
+            d = extract_techpack(f)
+            if d:
+                ma = f.name.replace(".pdf", "")
+                vec = get_vector(d['img'])
+                # Upload ảnh và lưu Data (Rút gọn cho nhanh)
+                supabase.table("ai_data").upsert({
+                    "file_name": ma, "vector": vec, "spec_json": d['spec'], 
+                    "img_url": "", "details": d['details']
+                }).execute()
+                st.toast(f"Đã nạp: {ma}")
+        st.rerun()
 
-# Giao diện chọn mã so sánh
+# --- LỰA CHỌN MÃ HÀNG ---
 sample_list = ["--- TỰ ĐỘNG TÌM KIẾM (AI) ---"] + [s['file_name'] for s in samples]
-selected_code = st.selectbox("🎯 Chọn mã hàng đối chứng:", sample_list)
+selected_code = st.selectbox("🎯 Chọn mã hàng đối chứng để so sánh:", sample_list)
 
-test_files = st.file_uploader("📂 Tải Techpack kiểm tra", type="pdf", accept_multiple_files=True)
+test_files = st.file_uploader("📂 Tải Techpack cần kiểm tra", type="pdf", accept_multiple_files=True)
 
 if test_files:
     for t_file in test_files:
         data_test = extract_techpack(t_file)
         if not data_test: continue
 
-        with st.expander(f"📄 Kết quả: {t_file.name}", expanded=True):
+        with st.expander(f"📄 Đang phân tích: {t_file.name}", expanded=True):
             best_match = None
             sim_score = 0.0
-            
-            # Logic so sánh
             v_test = get_vector(data_test['img'])
+            
+            # --- LOGIC ĐỐI CHIẾU ---
             if selected_code == "--- TỰ ĐỘNG TÌM KIẾM (AI) ---":
                 if samples and v_test:
-                    scores = [float(cosine_similarity([v_test], [s['vector']])) for s in samples]
-                    idx = np.argmax(scores)
-                    best_match, sim_score = samples[idx], scores[idx]
+                    # LỌC CÁC MẪU CÓ VECTOR HỢP LỆ ĐỂ TRÁNH LỖI TYPEERROR
+                    valid_samples = [s for s in samples if s.get('vector') is not None]
+                    if valid_samples:
+                        # SỬA LỖI: Chuyển vector về numpy array 2D (1, -1)
+                        vec_test_np = np.array(v_test).reshape(1, -1)
+                        scores = [float(cosine_similarity(vec_test_np, np.array(s['vector']).reshape(1, -1))) for s in valid_samples]
+                        idx = np.argmax(scores)
+                        best_match, sim_score = valid_samples[idx], scores[idx]
             else:
                 best_match = next((s for s in samples if s['file_name'] == selected_code), None)
-                if best_match and v_test:
-                    sim_score = float(cosine_similarity([v_test], [best_match['vector']]))
+                if best_match and v_test and best_match.get('vector'):
+                    vec_test_np = np.array(v_test).reshape(1, -1)
+                    sim_score = float(cosine_similarity(vec_test_np, np.array(best_match['vector']).reshape(1, -1)))
 
+            # --- HIỂN THỊ KẾT QUẢ ---
             if best_match:
-                # Hiển thị Score
-                color = "green" if sim_score > 0.8 else "orange"
-                st.markdown(f"### Độ tương đồng dáng: <span style='color:{color}'>{sim_score:.1%}</span>", unsafe_allow_html=True)
+                st.markdown(f"### Độ tương đồng hình ảnh: `{sim_score:.1%}`")
                 
-                # Chuẩn bị dữ liệu DataFrame
+                # Bảng chi tiết thiết kế
                 df_det = pd.DataFrame([
                     {"Hạng mục": k, "File Test": v, "Mẫu Gốc": best_match['details'].get(k, "N/A"), 
                      "Kết quả": "✅ Khớp" if v == best_match['details'].get(k) else "❌ Khác"}
                     for k, v in data_test['details'].items()
                 ])
 
-                df_pom = []
+                # Bảng thông số POM
                 p_t, p_g = data_test['spec'], best_match.get('spec_json', {})
+                df_pom_data = []
                 for k in set(list(p_t.keys()) + list(p_g.keys())):
                     v_t, v_g = p_t.get(k, "-"), p_g.get(k, "-")
-                    df_pom.append({"Thông số (POM)": k, "Test": v_t, "Gốc": v_g, "Lệch": "✅" if v_t == v_g else "❌"})
-                df_pom = pd.DataFrame(df_pom)
+                    df_pom_data.append({"Thông số": k, "Test": v_t, "Gốc": v_g, "Sai lệch": "✅" if v_t == v_g else "❌"})
+                df_pom = pd.DataFrame(df_pom_data)
 
                 # Nút Xuất Excel
-                excel_data = to_excel(df_det, df_pom, t_file.name)
+                excel_file = to_excel(df_det, df_pom)
                 st.download_button(
                     label="📥 Tải Báo Cáo Đối Chiếu (.xlsx)",
-                    data=excel_data,
-                    file_name=f"SoSanh_{t_file.name.replace('.pdf','')}.xlsx",
+                    data=excel_file,
+                    file_name=f"Report_{t_file.name.replace('.pdf','')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
-                # Hiển thị bảng trên Web
-                col1, col2 = st.columns(2)
-                with col1: st.table(df_det)
-                with col2: st.table(df_pom)
-                st.image([data_test['img'], best_match['img_url']], caption=["Bản Test", f"Gốc: {best_match['file_name']}"], width=350)
+                # Hiển thị trực quan
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.subheader("🕵️ Chi tiết thiết kế")
+                    st.table(df_det)
+                with c2:
+                    st.subheader("📏 Thông số POM")
+                    st.table(df_pom)
+                
+                st.image(data_test['img'], caption="Hình ảnh trích xuất từ file Test", width=400)
+            else:
+                st.warning("⚠️ Không tìm thấy mẫu đối chứng phù hợp trong kho.")
