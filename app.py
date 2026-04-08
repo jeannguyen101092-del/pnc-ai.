@@ -7,8 +7,8 @@ from supabase import create_client, Client
 from sklearn.metrics.pairwise import cosine_similarity
 
 # ================= 1. CẤU HÌNH & KẾT NỐI =================
-URL = "YOUR_SUPABASE_URL"
-KEY = "YOUR_SUPABASE_KEY"
+URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
+KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 
 try:
