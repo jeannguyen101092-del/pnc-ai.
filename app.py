@@ -77,37 +77,44 @@ def deep_detail_inspection(text):
 
 def extract_techpack(pdf_file):
     specs, img, raw_text = {}, None, ""
-    pom_keys = ['WAIST', 'HIP', 'CHEST', 'BUST', 'LENGTH', 'SHOULDER', 'SLEEVE']
-
+    
     try:
         pdf_bytes = pdf_file.read()
 
-        # IMAGE
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
         doc.close()
 
-        # TEXT + TABLE
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
                 raw_text += (page.extract_text() or "")
-
                 tables = page.extract_tables() or []
+
                 for tb in tables:
-                    for row in tb:
-                        if not row:
+                    header = [str(h).upper() for h in tb[0]] if tb else []
+
+                    # 🔥 tìm vị trí cột Description
+                    desc_idx = -1
+                    for i, h in enumerate(header):
+                        if "DESCRIPTION" in h:
+                            desc_idx = i
+
+                    # nếu không có description thì bỏ
+                    if desc_idx == -1:
+                        continue
+
+                    for row in tb[1:]:
+                        if not row or len(row) <= desc_idx:
                             continue
-                        cells = [str(c).strip() for c in row if c]
 
-                        if len(cells) < 2:
-                            continue
+                        desc = str(row[desc_idx]).upper()
 
-                        key = cells[0].upper()
+                        # lấy số đo ở các cột sau
+                        val_text = " ".join([str(x) for x in row if x])
+                        val = re.findall(r"\d+\.?\d*", val_text)
 
-                        if any(k in key for k in pom_keys):
-                            val = re.findall(r"\d+\.?\d*", " ".join(cells[1:]))
-                            if val:
-                                specs[key] = val[0]
+                        if val:
+                            specs[desc] = val[0]
 
         return {
             "spec": specs,
@@ -115,7 +122,7 @@ def extract_techpack(pdf_file):
             "details": deep_detail_inspection(raw_text)
         }
 
-    except Exception as e:
+    except:
         return None
 
 # ================= 6. LOAD DATA =================
