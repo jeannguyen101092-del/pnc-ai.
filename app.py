@@ -11,7 +11,7 @@ URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 
-st.set_page_config(layout="wide", page_title="AI FASHION AUDITOR V35.4", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI FASHION AUDITOR V35.6", page_icon="📊")
 
 # ================= KẾT NỐI HỆ THỐNG =================
 @st.cache_resource
@@ -95,7 +95,7 @@ with st.sidebar:
         st.success("Nạp xong!"); st.rerun()
 
 # ================= MAIN AREA: KIỂM TRA =================
-st.title("🔍 AI FASHION AUDITOR V35.4")
+st.title("🔍 AI FASHION AUDITOR V35.6")
 test_file = st.file_uploader("Kéo tệp PDF kiểm tra vào đây", type=["pdf"])
 
 if test_file:
@@ -126,7 +126,7 @@ if test_file:
                 if test_data['tables'] and ref_data['spec_json']:
                     df_test = max(test_data['tables'], key=lambda x: len(x.columns))
                     
-                    # FIX DÒNG 131: Danh sách noise trên một hàng, đóng ngoặc ] đầy đủ
+                    # FIX TRIỆT ĐỂ DÒNG LỖI CÚ PHÁP: Viết liền mạch và đóng ngoặc ] đầy đủ
                     noise =
                     
                     # Lọc cột Size thực tế
@@ -134,23 +134,25 @@ if test_file:
                     actual_sizes = [c for c in actual_sizes if len(str(c)) < 12]
 
                     if actual_sizes:
-                        # CHỌN SIZE TRONG BẢNG
+                        # CHỌN SIZE TRONG BẢNG THÔNG SỐ
                         sel_size = st.selectbox("🎯 Chọn Size trong bảng thông số:", actual_sizes)
                         
                         audit_list = []
                         try:
                             ref_tbs = json.loads(ref_data['spec_json'])
+                            # Thường bảng thông số là bảng lớn nhất trong Techpack
                             df_ref = pd.DataFrame(max(ref_tbs, key=len)) if ref_tbs else pd.DataFrame()
                         except: df_ref = pd.DataFrame()
 
                         if not df_ref.empty and sel_size:
+                            # Tìm cột chứa Description trong bảng kiểm
                             d_col = next((c for c in df_test.columns if any(k in str(c).upper() for k in ['DESC', 'ITEM', 'POINT'])), df_test.columns[0])
                             
                             for _, row_t in df_test.iterrows():
                                 desc = str(row_t.get(d_col, '')).strip().upper()
                                 if not desc or desc == 'NAN' or len(desc) < 3: continue
                                 
-                                # SO SÁNH TỰ ĐỘNG
+                                # SO SÁNH TỰ ĐỘNG THEO DÒNG (Khớp cột đầu tiên của bảng gốc)
                                 match = df_ref[df_ref.iloc[:, 0].astype(str).str.upper().str.contains(desc, na=False, regex=False)]
                                 
                                 if not match.empty:
@@ -166,10 +168,11 @@ if test_file:
                             if audit_list:
                                 res_df = pd.DataFrame(audit_list)
                                 st.table(res_df)
+                                # NÚT XUẤT EXCEL
                                 st.download_button("📥 Xuất File Excel", to_excel(res_df), f"Audit_{sel_name}.xlsx")
                             else:
-                                st.warning("⚠️ Không khớp được hạng mục nào giữa 2 bảng.")
+                                st.warning("⚠️ Không khớp được hạng mục nào giữa 2 bản vẽ.")
                     else:
-                        st.warning("⚠️ Không tìm thấy cột Size hợp lệ.")
+                        st.warning("⚠️ Không tìm thấy cột Size hợp lệ (S, M, L, 30, 32...).")
     else:
-        st.error("Không đọc được dữ liệu từ PDF.")
+        st.error("Không trích xuất được dữ liệu từ PDF này.")
