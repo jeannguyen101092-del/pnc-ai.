@@ -12,7 +12,7 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V42.7", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V42.8", page_icon="📊")
 
 if "up_key" not in st.session_state: st.session_state.up_key = 0
 if "au_key" not in st.session_state: st.session_state.au_key = 0
@@ -23,7 +23,9 @@ def load_ai():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_ai()
 
-def clean_text(t):
+# --- HÀM LÀM SẠCH CHUỖI CỰC MẠNH ---
+def clean_text_v428(t):
+    # Chỉ giữ chữ cái và số, xóa sạch khoảng trắng và ký tự lạ để khớp 100%
     return re.sub(r'[^A-Z0-9]', '', str(t).upper())
 
 def parse_val(t):
@@ -42,10 +44,9 @@ def parse_val(t):
 def detect_brand(text):
     text = text.upper()
     if "REITMANS" in text: return "REITMANS"
-    if "EXPRESS" in text: return "EXPRESS"
     return "OTHER"
 
-# --- TRÍCH XUẤT V42.7 (FIX LỖI KHÔNG NHẬN DIỆN GRADING) ---
+# --- TRÍCH XUẤT V42.8 (FIX LỖI MẤT DÒNG) ---
 def extract_data(pdf_file):
     full_specs, img_bytes, brand, all_txt = {}, None, "OTHER", ""
     try:
@@ -59,12 +60,8 @@ def extract_data(pdf_file):
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 txt_p = (page.extract_text() or "").upper()
-                
-                # 🔥 FIX LỖI: Dùng Regex để tìm GRADING NOT APPROVED (Bất kể khoảng trắng)
                 grading_check = re.search(r"GRADING\s*NOT\s*APPROVED", txt_p)
-                
-                if brand == "REITMANS" and not grading_check:
-                    continue
+                if brand == "REITMANS" and not grading_check: continue
                 
                 tables = page.extract_tables()
                 for tb in tables:
@@ -82,8 +79,8 @@ def extract_data(pdf_file):
                                 for data_idx in range(r_idx + 1, len(df)):
                                     d_row = df.iloc[data_idx]
                                     name = str(d_row[d_idx]).replace('\n',' ').strip().upper()
-                                    # Nhảy qua các dòng ghi chú rác (REF, MASTER...)
-                                    if len(name) < 4 or any(x in name for x in ["MASTER", "RELATED", "REF"]): continue
+                                    # 🔥 SỬA LỖI: Cho phép tên ngắn (như HIP) và không chặn MASTER/REF
+                                    if len(name) < 2 or name == 'NAN': continue
                                     
                                     if name not in full_specs: full_specs[name] = {}
                                     for s_n, s_i in s_cols.items():
@@ -119,8 +116,8 @@ with st.sidebar:
         st.rerun()
 
 # --- MAIN ---
-st.title("🔍 AI Fashion Auditor V42.7")
-t_file = st.file_uploader("Upload file Reitmans kiểm tra", type="pdf", key=f"a_{st.session_state.au_key}")
+st.title("🔍 AI Fashion Auditor V42.8")
+t_file = st.file_uploader("Upload file kiểm tra", type="pdf", key=f"a_{st.session_state.au_key}")
 
 if t_file:
     target = extract_data(t_file)
@@ -144,7 +141,7 @@ if t_file:
                 if i.get('vector'):
                     v_ref = np.array(i['vector']).reshape(1, -1)
                     sim_m = cosine_similarity(v_test, v_ref)
-                    matches.append({"data": i, "sim": float(sim_m[0][0]) * 100})
+                    matches.append({"data": i, "sim": float(sim_m) * 100})
             
             top = sorted(matches, key=lambda x: x['sim'], reverse=True)[:1]
             for m in top:
@@ -157,22 +154,19 @@ if t_file:
                 for p_name, p_vals in target['specs'].items():
                     v1 = p_vals.get(sel_sz, 0)
                     v2 = 0
-                    p_name_clean = clean_text(p_name)
+                    p_name_clean = clean_text_v428(p_name)
+                    # 🔥 KHỚP DÒNG THÔNG MINH
                     for k_ref, v_ref_map in m['data']['spec_json'].items():
-                        if p_name_clean in clean_text(k_ref) or clean_text(k_ref) in p_name_clean:
+                        ref_clean = clean_text_v428(k_ref)
+                        if p_name_clean in ref_clean or ref_clean in p_name_clean:
                             v2 = v_ref_map.get(sel_sz, 0)
                             break
                     if v1 > 0 or v2 > 0:
-                        diff_list.append({
-                            "Hạng mục (Vị trí)": p_name,
-                            f"Thực tế ({sel_sz})": v1,
-                            f"Mẫu gốc ({sel_sz})": v2,
-                            "Chênh lệch": round(v1 - v2, 2)
-                        })
+                        diff_list.append({"Hạng mục": p_name, "Thực tế": v1, "Mẫu gốc": v2, "Lệch": round(v1 - v2, 2)})
                 
                 if diff_list:
                     df_r = pd.DataFrame(diff_list)
-                    st.table(df_r.style.map(lambda x: 'color: red; font-weight: bold' if abs(x) > 0.5 else 'color: white', subset=['Chênh lệch']))
+                    st.table(df_r.style.map(lambda x: 'color: red; font-weight: bold' if abs(x) > 0.5 else 'color: white', subset=['Lệch']))
                     
                     out = io.BytesIO()
                     df_r.to_excel(out, index=False)
@@ -182,4 +176,4 @@ if t_file:
                 st.session_state.au_key += 1
                 st.rerun()
     else:
-        st.error("⚠️ AI không tìm thấy trang GRADING NOT APPROVED. Vui lòng kiểm tra lại PDF.")
+        st.error("⚠️ Không tìm thấy bảng đo. Hãy kiểm tra PDF có chữ GRADING NOT APPROVED.")
