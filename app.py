@@ -1,5 +1,5 @@
 # ==========================================================
-# AI FASHION AUDITOR V38.4 - STABLE VERSION
+# AI FASHION AUDITOR V39.0 - CATEGORY FILTER & EXCEL EXPORT
 # ==========================================================
 import streamlit as st
 import io, fitz, pdfplumber, re, pandas as pd, numpy as np
@@ -9,13 +9,22 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# --- CONFIG (Thay URL/KEY của bạn) ---
+# --- CONFIG ---
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V38.4", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V39.0", page_icon="📊")
+
+# Từ điển phân loại của bạn
+CATEGORY_MAP = {
+ "tops": ["t-shirt", "shirt", "blouse", "hoodie", "tee", "top"],
+ "bottoms": ["pants", "jeans", "shorts", "trouser", "denim", "pant"],
+ "dress": ["dress", "gown"],
+ "outerwear": ["jacket", "coat", "blazer"],
+ "onepiece": ["jumpsuit", "romper"]
+}
 
 @st.cache_resource
 def load_ai():
@@ -24,7 +33,7 @@ def load_ai():
 
 model_ai = load_ai()
 
-# --- CÔNG CỤ TRÍCH XUẤT ---
+# --- CÔNG CỤ ---
 def parse_val(t):
     try:
         txt = str(t).replace(',', '.').strip()
@@ -37,8 +46,14 @@ def parse_val(t):
         return eval(v) if '/' in v else float(v)
     except: return 0
 
+def identify_category(text_content):
+    text_content = text_content.lower()
+    for cat, keywords in CATEGORY_MAP.items():
+        if any(k in text_content for k in keywords):
+            return cat
+    return "other"
+
 def extract_techpack(pdf_file):
-    """Trích xuất POM: Lấy Description làm Hạng mục, lưu đa Size"""
     full_specs, img_bytes, all_txt = {}, None, ""
     try:
         pdf_content = pdf_file.read()
@@ -56,7 +71,6 @@ def extract_techpack(pdf_file):
                     df = pd.DataFrame(tb)
                     desc_col_idx = -1
                     size_cols = {}
-                    
                     for row_idx, row in df.iterrows():
                         row_up = [str(c).upper() for c in row if c]
                         if any("DESC" in s for s in row_up):
@@ -65,7 +79,6 @@ def extract_techpack(pdf_file):
                                 if "DESC" in val_up: desc_col_idx = i
                                 elif val and len(str(val)) <= 3 and val_up not in ["TOL", "NO", "CODE"]:
                                     size_cols[val_up] = i
-                            
                             for d_idx in range(row_idx + 1, len(df)):
                                 d_row = df.iloc[d_idx]
                                 name = str(d_row[desc_col_idx]).replace('\n',' ').strip().upper()
@@ -75,25 +88,23 @@ def extract_techpack(pdf_file):
                                     val = parse_val(d_row[s_idx])
                                     if val > 0: full_specs[name][s_name] = val
                             break
-        cat = "QUẦN" if any(k in all_txt for k in ['INSEAM', 'RISE', 'PANT', 'WAIST']) else "ÁO"
-        return {"specs": full_specs, "img": img_bytes, "cat": cat}
+        
+        # Nhận diện Category dựa trên text và tên file
+        category = identify_category(all_txt + " " + pdf_file.name)
+        return {"specs": full_specs, "img": img_bytes, "cat": category}
     except: return None
 
-# --- SIDEBAR: QUẢN LÝ ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("📂 KHO DỮ LIỆU")
-    
-    # HIỂN THỊ SỐ MẪU TRONG KHO
     try:
         res_db = supabase.table("ai_data").select("file_name", count="exact").execute()
         st.metric("Tổng số mẫu hiện có", res_db.count if res_db.count else 0)
-    except:
-        st.info("Chưa có dữ liệu trong kho.")
+    except: pass
 
     files = st.file_uploader("Nạp Techpacks mới", accept_multiple_files=True)
     if files and st.button("🚀 NẠP VÀO HỆ THỐNG"):
-        p_bar = st.progress(0)
-        for i, f in enumerate(files):
+        for f in files:
             d = extract_techpack(f)
             if d and d['specs']:
                 img_p = Image.open(io.BytesIO(d['img'])).convert('RGB')
@@ -105,24 +116,29 @@ with st.sidebar:
                     "file_name": f.name, "vector": vec, "spec_json": d['specs'],
                     "img_base64": base64.b64encode(d['img']).decode(), "category": d['cat']
                 }, on_conflict="file_name").execute()
-            p_bar.progress((i + 1) / len(files))
         st.success("✅ Đã nạp xong!"); st.rerun()
 
-# --- MAIN: ĐỐI SOÁT ---
-st.title("🔍 AI Fashion Auditor V38.4")
+# --- MAIN ---
+st.title("🔍 AI Fashion Auditor V39.0")
 test_file = st.file_uploader("Upload file kiểm tra", type="pdf")
 
 if test_file:
     target = extract_techpack(test_file)
     if target and target['specs']:
-        # 1. Chọn Size
-        available_sizes = set()
-        for p in target['specs'].values(): available_sizes.update(p.keys())
-        sel_size = st.selectbox("🎯 CHỌN SIZE ĐỐI SOÁT:", sorted(list(available_sizes)), index=0)
+        st.subheader(f"📂 Loại hàng nhận diện: {target['cat'].upper()}")
         
-        # 2. Tìm mẫu trong kho
-        res = supabase.table("ai_data").select("*").execute()
-        if res.data:
+        # Lọc danh sách mẫu trong kho CÙNG LOẠI
+        res = supabase.table("ai_data").select("*").eq("category", target['cat']).execute()
+        
+        if not res.data:
+            st.error(f"❌ Không tìm thấy mẫu nào thuộc nhóm '{target['cat'].upper()}' trong kho để đối soát.")
+        else:
+            # Chọn Size
+            available_sizes = set()
+            for p in target['specs'].values(): available_sizes.update(p.keys())
+            sel_size = st.selectbox("🎯 CHỌN SIZE ĐỐI SOÁT:", sorted(list(available_sizes)), index=0)
+
+            # Tính tương đồng
             img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
             tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
             with torch.no_grad():
@@ -132,32 +148,47 @@ if test_file:
             for i in res.data:
                 if i.get('vector'):
                     v_ref = np.array(i['vector']).reshape(1, -1)
-                    # FIX LỖI TYPEERROR: Lấy giá trị đầu tiên [0][0]
-                    sim_score = cosine_similarity(v_test, v_ref)[0][0]
-                    sim = float(sim_score) * 100
+                    sim = float(cosine_similarity(v_test, v_ref)) * 100
                     matches.append({"data": i, "sim": sim})
             
-            best = sorted(matches, key=lambda x: x['sim'], reverse=True)[:1]
-            for m in best:
-                st.subheader(f"✨ Khớp: {m['data']['file_name']} ({m['sim']:.1f}%)")
-                c1, c2 = st.columns(2)
-                with c1: st.image(target['img'], caption="File đang kiểm")
-                with c2: st.image(base64.b64decode(m['data']['img_base64']), caption="Mẫu gốc trong kho")
+            # Hiển thị Top 3 mẫu tương đồng nhất
+            top_matches = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
+            
+            st.write(f"### 📈 Top {len(top_matches)} mẫu tương đồng nhất:")
+            
+            for idx, m in enumerate(top_matches):
+                with st.expander(f"Lựa chọn {idx+1}: {m['data']['file_name']} (Độ giống: {m['sim']:.1f}%)", expanded=(idx==0)):
+                    c1, c2 = st.columns(2)
+                    with c1: st.image(target['img'], caption="File đang kiểm")
+                    with c2: st.image(base64.b64decode(m['data']['img_base64']), caption="Mẫu trong kho")
 
-                # Bảng đối soát
-                diff = []
-                for p_name, p_vals in target['specs'].items():
-                    v1 = p_vals.get(sel_size, 0)
-                    v2 = m['data']['spec_json'].get(p_name, {}).get(sel_size, 0)
-                    if v1 > 0 or v2 > 0:
-                        diff.append({
-                            "Hạng mục (Vị trí)": p_name,
-                            f"Thực tế ({sel_size})": v1, f"Mẫu gốc ({sel_size})": v2,
-                            "Chênh lệch": round(v1 - v2, 2)
-                        })
-                
-                if diff:
-                    df = pd.DataFrame(diff)
-                    st.table(df.style.map(lambda x: 'color: red; font-weight: bold' if abs(x) > 0.5 else 'color: white', subset=['Chênh lệch']))
-                else:
-                    st.warning("Không có dữ liệu cho Size này.")
+                    # Bảng đối soát
+                    diff = []
+                    for p_name, p_vals in target['specs'].items():
+                        v1 = p_vals.get(sel_size, 0)
+                        v2 = m['data']['spec_json'].get(p_name, {}).get(sel_size, 0)
+                        if v1 > 0 or v2 > 0:
+                            diff.append({
+                                "Hạng mục (Vị trí)": p_name,
+                                f"Thực tế ({sel_size})": v1,
+                                f"Mẫu gốc ({sel_size})": v2,
+                                "Chênh lệch": round(v1 - v2, 2)
+                            })
+                    
+                    if diff:
+                        df_res = pd.DataFrame(diff)
+                        st.table(df_res.style.map(lambda x: 'color: red; font-weight: bold' if abs(x) > 0.5 else 'color: white', subset=['Chênh lệch']))
+                        
+                        # --- XUẤT EXCEL ---
+                        output = io.BytesIO()
+                        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                            df_res.to_excel(writer, index=False, sheet_name='Comparison')
+                        
+                        st.download_button(
+                            label=f"📥 Tải báo cáo Excel (Lựa chọn {idx+1})",
+                            data=output.getvalue(),
+                            file_name=f"Audit_{m['data']['file_name']}_{sel_size}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+    else:
+        st.error("Không trích xuất được dữ liệu từ file PDF.")
