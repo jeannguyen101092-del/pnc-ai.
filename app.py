@@ -78,10 +78,52 @@ with st.sidebar:
     st.header("📂 Database")
     st.metric("Tổng mẫu", len(data))
 
-    uploaded = st.file_uploader("Upload ảnh", type=["png","jpg","jpeg"])
+    st.markdown("---")
+    st.subheader("⬆️ Upload mẫu mới")
+
+    new_file = st.file_uploader("Upload ảnh mẫu mới", type=["png","jpg","jpeg"])
+    new_name = st.text_input("Tên mã hàng")
+
+    if new_file and new_name:
+        st.image(new_file, caption="Preview", use_container_width=True)
+
+        if st.button("🚀 Lưu vào hệ thống"):
+            img_bytes = new_file.read()
+            vec = get_vector(img_bytes)
+
+            if vec is None:
+                st.error("Không xử lý được ảnh")
+            else:
+                try:
+                    file_path = f"{new_name}.png"
+
+                    supabase.storage.from_(BUCKET).upload(
+                        file_path,
+                        img_bytes,
+                        file_options={"content-type":"image/png"},
+                        upsert=True
+                    )
+
+                    img_url = supabase.storage.from_(BUCKET).get_public_url(file_path)
+
+                    supabase.table("ai_data").upsert({
+                        "file_name": new_name,
+                        "vector": vec.tolist(),
+                        "image_url": img_url
+                    }).execute()
+
+                    st.success("✅ Đã lưu mẫu!")
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Lỗi: {e}")
+
+    st.markdown("---")
+
+    uploaded = st.file_uploader("Upload ảnh để tìm", type=["png","jpg","jpeg"])
 
     if uploaded:
-        st.image(uploaded, caption="Ảnh upload", use_container_width=True)
+        st.image(uploaded, caption="Ảnh query", use_container_width=True)
 
 # ================= MAIN =================
 col1, col2 = st.columns([1,1])
