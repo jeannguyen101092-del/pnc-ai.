@@ -1,207 +1,268 @@
-# ✅ AI FASHION AUDITOR V37.4 FIX (GIỮ NGUYÊN CẤU TRÚC + FIX TƯƠNG ĐỒNG)
+# ==========================================================
+# AI FASHION PRO V8 (CLEAN SPEC + FILTER RÁC)
+# ==========================================================
 
 import streamlit as st
-import io, fitz, pdfplumber, re, pandas as pd, numpy as np
-import torch, json
+import os, fitz, io, pdfplumber, re, pandas as pd
+import numpy as np
 from PIL import Image
+import torch, base64
 from torchvision import models, transforms
-from supabase import create_client
 from sklearn.metrics.pairwise import cosine_similarity
+from supabase import create_client, Client
 
 # ================= CONFIG =================
-URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
+URL = "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
-BUCKET = "fashion-imgs"
+supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI FASHION AUDITOR V37.4", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V8", page_icon="👔")
 
-# ================= INIT AI =================
+# ================= AI =================
 @st.cache_resource
 def load_ai():
-    base = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-    feat = torch.nn.Sequential(*(list(base.children())[:-1])).eval()
-    return feat
+    model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+    model = torch.nn.Sequential(*(list(model.children())[:-1]))
+    return model.eval()
 
-model_ai = load_ai()
+ai_brain = load_ai()
 
-def get_vector(img_bytes):
+# ================= PARSE VALUE =================
+def parse_val(t):
     try:
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        tf = transforms.Compose([
-            transforms.Resize(256), transforms.CenterCrop(224), transforms.ToTensor(),
-            transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
-        ])
-        with torch.no_grad():
-            base_vec = model_ai(tf(img).unsqueeze(0)).flatten().numpy()
+        found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', str(t))
+        if not found: return 0
+        v = found[0]
+        if ' ' in v:
+            p = v.split()
+            return float(p[0]) + eval(p[1])
+        return eval(v) if '/' in v else float(v)
+    except:
+        return 0
 
-        # 🔥 FIX QUAN TRỌNG: thêm histogram để tăng độ chính xác
-        hist = np.histogram(np.array(img).flatten(), bins=64)[0]
-        vec = np.concatenate([base_vec, hist])
+# ================= FILTER KEY =================
+VALID_KEYS = [
+    'INSEAM','WAIST','HIP','THIGH','KNEE','LEG OPEN',
+    'CHEST','LENGTH','SLEEVE','SHOULDER','BOTTOM'
+]
 
-        return (vec / np.linalg.norm(vec)).tolist()
-    except: return None
+BLOCK_KEYS = [
+    'SIZE','SEASON','TECH','DATE','#','DEVELOPMENT',
+    'FABRIC','BODY','SHELL','LINING','MATERIAL',
+    'COTTON','POLYESTER','ELASTANE','NYLON',
+    '%','PFD','DYED','WASH','COLOR','PRINT'
+]
 
-# ================= CHỈ TẬP TRUNG POM =================
-def extract_pom_only(pdf_file):
-    data = {"img": None, "table": pd.DataFrame()}
+# ================= PARSER V8 =================
+def extract_specs(table):
+    specs = {}
+
+    for r in table:
+        if not r or len(r) < 2:
+            continue
+
+        row_text = " | ".join([str(x) for x in r if x]).upper()
+
+        # ❌ bỏ rác
+        if any(x in row_text for x in BLOCK_KEYS):
+            continue
+
+        # ❌ không phải POM kỹ thuật
+        if not any(k in row_text for k in VALID_KEYS):
+            continue
+
+        vals = [parse_val(x) for x in r if x]
+        vals = [v for v in vals if v > 0]
+
+        if len(vals) < 1:
+            continue
+
+        val = float(np.median(vals))
+
+        key = row_text[:120]
+
+        specs[key] = round(val, 2)
+
+    return specs
+
+# ================= CLASSIFY =================
+def advanced_classify(specs, text, file_name):
+    txt = (text + " " + file_name).upper()
+    inseam = specs.get('INSEAM', 0)
+
+    if 'BIB' in txt:
+        return "QUẦN YẾM"
+
+    if 'CARGO' in txt:
+        return "QUẦN CARGO"
+
+    if 'ELASTIC' in txt:
+        return "QUẦN LƯNG THUN"
+
+    if inseam > 0:
+        if inseam <= 11:
+            return "QUẦN SHORT"
+        if inseam >= 25:
+            return "QUẦN DÀI"
+
+    if 'DRESS' in txt:
+        return "ĐẦM"
+    if 'SKIRT' in txt:
+        return "VÁY"
+    if 'SHIRT' in txt:
+        return "ÁO SƠ MI"
+
+    return "ÁO"
+
+# ================= GET DATA =================
+def get_data(pdf_path):
     try:
-        pdf_bytes = pdf_file.read()
+        specs, all_texts = {}, ""
 
-        # 1. Lấy ảnh đúng (không phải page 1)
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        for i in range(len(doc)):
-            page = doc.load_page(i)
-            text = page.get_text().upper()
-            if any(k in text for k in ["SKETCH", "FRONT", "STYLE", "DESIGN"]):
-                data["img"] = page.get_pixmap(matrix=fitz.Matrix(2,2)).tobytes("png")
-                break
+        with pdfplumber.open(pdf_path) as pdf:
+            for p in pdf.pages:
+                t = p.extract_text()
+                if t:
+                    all_texts += t + " "
 
-        if not data["img"] and len(doc) > 0:
-            data["img"] = doc.load_page(0).get_pixmap().tobytes("png")
+                tables = p.extract_tables()
+                for table in tables:
+                    specs.update(extract_specs(table))
 
-        doc.close()
+        doc = fitz.open(pdf_path)
+        pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+        img_bytes = pix.tobytes("png")
+        img_b64 = base64.b64encode(img_bytes).decode()
 
-        # 2. Quét bảng POM
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            for page in pdf.pages:
-                tables = page.extract_tables()
-                for tb in tables:
-                    df = pd.DataFrame(tb).dropna(how='all')
+        if len(specs) < 5:
+            return None
 
-                    for idx, row in df.iterrows():
-                        row_up = [str(x).upper() for x in row if x]
-                        if any(k in " ".join(row_up) for k in ["DESC", "POM", "MEASURE"]):
-                            df.columns = [str(c).replace('\n',' ').strip().upper() for c in row]
-                            clean_df = df.iloc[idx+1:].reset_index(drop=True)
+        cat = advanced_classify(specs, all_texts, os.path.basename(pdf_path))
 
-                            # 🔥 FIX: ép kiểu số cho các cột size
-                            for col in clean_df.columns:
-                                clean_df[col] = clean_df[col].astype(str).str.replace(",", ".")
+        return {
+            "spec": specs,
+            "img_b64": img_b64,
+            "img_bytes": img_bytes,
+            "cat": cat
+        }
 
-                            data["table"] = clean_df
-                            return data
+    except Exception as e:
+        st.error(f"Lỗi PDF: {e}")
+        return None
 
-        return data
-    except: return None
-
-# ================= APP LOGIC =================
-supabase = create_client(URL, KEY)
-try:
-    res = supabase.table("ai_data").select("file_name, vector, spec_json").execute()
-    samples = res.data if res.data else []
-except: samples = []
-
+# ================= UPLOAD =================
 with st.sidebar:
-    st.header("📂 Kho dữ liệu POM")
-    st.metric("Số mẫu trong kho", len(samples))
-    files = st.file_uploader("Nạp Techpack mẫu (PDF)", type=["pdf"], accept_multiple_files=True)
+    st.header("📦 NẠP KHO")
 
-    if files and st.button("🚀 Nạp/Cập nhật"):
-        p_bar = st.progress(0)
-        for i, f in enumerate(files):
-            d = extract_pom_only(f)
-            if d and d['img']:
-                name = f.name.replace(".pdf","")
-                try:
-                    supabase.storage.from_(BUCKET).upload(f"{name}.png", d['img'], {"content-type":"image/png","x-upsert":"true"})
-                    vec = get_vector(d['img'])
-                    specs = d['table'].to_json(orient='records')
+    files = st.file_uploader("Upload PDF", accept_multiple_files=True)
 
-                    supabase.table("ai_data").upsert({
-                        "file_name": name,
-                        "vector": vec,
-                        "spec_json": specs,
-                        "image_url": supabase.storage.from_(BUCKET).get_public_url(f"{name}.png")
-                    }).execute()
-                except: pass
+    if files and st.button("🚀 NẠP"):
+        for f in files:
+            try:
+                name = re.sub(r'\\s*\\(\\d+\\)', '', f.name)
 
-            p_bar.progress((i + 1) / len(files))
+                with open("tmp.pdf", "wb") as t:
+                    t.write(f.getbuffer())
 
-        st.success("Xong!")
+                d = get_data("tmp.pdf")
+
+                if not d:
+                    continue
+
+                tf = transforms.Compose([
+                    transforms.Resize(224),
+                    transforms.CenterCrop(224),
+                    transforms.ToTensor(),
+                    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+                ])
+
+                with torch.no_grad():
+                    vec = ai_brain(tf(Image.open(io.BytesIO(d['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy().tolist()
+
+                supabase.table("ai_data").upsert({
+                    "file_name": name,
+                    "vector": vec,
+                    "spec_json": d['spec'],
+                    "img_base64": d['img_b64'],
+                    "category": d['cat']
+                }, on_conflict="file_name").execute()
+
+                os.remove("tmp.pdf")
+
+            except Exception as e:
+                st.warning(f"Lỗi {f.name}: {e}")
+
+        st.success("✅ Done")
         st.rerun()
 
-st.title("🔍 AI FASHION AUDITOR V37.4")
+# ================= COMPARE =================
+st.title("👔 AI Fashion Pro V8")
 
-test_file = st.file_uploader("Upload PDF cần đối soát", type=["pdf"])
+file = st.file_uploader("Upload test", type="pdf")
 
-if test_file:
-    test = extract_pom_only(test_file)
+if file:
+    with open("test.pdf", "wb") as f:
+        f.write(file.getbuffer())
 
-    if test and not test['table'].empty:
-        col1, col2 = st.columns([1, 1.4])
+    target = get_data("test.pdf")
 
-        with col1:
-            st.image(test['img'], caption="Sketch phát hiện được")
-            t_vec = get_vector(test['img'])
+    if target:
+        st.success(f"Nhận diện: {target['cat']}")
 
-        if samples and t_vec:
+        db = supabase.table("ai_data").select("*").eq("category", target['cat']).execute()
+
+        if db.data:
+            tf = transforms.Compose([
+                transforms.Resize(224),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+
+            with torch.no_grad():
+                v_test = ai_brain(tf(Image.open(io.BytesIO(target['img_bytes'])).convert('RGB')).unsqueeze(0)).flatten().numpy()
+
             results = []
 
-            for s in samples:
-                try:
-                    v = np.array(s['vector'])
-                    sim = cosine_similarity([t_vec], [v])[0][0]   # 🔥 FIX BUG CHÍNH
-                    results.append((s, sim))
-                except: continue
+            for i in db.data:
+                if i.get('vector'):
+                    sim = float(cosine_similarity([v_test], [np.array(i['vector'])])[0][0]) * 100
+                    results.append({
+                        "name": i['file_name'],
+                        "sim": sim,
+                        "spec": i['spec_json'],
+                        "img": i['img_base64']
+                    })
 
-            if results:
-                results.sort(key=lambda x: x[1], reverse=True)
-                ref, sim_val = results[0]
+            results = sorted(results, key=lambda x: x['sim'], reverse=True)[:10]
 
-                with col2:
-                    st.subheader(f"Mẫu khớp: {ref['file_name']} ({sim_val*100:.1f}%)")
-                    st.progress(float(sim_val))
+            for r in results:
+                with st.expander(f"{r['name']} | {r['sim']:.1f}%"):
+                    c1, c2 = st.columns(2)
 
-                    # 🔥 HIỂN THỊ TOP 3
-                    st.write("### Top tương đồng:")
-                    for s, sim in results[:3]:
-                        st.write(f"- {s['file_name']} → {sim*100:.1f}%")
+                    with c1:
+                        st.image(target['img_bytes'])
+                    with c2:
+                        st.image(base64.b64decode(r['img']))
 
-                    df_t = test['table']
+                    diff = []
+                    poms = set(target['spec']) | set(r['spec'])
 
-                    noise = ['DESC', 'POM', 'NO', 'TOL', 'ITEM', 'METHOD', 'COMMENT', 'UNNAMED']
-                    size_cols = [c for c in df_t.columns if c and not any(n in str(c).upper() for n in noise)]
+                    for p in poms:
+                        v1 = target['spec'].get(p, 0)
+                        v2 = r['spec'].get(p, 0)
+                        diff.append({
+                            "POM": p,
+                            "NEW": v1,
+                            "OLD": v2,
+                            "DIFF": round(v1 - v2, 2)
+                        })
 
-                    sel_size = st.selectbox("🎯 Chọn Size đối soát:", size_cols)
+                    df = pd.DataFrame(diff)
+                    st.dataframe(df)
 
-                    try:
-                        df_ref = pd.read_json(io.StringIO(ref['spec_json']))
-                        audit = []
+                    out = io.BytesIO()
+                    with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
+                        df.to_excel(writer, index=False)
 
-                        d_col = next((c for c in df_t.columns if any(k in str(c).upper() for k in ["DESC", "POM", "ITEM"])), df_t.columns[0])
-
-                        for _, row in df_t.iterrows():
-                            desc = str(row[d_col]).strip()
-                            if not desc or desc.upper() in ['NAN', 'NONE']: continue
-
-                            match = df_ref[df_ref.iloc[:, 0].astype(str).str.upper().str.contains(desc[:8].upper(), na=False)]
-
-                            if not match.empty:
-                                try:
-                                    v1 = float(re.findall(r"\d+\.?\d*", str(row[sel_size]))[0])
-                                    v2 = float(re.findall(r"\d+\.?\d*", str(match.iloc[0].get(sel_size, '0')))[0])
-
-                                    diff = round(v1 - v2, 2)
-
-                                    audit.append({
-                                        "Hạng mục": desc,
-                                        "Thực tế": v1,
-                                        "Mẫu": v2,
-                                        "Lệch": diff,
-                                        "KQ": "✅" if abs(diff)<=0.5 else "❌"
-                                    })
-                                except: continue
-
-                        if audit:
-                            df = pd.DataFrame(audit)
-                            st.dataframe(df)
-
-                            output = io.BytesIO()
-                            df.to_excel(output, index=False)
-                            st.download_button("📥 Excel", output.getvalue(), "audit.xlsx")
-
-                    except:
-                        st.error("Lỗi đọc dữ liệu mẫu")
-
-    else:
-        st.error("Không tìm thấy bảng POM")
+                    st.download_button("📥 Excel", out.getvalue(), f"{r['name']}.xlsx")
