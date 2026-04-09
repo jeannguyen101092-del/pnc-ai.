@@ -6,12 +6,12 @@ from torchvision import models, transforms
 from supabase import create_client
 from sklearn.metrics.pairwise import cosine_similarity
 
-# ================= CONFIG =================
+# ================= CONFIG (Thay URL/KEY của bạn) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 
-st.set_page_config(layout="wide", page_title="AI FASHION AUDITOR V35.1", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI FASHION AUDITOR V35.2", page_icon="📊")
 
 # ================= KẾT NỐI =================
 @st.cache_resource
@@ -92,10 +92,10 @@ with st.sidebar:
                     specs = json.dumps([df.to_dict(orient='records') for df in d['tables']])
                     supabase.table("ai_data").upsert({"file_name":name, "vector":vec, "spec_json":specs, "image_url":img_url}).execute()
                 except: pass
-        st.success("Xong!"); st.rerun()
+        st.success("Nạp xong!"); st.rerun()
 
 # ================= GIAO DIỆN CHÍNH =================
-st.title("🔍 AI FASHION AUDITOR V35.1")
+st.title("🔍 AI FASHION AUDITOR V35.2")
 test_file = st.file_uploader("Kéo tệp PDF cần kiểm tra vào đây", type=["pdf"])
 
 if test_file:
@@ -107,13 +107,14 @@ if test_file:
             t_vec = get_vector(test_data['img'])
 
         if samples and t_vec:
-            # AI gợi ý mã hàng
+            # 1. AI gợi ý mã hàng
             results = [{"data": s, "sim": float(cosine_similarity([t_vec], [s['vector']])[0][0])} for s in samples]
             best_ai = max(results, key=lambda x: x['sim'])
             
             with col2:
                 st.subheader("⚙️ Thiết lập đối soát")
                 s_names = [s['file_name'] for s in samples]
+                # CHỌN MÃ HÀNG THỦ CÔNG
                 selected_name = st.selectbox("📌 Chọn mã hàng đối soát:", s_names, index=s_names.index(best_ai['data']['file_name']))
                 
                 ref_data = next(s for s in samples if s['file_name'] == selected_name)
@@ -126,7 +127,7 @@ if test_file:
                     # Lấy bảng có nhiều cột nhất
                     df_test = max(test_data['tables'], key=lambda x: len(x.columns))
                     
-                    # FIX DÒNG 133: Viết liền mạch danh sách noise
+                    # BIẾN NOISE ĐÃ ĐƯỢC FIX LỖI CÚ PHÁP
                     noise =
                     
                     # Lọc cột Size thực tế
@@ -134,11 +135,11 @@ if test_file:
                     actual_sizes = [c for c in actual_sizes if len(str(c)) < 12]
 
                     if actual_sizes:
+                        # CHỌN SIZE TRONG BẢNG
                         sel_size = st.selectbox("🎯 Chọn Size trong bảng thông số:", actual_sizes)
                         
                         audit_list = []
                         try:
-                            # Load bảng gốc từ JSON
                             ref_tables_list = json.loads(ref_data['spec_json'])
                             df_ref = pd.DataFrame(max(ref_tables_list, key=len)) if ref_tables_list else pd.DataFrame()
                         except: df_ref = pd.DataFrame()
@@ -148,12 +149,11 @@ if test_file:
                             d_col = next((c for c in df_test.columns if any(k in str(c).upper() for k in ['DESC', 'ITEM', 'POINT'])), df_test.columns[0])
                             
                             for _, row_t in df_test.iterrows():
-                                desc = str(row_t[d_col]).strip().upper()
+                                desc = str(row_t.get(d_col, '')).strip().upper()
                                 if not desc or desc == 'NAN' or len(desc) < 3: continue
                                 
-                                # Khớp dòng tự động
-                                ref_d_col = df_ref.columns[0] # Giả định cột đầu tiên là Description
-                                match = df_ref[df_ref[ref_d_col].astype(str).str.upper().str.contains(desc, na=False, regex=False)]
+                                # SO SÁNH TỰ ĐỘNG
+                                match = df_ref[df_ref.iloc[:, 0].astype(str).str.upper().str.contains(desc, na=False, regex=False)]
                                 
                                 if not match.empty:
                                     try:
@@ -166,6 +166,7 @@ if test_file:
                             if audit_list:
                                 res_df = pd.DataFrame(audit_list)
                                 st.table(res_df)
+                                # XUẤT FILE EXCEL
                                 st.download_button("📥 Xuất File Excel", to_excel(res_df), f"Audit_{selected_name}.xlsx")
                             else:
                                 st.warning("⚠️ Không khớp được hạng mục nào giữa 2 bảng.")
