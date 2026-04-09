@@ -1,201 +1,161 @@
-# ================= AI FASHION AUDITOR V35 PRO =================
-# Upgrade: UI đẹp, so sánh AI mạnh hơn, tìm kiếm tương đồng, progress bar
+# 🚀 V37 PRO MAX - AI GARMENT ANALYZER (IMAGE + POM)
 
 import streamlit as st
-import io, json, re
+import io, fitz, pdfplumber
 import numpy as np
 import pandas as pd
-from PIL import Image
 import torch
+from PIL import Image
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
+import re
 
 # ================= CONFIG =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
-BUCKET = "fashion-imgs"
+supabase = create_client(URL, KEY)
+BUCKET = "images"
 
-st.set_page_config(layout="wide", page_title="AI FASHION AUDITOR V35 PRO", page_icon="🧠")
-
-# ================= INIT =================
+# ================= MODEL (STRONGER) =================
 @st.cache_resource
-def init_supabase():
-    return create_client(URL, KEY)
 
-supabase = init_supabase()
-
-# ================= MODEL =================
-@st.cache_resource
 def load_model():
-    model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-    return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
+    model = models.resnet50(pretrained=True)
+    model.fc = torch.nn.Identity()
+    model.eval()
+    return model
 
-model_ai = load_model()
+model = load_model()
 
-# ================= IMAGE VECTOR =================
+transform = transforms.Compose([
+    transforms.Resize((256,256)),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
+])
+
+# ================= FEATURE EXTRACTION =================
+
 def get_vector(img_bytes):
-    try:
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        tf = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
-        ])
-        with torch.no_grad():
-            vec = model_ai(tf(img).unsqueeze(0)).flatten().numpy()
-            return vec
-    except:
-        return None
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    img_t = transform(img).unsqueeze(0)
+    with torch.no_grad():
+        vec = model(img_t).numpy().flatten()
+    return vec / np.linalg.norm(vec)
 
-# ================= LOAD DATA =================
-def load_data():
-    try:
-        res = supabase.table("ai_data").select("*").execute()
-        return res.data if res.data else []
-    except:
-        return []
+# ================= PDF PARSER V37 =================
 
-# ================= SIMILARITY =================
-def calc_similarity(v1, v2):
-    try:
-        return cosine_similarity([v1], [v2])[0][0]
-    except:
-        return 0
+def extract_pdf_advanced(pdf_file):
+    pdf_bytes = pdf_file.read()
 
-# ================= UI HEADER =================
-st.markdown("""
-<h1 style='text-align:center;color:#4CAF50;'>🧠 AI FASHION AUDITOR V35 PRO</h1>
-<p style='text-align:center;'>So sánh & tìm kiếm mẫu tương đồng bằng AI</p>
-""", unsafe_allow_html=True)
+    img_design = None
+    pom_img = None
+    pom_data = {}
+    pom_page_index = None
 
-# ================= LOAD =================
-data = load_data()
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for i, page in enumerate(pdf.pages):
+            text = (page.extract_text() or "").upper()
 
-# ================= SIDEBAR =================
-with st.sidebar:
-    st.header("📂 Database")
-    st.metric("Tổng mẫu", len(data))
+            # detect design page
+            if any(k in text for k in ["SKETCH","DESIGN","DETAIL"]):
+                if img_design is None:
+                    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                    p = doc.load_page(i)
+                    img_design = p.get_pixmap(matrix=fitz.Matrix(2,2)).tobytes("png")
+                    doc.close()
 
-    st.markdown("---")
-    st.subheader("⬆️ Upload mẫu mới")
+            # detect POM
+            if "POM DESCRIPTION" in text and "+TOL" in text:
+                pom_page_index = i
 
-    new_file = st.file_uploader("Upload ảnh mẫu mới", type=["png","jpg","jpeg"])
-    new_name = st.text_input("Tên mã hàng")
+                table = page.extract_table()
+                if table:
+                    df = pd.DataFrame(table[1:], columns=table[0])
+                    pom_data = df.to_dict()
 
-    if new_file and new_name:
-        st.image(new_file, caption="Preview", use_container_width=True)
+    if pom_page_index is not None:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        p = doc.load_page(pom_page_index)
+        pom_img = p.get_pixmap(matrix=fitz.Matrix(2,2)).tobytes("png")
+        doc.close()
 
-        if st.button("🚀 Lưu vào hệ thống"):
-            img_bytes = new_file.read()
-            vec = get_vector(img_bytes)
+    return img_design, pom_img, pom_data
 
-            if vec is None:
-                st.error("Không xử lý được ảnh")
-            else:
-                try:
-                    file_path = f"{new_name}.png"
+# ================= UI =================
+st.set_page_config(layout="wide")
+st.title("🔥 V37 PRO - GARMENT AI ANALYZER")
 
-                    supabase.storage.from_(BUCKET).upload(
-                        file_path,
-                        img_bytes,
-                        file_options={"content-type":"image/png"},
-                        upsert=True
-                    )
-
-                    img_url = supabase.storage.from_(BUCKET).get_public_url(file_path)
-
-                    supabase.table("ai_data").upsert({
-                        "file_name": new_name,
-                        "vector": vec.tolist(),
-                        "image_url": img_url
-                    }).execute()
-
-                    st.success("✅ Đã lưu mẫu!")
-                    st.rerun()
-
-                except Exception as e:
-                    st.error(f"Lỗi: {e}")
-
-    st.markdown("---")
-
-    uploaded = st.file_uploader("Upload ảnh để tìm", type=["png","jpg","jpeg"])
-
-    if uploaded:
-        st.image(uploaded, caption="Ảnh query", use_container_width=True)
-
-# ================= MAIN =================
-col1, col2 = st.columns([1,1])
-
-query_vec = None
+col1, col2 = st.columns([1,2])
 
 with col1:
-    st.subheader("📥 Query")
-    if uploaded:
-        img_bytes = uploaded.read()
-        query_vec = get_vector(img_bytes)
+    st.subheader("Upload")
+    upload_type = st.radio("Type", ["Image","PDF"])
+    file = st.file_uploader("Upload file")
+    name = st.text_input("Mã hàng")
 
-        if query_vec is None:
-            st.error("Không đọc được ảnh")
+    if file and st.button("Lưu"):
+        if upload_type == "PDF":
+            img, pom_img, pom_data = extract_pdf_advanced(file)
+        else:
+            img = file.read()
+            pom_data = {}
+
+        vec = get_vector(img)
+
+        path = f"{name}.png"
+        supabase.storage.from_(BUCKET).upload(path, img, upsert=True)
+        url = supabase.storage.from_(BUCKET).get_public_url(path)
+
+        supabase.table("ai_data").upsert({
+            "file_name": name,
+            "vector": vec.tolist(),
+            "image_url": url,
+            "pom": pom_data
+        }).execute()
+
+        st.success("Saved!")
+        st.rerun()
 
 with col2:
-    st.subheader("📊 Kết quả AI")
+    st.subheader("So sánh")
 
-    if query_vec is not None and data:
+    data = supabase.table("ai_data").select("*").execute().data
+
+    if len(data) > 0:
+        names = [d['file_name'] for d in data]
+        selected = st.selectbox("Chọn mẫu", names)
+
+        size = st.selectbox("Chọn size", ["XS","S","M","L","XL"])
+
+        base = next(d for d in data if d['file_name']==selected)
+        base_vec = np.array(base['vector'])
 
         results = []
+        for d in data:
+            vec = np.array(d['vector'])
+            sim = cosine_similarity([base_vec],[vec])[0][0]
+            results.append((d['file_name'], sim, d))
 
-        for item in data:
-            if not item.get("vector"):
-                continue
+        results = sorted(results, key=lambda x: x[1], reverse=True)
 
-            sim = calc_similarity(query_vec, item["vector"])
+        for name2, sim, d in results[:5]:
+            st.write(f"### {name2} - Similarity: {sim*100:.2f}%")
+            st.image(d['image_url'])
 
-            results.append({
-                "name": item["file_name"],
-                "score": sim,
-                "img": item.get("image_url")
-            })
+            # compare POM
+            if 'pom' in base and 'pom' in d:
+                st.write("So sánh thông số")
+                try:
+                    df1 = pd.DataFrame(base['pom'])
+                    df2 = pd.DataFrame(d['pom'])
 
-        # sort
-        results = sorted(results, key=lambda x: x["score"], reverse=True)
-
-        # top 5
-        top_k = results[:5]
-
-        for r in top_k:
-            st.markdown("---")
-
-            c1, c2 = st.columns([1,2])
-
-            with c1:
-                if r["img"]:
-                    st.image(r["img"], use_container_width=True)
-
-            with c2:
-                percent = round(r["score"]*100,2)
-
-                st.markdown(f"### {r['name']}")
-
-                st.progress(r["score"])
-
-                st.success(f"Độ tương đồng: {percent}%")
-
-# ================= SEARCH FILTER =================
-st.markdown("---")
-st.subheader("🔎 Tìm kiếm nâng cao")
-
-keyword = st.text_input("Nhập tên mẫu")
-
-if keyword:
-    filtered = [d for d in data if keyword.lower() in d["file_name"].lower()]
-
-    st.write(f"Tìm thấy {len(filtered)} mẫu")
-
-    for f in filtered:
-        st.write(f["file_name"])
-
-# ================= FOOTER =================
-st.markdown("---")
-st.caption("V35 PRO | AI Similarity Engine | ResNet50")
+                    if size in df1.columns and size in df2.columns:
+                        diff = df1[size].astype(float) - df2[size].astype(float)
+                        st.dataframe(pd.DataFrame({
+                            "POM": df1.iloc[:,0],
+                            "Diff": diff
+                        }))
+                except:
+                    st.write("Không đọc được POM")
