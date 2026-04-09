@@ -6,14 +6,14 @@ from torchvision import models, transforms
 from supabase import create_client
 from sklearn.metrics.pairwise import cosine_similarity
 
-# ================= CONFIG (Thay URL/KEY của bạn) =================
+# ================= CONFIG =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 
-st.set_page_config(layout="wide", page_title="AI FASHION AUDITOR V34.5", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI FASHION AUDITOR V34.6", page_icon="📊")
 
-# ================= KẾT NỐI HỆ THỐNG =================
+# ================= INIT =================
 @st.cache_resource
 def init_supabase():
     try: return create_client(URL, KEY)
@@ -28,192 +28,150 @@ def load_model():
 
 model_ai = load_model()
 
-# ================= CÔNG CỤ XỬ LÝ =================
+# ================= TOOLS =================
 def get_vector(img_bytes):
     try:
-        if not img_bytes: return None
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         tf = transforms.Compose([
             transforms.Resize(256), transforms.CenterCrop(224), transforms.ToTensor(),
             transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
         ])
         with torch.no_grad():
-            vec = model_ai(tf(img).unsqueeze(0)).flatten().numpy()
-            return vec.tolist()
+            return model_ai(tf(img).unsqueeze(0)).flatten().numpy().tolist()
     except: return None
 
 def extract_techpack(pdf_file):
-    """Trích xuất ảnh và các bảng thông số kỹ thuật"""
     data = {"img": None, "tables": []}
     try:
         pdf_bytes = pdf_file.read()
-        # 1. Trích xuất ảnh mẫu (Trang 1)
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         if len(doc) > 0:
             data["img"] = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2,2)).tobytes("png")
         doc.close()
 
-        # 2. Trích xuất bảng dữ liệu
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
                 tbs = page.extract_tables()
-                if not tbs: continue
                 for tb in tbs:
-                    df = pd.DataFrame(tb)
-                    # Tìm dòng Header chứa chữ 'DESCRIPTION'
+                    df = pd.DataFrame(tb).dropna(how='all')
                     for idx, row in df.iterrows():
                         row_up = [str(x).upper() for x in row if x]
-                        if any("DESCRIPTION" in s for s in row_up):
-                            df.columns = [str(c).strip().upper() for c in row]
+                        # Tìm header linh hoạt: DESC, DESCRIPTION, ITEM...
+                        if any(re.search(r"(DESC|ITEM|POINT OF)", s) for s in row_up):
+                            df.columns = [str(c).replace('\n', ' ').strip().upper() for c in row]
                             df = df.iloc[idx+1:].reset_index(drop=True)
                             data["tables"].append(df)
                             break
         return data
-    except Exception as e:
-        st.error(f"Lỗi đọc PDF: {e}")
-        return None
+    except: return None
 
 def to_excel(df):
-    """Tạo file Excel report"""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='Audit_Report')
-        workbook = writer.book
-        worksheet = writer.sheets['Audit_Report']
-        # Format
-        fmt_header = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
-        for col_num, value in enumerate(df.columns.values):
-            worksheet.write(0, col_num, value, fmt_header)
-        worksheet.set_column('A:A', 35)
+        df.to_excel(writer, index=False, sheet_name='Audit')
     return output.getvalue()
 
-# ================= GIAO DIỆN SIDEBAR =================
+# ================= DATA LOAD =================
+samples = []
 try:
     res = supabase.table("ai_data").select("*").execute()
     samples = res.data if res.data else []
-except:
-    samples = []
+except: pass
 
+# ================= SIDEBAR =================
 with st.sidebar:
     st.header("📂 Kho dữ liệu gốc")
-    st.metric("Tổng số mẫu", len(samples))
-    
-    files = st.file_uploader("Nạp Techpack mẫu (PDF)", type=["pdf"], accept_multiple_files=True)
-    
+    st.metric("Tổng mẫu", len(samples))
+    files = st.file_uploader("Nạp Techpack (PDF)", type=["pdf"], accept_multiple_files=True)
     if files and st.button("🚀 Bắt đầu nạp"):
-        progress = st.progress(0)
-        for i, f in enumerate(files):
+        for f in files:
             d = extract_techpack(f)
             if d and d['img']:
                 name = f.name.replace(".pdf","")
-                img_path = f"{name}.png"
                 try:
-                    # Upload ảnh lên Storage
-                    supabase.storage.from_(BUCKET).upload(
-                        path=img_path, 
-                        file=d['img'], 
-                        file_options={"content-type": "image/png", "x-upsert": "true"}
-                    )
-                    img_url = supabase.storage.from_(BUCKET).get_public_url(img_path)
-                    
-                    # Tạo vector AI
+                    supabase.storage.from_(BUCKET).upload(f"{name}.png", d['img'], {"content-type":"image/png", "x-upsert":"true"})
+                    img_url = supabase.storage.from_(BUCKET).get_public_url(f"{name}.png")
                     vec = get_vector(d['img'])
-                    
-                    # Chuyển đổi list các DataFrame thành chuỗi JSON
-                    list_of_dicts = [df.to_dict(orient='records') for df in d['tables']]
-                    specs_json_str = json.dumps(list_of_dicts)
-                    
-                    # Lưu vào Database
-                    supabase.table("ai_data").upsert({
-                        "file_name": name,
-                        "vector": vec,
-                        "spec_json": specs_json_str,
-                        "image_url": img_url
-                    }).execute()
-                    st.success(f"Đã nạp: {name}")
-                except Exception as e:
-                    st.error(f"Lỗi nạp {name}: {e}")
-            progress.progress((i + 1) / len(files))
-        st.rerun()
+                    specs = json.dumps([df.to_dict(orient='records') for df in d['tables']])
+                    supabase.table("ai_data").upsert({"file_name":name, "vector":vec, "spec_json":specs, "image_url":img_url}).execute()
+                except: pass
+        st.success("Nạp xong!"); st.rerun()
 
-# ================= GIAO DIỆN CHÍNH (AUDIT) =================
-st.title("🔍 AI FASHION AUDITOR V34.5")
+# ================= MAIN =================
+st.title("🔍 AI FASHION AUDITOR V34.6")
 test_file = st.file_uploader("Kéo tệp PDF cần kiểm tra vào đây", type=["pdf"])
 
 if test_file:
     test_data = extract_techpack(test_file)
     if test_data and test_data['img']:
         col1, col2 = st.columns([1, 1.5])
-        
         with col1:
-            st.image(test_data['img'], caption="Ảnh mẫu đang kiểm tra", use_container_width=True)
+            st.image(test_data['img'], caption="Mẫu đang kiểm tra", use_container_width=True)
             t_vec = get_vector(test_data['img'])
-            
+
+        # XỬ LÝ SO SÁNH
         if samples and t_vec:
-            # So sánh AI
-            results = []
-            for s in samples:
-                sim = cosine_similarity([t_vec], [s['vector']])[0][0]
-                results.append({"data": s, "sim": sim})
-            
-            best = max(results, key=lambda x: x['sim'])
+            # 1. AI gợi ý mã hàng
+            results = [{"data": s, "sim": cosine_similarity([t_vec], [s['vector']])[0][0]} for s in samples]
+            best_ai = max(results, key=lambda x: x['sim'])
             
             with col2:
-                sim_score = round(best['sim'] * 100, 1)
-                st.subheader(f"Độ tương đồng AI: {sim_score}%")
-                st.progress(float(best['sim']))
-                st.info(f"Khớp nhất với mẫu: **{best['data']['file_name']}**")
+                st.subheader("⚙️ Thiết lập đối soát")
+                
+                # NÚT CHỌN MÃ HÀNG (Mặc định là mã AI tìm được)
+                sample_names = [s['file_name'] for s in samples]
+                selected_name = st.selectbox("📌 Chọn mã hàng đối soát:", sample_names, index=sample_names.index(best_ai['data']['file_name']))
+                
+                # Lấy dữ liệu của mã hàng đã chọn
+                ref_data = next(s for s in samples if s['file_name'] == selected_name)
+                sim_display = round(cosine_similarity([t_vec], [ref_data['vector']])[0][0] * 100, 1)
+                
+                st.write(f"Độ tương đồng AI: **{sim_display}%**")
+                st.progress(sim_display/100)
 
-                # Xử lý so sánh thông số
-                if test_data['tables'] and best['data']['spec_json']:
-                    # Lấy bảng đầu tiên của file kiểm tra
-                    df_test = test_data['tables'][0]
-                    # Load dữ liệu gốc từ JSON
-                    ref_list = json.loads(best['data']['spec_json'])
+                # 2. Xử lý bảng & Size
+                if test_data['tables'] and ref_data['spec_json']:
+                    df_test = test_data['tables'][0] # Lấy bảng đầu tiên tìm thấy
+                    ref_list = json.loads(ref_data['spec_json'])
                     df_ref = pd.DataFrame(ref_list[0]) if ref_list else pd.DataFrame()
 
-                    # Lọc lấy các cột Size (bỏ Description, No...)
-                    ignore = ['DESCRIPTION', 'NO', 'TOL', 'TOLERANCE', 'INDEX', 'STT', '']
+                    # Lọc Size
+                    ignore = ['DESCRIPTION', 'DESC', 'NO', 'TOL', 'TOLERANCE', 'INDEX', 'STT', 'ITEM', 'METHOD', 'COMMENTS', 'NONE', 'NAN', 'UNNAMED']
                     size_cols = [c for c in df_test.columns if c and not any(x in str(c).upper() for x in ignore)]
                     
-                    sel_size = st.selectbox("🎯 Chọn Size để đối soát:", size_cols)
+                    if not size_cols: size_cols = ["Không tìm thấy cột Size"]
+                    
+                    c_s1, c_s2 = st.columns(2)
+                    with c_s1: sel_size = st.selectbox("🎯 Chọn Size kiểm tra:", size_cols)
+                    with c_s2: st.info(f"Đang so sánh với: {selected_name}")
 
-                    if sel_size:
-                        audit_results = []
+                    # SO SÁNH TỰ ĐỘNG
+                    if sel_size != "Không tìm thấy cột Size":
+                        audit_list = []
                         for _, row_t in df_test.iterrows():
-                            desc = str(row_t.get('DESCRIPTION', '')).strip().upper()
-                            if not desc or desc == 'NAN': continue
+                            # Tìm cột chứa Description
+                            desc_col = next((c for c in df_test.columns if "DESC" in c or "ITEM" in c), "DESCRIPTION")
+                            desc = str(row_t.get(desc_col, '')).strip().upper()
+                            if not desc or desc == 'NAN' or len(desc) < 3: continue
                             
-                            # Tìm dòng tương ứng ở mẫu gốc
-                            match = df_ref[df_ref['DESCRIPTION'].astype(str).str.upper() == desc]
+                            # Khớp tự động với mẫu gốc
+                            match = df_ref[df_ref.iloc[:, 0].astype(str).str.upper().str.contains(desc, na=False, regex=False)]
                             if not match.empty:
                                 try:
-                                    v_test = float(re.findall(r"\d+\.?\d*", str(row_t.get(sel_size, '0')))[0])
-                                    v_ref = float(re.findall(r"\d+\.?\d*", str(match.iloc[0].get(sel_size, '0')))[0])
-                                    diff = round(v_test - v_ref, 2)
-                                    audit_results.append({
-                                        "Mô tả (Description)": desc,
-                                        "Thông số kiểm": v_test,
-                                        "Thông số gốc": v_ref,
-                                        "Chênh lệch": diff,
-                                        "Kết quả": "✅ Khớp" if abs(diff) <= 0.5 else "❌ Lệch"
-                                    })
+                                    v1 = float(re.findall(r"\d+\.?\d*", str(row_t.get(sel_size, '0')))[0])
+                                    v2 = float(re.findall(r"\d+\.?\d*", str(match.iloc[0].get(sel_size, '0')))[0])
+                                    diff = round(v1 - v2, 2)
+                                    audit_list.append({"Hạng mục": desc, "Mẫu kiểm": v1, "Mẫu gốc": v2, "Lệch": diff, "Kết quả": "✅ OK" if abs(diff) <= 0.5 else "❌ LỆCH"})
                                 except: pass
                         
-                        if audit_results:
-                            final_df = pd.DataFrame(audit_results)
-                            st.table(final_df)
-                            
-                            # Nút Xuất Excel
-                            xlsx = to_excel(final_df)
-                            st.download_button(
-                                label="📥 Tải Báo Cáo Excel",
-                                data=xlsx,
-                                file_name=f"Audit_{best['data']['file_name']}_{sel_size}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
+                        if audit_list:
+                            res_df = pd.DataFrame(audit_list)
+                            st.table(res_df)
+                            st.download_button("📥 Xuất Excel", to_excel(res_df), f"Audit_{selected_name}.xlsx")
+                        else:
+                            st.warning("⚠️ Không tìm thấy hạng mục khớp nhau giữa 2 bản vẽ.")
     else:
-        st.warning("Không tìm thấy dữ liệu bảng hoặc ảnh trong file PDF này.")
+        st.error("Không đọc được dữ liệu từ PDF.")
 
 st.markdown("---")
-st.caption("AI Fashion Auditor v34.5 | Database: Supabase | Engine: ResNet50")
+st.caption("AI Fashion Auditor V34.6 | Hỗ trợ chọn mã thủ công & Đối soát tự động")
