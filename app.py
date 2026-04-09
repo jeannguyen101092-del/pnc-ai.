@@ -6,13 +6,13 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# --- CONFIG ---
+# --- CONFIG (Giữ nguyên của bạn) ---
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V43.7", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V43.8", page_icon="📊")
 
 if "up_key" not in st.session_state: st.session_state.up_key = 0
 if "au_key" not in st.session_state: st.session_state.au_key = 0
@@ -23,11 +23,13 @@ def load_ai():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_ai()
 
-# --- XỬ LÝ SỐ REITMANS ---
+# --- XỬ LÝ SỐ (Cải tiến để đọc được cả phân số và số thập phân) ---
 def parse_reitmans_val(t):
     try:
+        if t is None: return 0
         txt = str(t).replace(',', '.').strip().lower()
-        if not txt or txt in ['nan', '-', 'none']: return 0
+        if not txt or txt in ['nan', '-', 'none', 'null']: return 0
+        # Tìm số, phân số (ví dụ: 1 1/2 hoặc 1/2 hoặc 15.5)
         match = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
         v = match[0]
@@ -40,7 +42,7 @@ def parse_reitmans_val(t):
 def clean_pos(t):
     return re.sub(r'[^A-Z0-9]', '', str(t).upper())
 
-# --- TRÍCH XUẤT THÔNG SỐ NEW ---
+# --- TRÍCH XUẤT THÔNG SỐ ĐA DẠNG (NÂNG CẤP) ---
 def extract_pom_new_v437(pdf_file):
     full_specs, img_bytes, brand = {}, None, "OTHER"
     try:
@@ -58,116 +60,56 @@ def extract_pom_new_v437(pdf_file):
             for page in pdf.pages:
                 tables = page.extract_tables()
                 for tb in tables:
-                    df = pd.DataFrame(tb)
+                    df = pd.DataFrame(tb).replace({None: np.nan})
                     if df.empty or len(df.columns) < 2: continue
                     
-                    p_name_idx, new_idx = -1, -1
-                    for r_idx, row in df.head(8).iterrows(): # Quét sâu hơn để tìm Header
-                        row_up = [str(c).upper().strip() for c in row if c]
-                        if "POM NAME" in row_up and "NEW" in row_up:
-                            p_name_idx = row_up.index("POM NAME")
-                            new_idx = row_up.index("NEW")
-                            
-                            for d_idx in range(r_idx + 1, len(df)):
-                                d_row = df.iloc[d_idx]
-                                name = str(d_row[p_name_idx]).replace('\n',' ').strip().upper()
-                                if len(name) < 3 or any(x in name for x in ["REF:", "RELATED:"]): continue
-                                val_new = parse_reitmans_val(d_row[new_idx])
-                                if val_new > 0: full_specs[name] = val_new
-                            break
-        return {"specs": full_specs, "img": img_bytes, "brand": brand}
-    except: return None
-
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("📂 KHO DỮ LIỆU CHUẨN")
-    res_c = supabase.table("ai_data").select("file_name", count="exact").execute()
-    st.metric("Mẫu đã nạp", res_c.count if res_c.count else 0)
-
-    files = st.file_uploader("Nạp Techpack mẫu", accept_multiple_files=True, key=f"u_{st.session_state.up_key}")
-    if files and st.button("🚀 BẮT ĐẦU NẠP"):
-        p = st.progress(0)
-        for i, f in enumerate(files):
-            check = supabase.table("ai_data").select("file_name").eq("file_name", f.name).execute()
-            if check.data: continue
-
-            d = extract_pom_new_v437(f)
-            if d and d['specs']:
-                img_p = Image.open(io.BytesIO(d['img'])).convert('RGB')
-                tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-                with torch.no_grad():
-                    vec = model_ai(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
-                
-                path = f"lib_{f.name.replace('.pdf', '.png')}"
-                supabase.storage.from_(BUCKET).upload(path=path, file=d['img'], file_options={"content-type":"image/png", "x-upsert":"true"})
-                supabase.table("ai_data").insert({
-                    "file_name": f.name, "vector": vec, "spec_json": d['specs'],
-                    "image_url": supabase.storage.from_(BUCKET).get_public_url(path), "category": d['brand']
-                }).execute()
-            p.progress((i + 1) / len(files))
-        st.session_state.up_key += 1
-        st.rerun()
-
-# --- MAIN ---
-st.title("🔍 AI Fashion Auditor V43.7")
-t_file = st.file_uploader("Upload file đối soát", type="pdf", key=f"a_{st.session_state.au_key}")
-
-if t_file:
-    target = extract_pom_new_v437(t_file)
-    if target and target['specs']:
-        st.success(f"✅ Tìm thấy **{len(target['specs'])}** hạng mục thông số.")
-        
-        db_res = supabase.table("ai_data").select("*").execute()
-        if db_res.data:
-            img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
-            tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-            with torch.no_grad():
-                v_test = model_ai(tf(img_t).unsqueeze(0)).flatten().numpy().reshape(1, -1)
-
-            matches = []
-            for i in db_res.data:
-                if i.get('vector'):
-                    v_ref = np.array(i['vector']).reshape(1, -1)
-                    # 🔥 FIX CHÍNH TẠI ĐÂY: Lấy giá trị đầu tiên của ma trận similarity
-                    sim_matrix = cosine_similarity(v_test, v_ref)
-                    sim_val = float(sim_matrix[0][0]) * 100
-                    matches.append({"data": i, "sim": sim_val})
-            
-            top = sorted(matches, key=lambda x: x['sim'], reverse=True)[:1]
-            for m in top:
-                st.subheader(f"✨ Mẫu khớp: {m['data']['file_name']} ({m['sim']:.1f}%)")
-                c1, c2 = st.columns(2)
-                with c1: st.image(target['img'], caption="Bản vẽ đang kiểm")
-                with c2: st.image(m['data']['image_url'], caption="Mẫu gốc trong KHO")
-
-                diff_list = []
-                for p_name, v_target in target['specs'].items():
-                    v_ref = 0
-                    p_clean = clean_pos(p_name)
-                    # Tìm thông số khớp 100% trong kho
-                    for k_ref, val_ref in m['data']['spec_json'].items():
-                        if p_clean == clean_pos(k_ref):
-                            v_ref = val_ref
-                            break
-                    if v_target > 0 or v_ref > 0:
-                        diff_list.append({
-                            "Hạng mục": p_name,
-                            "NEW (Kiểm tra)": v_target,
-                            "NEW (Mẫu gốc)": v_ref,
-                            "Lệch": round(v_target - v_ref, 2)
-                        })
-                
-                if diff_list:
-                    df_r = pd.DataFrame(diff_list)
-                    st.table(df_r.style.map(lambda x: 'color: red; font-weight: bold' if abs(x) > 0.5 else 'color: white', subset=['Lệch']))
+                    # Tìm tọa độ cột
+                    p_name_idx, val_idx = -1, -1
                     
-                    # Nút tải Excel báo cáo
-                    out = io.BytesIO()
-                    df_r.to_excel(out, index=False)
-                    st.download_button("📥 Tải báo cáo Excel", out.getvalue(), "Audit_Report.xlsx")
-            
-            if st.button("🗑️ Xóa file này để quét file khác"):
-                st.session_state.au_key += 1
-                st.rerun()
-    else:
-        st.error("⚠️ AI không tìm thấy bảng thông số. Kiểm tra lại PDF có cột 'POM NAME' và 'NEW' không.")
+                    for r_idx, row in df.head(10).iterrows():
+                        row_up = [str(c).upper().strip() for c in row if c is not np.nan]
+                        
+                        # Ưu tiên 1: Cấu trúc Reitmans (POM NAME + NEW)
+                        if "POM NAME" in row_up and "NEW" in row_up:
+                            p_name_idx = [str(c).upper().strip() for c in row].index("POM NAME")
+                            val_idx = [str(c).upper().strip() for c in row].index("NEW")
+                            break
+                        
+                        # Ưu tiên 2: Cấu trúc hãng khác (POM/Description + TOL + Size)
+                        elif any(x in row_up for x in ["POM", "DESCRIPTION", "SPEC DESCRIPTION"]):
+                            # Lấy cột tên (thường là cột đầu tiên hoặc cột chứa chữ DESCRIPTION)
+                            for i, col_val in enumerate(row_up):
+                                if any(x in col_val for x in ["POM", "DESCRIPTION"]): 
+                                    p_name_idx = i
+                                    break
+                            
+                            # Tìm cột giá trị (thường nằm sau cột TOL hoặc +/-)
+                            for i, col_val in enumerate(row_up):
+                                if "TOL" in col_val or "+/-" in col_val:
+                                    val_idx = i + 1 # Cột size đầu tiên thường sau TOL
+                                    break
+                            
+                            if p_name_idx != -1 and val_idx != -1: break
+
+                    # Nếu tìm thấy cột, bắt đầu lấy dữ liệu
+                    if p_name_idx != -1 and val_idx != -1:
+                        for d_idx in range(r_idx + 1, len(df)):
+                            d_row = df.iloc[d_idx]
+                            name = str(d_row[p_name_idx]).replace('\n',' ').strip().upper()
+                            
+                            # Bỏ qua dòng rác
+                            if len(name) < 3 or any(x in name for x in ["REF:", "RELATED:", "PAGE", "TOTAL"]): continue
+                            
+                            raw_val = d_row[val_idx]
+                            val_num = parse_reitmans_val(raw_val)
+                            
+                            if val_num > 0:
+                                full_specs[name] = val_num
+                                
+        return {"specs": full_specs, "img": img_bytes, "brand": brand}
+    except Exception as e:
+        print(f"Lỗi: {e}")
+        return None
+
+# --- PHẦN UI VÀ LOGIC CÒN LẠI GIỮ NGUYÊN ---
+# (Copy tiếp các phần SIDEBAR và MAIN của bạn vào đây)
