@@ -12,7 +12,7 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V42.6", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V42.7", page_icon="📊")
 
 if "up_key" not in st.session_state: st.session_state.up_key = 0
 if "au_key" not in st.session_state: st.session_state.au_key = 0
@@ -23,7 +23,6 @@ def load_ai():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_ai()
 
-# --- HÀM LÀM SẠCH CHUỖI ĐỂ KHỚP DÒNG ---
 def clean_text(t):
     return re.sub(r'[^A-Z0-9]', '', str(t).upper())
 
@@ -46,6 +45,7 @@ def detect_brand(text):
     if "EXPRESS" in text: return "EXPRESS"
     return "OTHER"
 
+# --- TRÍCH XUẤT V42.7 (FIX LỖI KHÔNG NHẬN DIỆN GRADING) ---
 def extract_data(pdf_file):
     full_specs, img_bytes, brand, all_txt = {}, None, "OTHER", ""
     try:
@@ -59,14 +59,19 @@ def extract_data(pdf_file):
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 txt_p = (page.extract_text() or "").upper()
-                if brand == "REITMANS" and "GRADING NOT APPROVED" not in txt_p: continue
+                
+                # 🔥 FIX LỖI: Dùng Regex để tìm GRADING NOT APPROVED (Bất kể khoảng trắng)
+                grading_check = re.search(r"GRADING\s*NOT\s*APPROVED", txt_p)
+                
+                if brand == "REITMANS" and not grading_check:
+                    continue
                 
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb)
                     d_idx, s_cols = -1, {}
                     for r_idx, row in df.iterrows():
-                        r_up = [str(c).upper().strip() for c in row if c]
+                        row_up = [str(c).upper().strip() for c in row if c]
                         if any(k in " ".join(row_up) for k in ["POM NAME", "DESC"]):
                             for i, v in enumerate(row):
                                 v_s = str(v).upper().strip()
@@ -77,7 +82,9 @@ def extract_data(pdf_file):
                                 for data_idx in range(r_idx + 1, len(df)):
                                     d_row = df.iloc[data_idx]
                                     name = str(d_row[d_idx]).replace('\n',' ').strip().upper()
-                                    if len(name) < 4 or name == 'NAN': continue
+                                    # Nhảy qua các dòng ghi chú rác (REF, MASTER...)
+                                    if len(name) < 4 or any(x in name for x in ["MASTER", "RELATED", "REF"]): continue
+                                    
                                     if name not in full_specs: full_specs[name] = {}
                                     for s_n, s_i in s_cols.items():
                                         v_num = parse_val(d_row[s_i])
@@ -111,8 +118,8 @@ with st.sidebar:
         st.session_state.up_key += 1
         st.rerun()
 
-# --- MAIN: ĐỐI SOÁT ---
-st.title("🔍 AI Fashion Auditor V42.6")
+# --- MAIN ---
+st.title("🔍 AI Fashion Auditor V42.7")
 t_file = st.file_uploader("Upload file Reitmans kiểm tra", type="pdf", key=f"a_{st.session_state.au_key}")
 
 if t_file:
@@ -137,7 +144,6 @@ if t_file:
                 if i.get('vector'):
                     v_ref = np.array(i['vector']).reshape(1, -1)
                     sim_m = cosine_similarity(v_test, v_ref)
-                    # 🔥 FIX LỖI TYPEERROR DÒNG 141 TRONG HÌNH: Thêm index [0][0]
                     matches.append({"data": i, "sim": float(sim_m[0][0]) * 100})
             
             top = sorted(matches, key=lambda x: x['sim'], reverse=True)[:1]
@@ -176,4 +182,4 @@ if t_file:
                 st.session_state.au_key += 1
                 st.rerun()
     else:
-        st.error("⚠️ Không lấy được thông số. Hãy đảm bảo PDF có trang GRADING NOT APPROVED.")
+        st.error("⚠️ AI không tìm thấy trang GRADING NOT APPROVED. Vui lòng kiểm tra lại PDF.")
