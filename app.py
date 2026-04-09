@@ -11,7 +11,7 @@ URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 
-st.set_page_config(layout="wide", page_title="AI FASHION AUDITOR V36.3", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI FASHION AUDITOR V36.4", page_icon="📊")
 
 # ================= INIT =================
 @st.cache_resource
@@ -26,7 +26,7 @@ def load_model():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_model()
 
-# ================= VECTOR =================
+# ================= VECTOR (Fix lỗi kích thước) =================
 def get_vector(img_bytes):
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
@@ -36,50 +36,48 @@ def get_vector(img_bytes):
         ])
         with torch.no_grad():
             base_vec = model_ai(tf(img).unsqueeze(0)).flatten().numpy()
+        # Thêm Histogram 64 bins
         hist, _ = np.histogram(np.array(img).flatten(), bins=64, range=(0, 255))
         vec = np.concatenate([base_vec, hist.astype(np.float32)])
         return (vec / (np.linalg.norm(vec) + 1e-9)).tolist()
     except: return None
 
-# ================= CẢI TIẾN TRÍCH XUẤT =================
+# ================= TRÍCH XUẤT PDF (Fix cho mẫu Express) =================
 def extract_techpack(pdf_file):
-    data = {"img": None, "tables": []}
+    data = {"img": None, "tables": pd.DataFrame()}
     try:
         pdf_bytes = pdf_file.read()
-        
-        # 1. Trích xuất ảnh (Ưu tiên trang Sketch, nếu ko thấy lấy Page 1)
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        # Tìm ảnh Sketch
         for i in range(len(doc)):
             page = doc.load_page(i)
-            if any(k in page.get_text().upper() for k in ["SKETCH","DESIGN","DETAIL","STYLE","CLOTHING"]):
+            if any(k in page.get_text().upper() for k in ["SKETCH","FRONT","BACK","STYLE"]):
                 data["img"] = page.get_pixmap(matrix=fitz.Matrix(2,2)).tobytes("png")
                 break
-        if data["img"] is None and len(doc) > 0:
+        if not data["img"] and len(doc)>0:
             data["img"] = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2,2)).tobytes("png")
         doc.close()
 
-        # 2. Trích xuất bảng (Lấy tất cả các bảng lớn)
+        # Tìm bảng thông số
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            all_tables = []
+            tables = []
             for page in pdf.pages:
-                tbs = page.extract_tables()
-                if tbs:
-                    for tb in tbs:
-                        df = pd.DataFrame(tb)
-                        if len(df.columns) > 3 and len(df) > 2: # Lọc bỏ các bảng quá nhỏ
-                            all_tables.append(df)
+                extracted = page.extract_tables()
+                for e in extracted:
+                    df = pd.DataFrame(e).dropna(how='all')
+                    if len(df.columns) >= 3: tables.append(df)
             
-            # Gán header cho bảng lớn nhất tìm được
-            if all_tables:
-                main_df = max(all_tables, key=len)
-                # Tự động tìm dòng header (dòng nào nhiều chữ nhất)
-                main_df.columns = main_df.iloc[0]
-                data["tables"] = main_df.iloc[1:].reset_index(drop=True)
-                
+            if tables:
+                # Lấy bảng dài nhất (thường là bảng POM)
+                main_df = max(tables, key=len)
+                # Tìm dòng header (dòng chứa chữ hoặc size)
+                for idx, row in main_df.iterrows():
+                    if any(str(x).strip().upper() in ["S","M","L","XL","DESC","POM"] for x in row):
+                        main_df.columns = [str(c).replace('\n',' ') for c in row]
+                        data["tables"] = main_df.iloc[idx+1:].reset_index(drop=True)
+                        break
         return data
-    except Exception as e:
-        st.error(f"Lỗi trích xuất: {e}")
-        return None
+    except: return None
 
 def to_excel(df):
     output = io.BytesIO()
@@ -97,7 +95,7 @@ if supabase:
 
 # ================= SIDEBAR =================
 with st.sidebar:
-    st.header("📦 Kho dữ liệu")
+    st.header("📂 Kho dữ liệu")
     files = st.file_uploader("Upload mẫu gốc", type=["pdf"], accept_multiple_files=True)
     if files and st.button("🚀 Cập nhật kho"):
         for f in files:
@@ -108,14 +106,14 @@ with st.sidebar:
                     supabase.storage.from_(BUCKET).upload(f"{name}.png", d['img'], {"content-type":"image/png","x-upsert":"true"})
                     url = supabase.storage.from_(BUCKET).get_public_url(f"{name}.png")
                     vec = get_vector(d['img'])
-                    # Lưu bảng chính
-                    specs = d['tables'].to_json(orient='records') if not isinstance(d['tables'], list) else "{}"
+                    # Lưu bảng dưới dạng JSON
+                    specs = d['tables'].to_json(orient='records')
                     supabase.table("ai_data").upsert({"file_name": name, "vector": vec, "spec_json": specs, "image_url": url}).execute()
-                except Exception as e: st.error(e)
-        st.success("Xong!"); st.rerun()
+                except: pass
+        st.success("Đã nạp xong!"); st.rerun()
 
 # ================= MAIN =================
-st.title("🔍 AI FASHION AUDITOR V36.3")
+st.title("🔍 AI FASHION AUDITOR V36.4")
 file = st.file_uploader("Upload PDF kiểm tra", type=["pdf"])
 
 if file:
@@ -127,12 +125,14 @@ if file:
             vec_test = get_vector(test['img'])
 
         if samples and vec_test:
-            # So sánh AI
+            # So sánh AI (Fix TypeError bằng try-except)
             results = []
             for s in samples:
-                if s.get('vector') and len(s['vector']) == len(vec_test):
-                    sim = float(cosine_similarity([vec_test],[s['vector']]))
-                    results.append((s, sim))
+                try:
+                    if s.get('vector') and len(s['vector']) == len(vec_test):
+                        sim = float(cosine_similarity([vec_test],[s['vector']])[0][0])
+                        results.append((s, sim))
+                except: continue
             
             if results:
                 results.sort(key=lambda x: x[1], reverse=True)
@@ -143,27 +143,33 @@ if file:
 
                     df_test = test['tables']
                     if not df_test.empty:
-                        # Tự tìm các cột Size (cột có dữ liệu số)
-                        size_options = [c for c in df_test.columns if c and str(c).strip()]
-                        size = st.selectbox("Chọn cột thông số (Size):", size_options)
+                        # Lấy danh sách size từ header bảng
+                        size_cols = [c for c in df_test.columns if c and str(c).strip()]
+                        sel_size = st.selectbox("Chọn cột thông số (Size):", size_cols)
 
                         try:
+                            # Load bảng gốc
                             df_ref = pd.read_json(io.StringIO(ref['spec_json']))
                             audit = []
                             for _, row in df_test.iterrows():
-                                desc = str(row.iloc[0]) # Cột đầu thường là Description
-                                match = df_ref[df_ref.iloc[:, 0].astype(str).str.contains(desc[:8], case=False, na=False)]
+                                desc = str(row.iloc[0]).strip().upper() # Cột đầu là Description
+                                if not desc or desc == 'NAN': continue
+                                
+                                # Tìm dòng tương ứng bằng Description
+                                match = df_ref[df_ref.iloc[:, 0].astype(str).str.upper().str.contains(desc[:10], na=False)]
                                 if not match.empty:
-                                    v1 = re.findall(r"\d+\.?\d*", str(row[size]))
-                                    v2 = re.findall(r"\d+\.?\d*", str(match.iloc[0][size]))
-                                    if v1 and v2:
-                                        diff = round(float(v1[0]) - float(v2[0]), 2)
-                                        audit.append({"Hạng mục": desc, "Thực tế": v1[0], "Mẫu gốc": v2[0], "Lệch": diff, "Kết quả": "✅" if abs(diff)<=0.5 else "❌"})
+                                    try:
+                                        v1 = re.findall(r"\d+\.?\d*", str(row[sel_size]))[0]
+                                        v2 = re.findall(r"\d+\.?\d*", str(match.iloc[0][sel_size]))[0]
+                                        diff = round(float(v1) - float(v2), 2)
+                                        audit.append({"Hạng mục": desc, "Thực tế": v1, "Mẫu gốc": v2, "Lệch": diff, "Kquả": "✅" if abs(diff)<=0.5 else "❌"})
+                                    except: continue
                             
                             if audit:
                                 res_df = pd.DataFrame(audit)
                                 st.table(res_df)
-                                st.download_button("📥 Excel", to_excel(res_df), "report.xlsx")
-                        except: st.info("Không khớp được cấu hình bảng cũ.")
-    else:
-        st.error("⚠️ Không tìm thấy bảng dữ liệu. Kiểm tra xem PDF có phải dạng ảnh scan không?")
+                                st.download_button("📥 Xuất Excel", to_excel(res_df), "report.xlsx")
+                            else: st.warning("Không khớp được dữ liệu giữa 2 bảng.")
+                        except: st.error("Lỗi: Cấu trúc bảng mẫu gốc trong kho không khớp.")
+            else: st.error("⚠️ Kho dữ liệu cũ không tương thích. Vui lòng 'Cập nhật kho' ở bên trái.")
+    else: st.error("Không tìm thấy ảnh hoặc bảng trong PDF.")
