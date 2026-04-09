@@ -1,20 +1,22 @@
-# AI FASHION AUDITOR V34.2 - FULL CODE (FINAL UPGRADE)
-# Added: size display, AI similarity %, progress bar, image caption
+# ================= AI FASHION AUDITOR V35 PRO =================
+# Upgrade: UI đẹp, so sánh AI mạnh hơn, tìm kiếm tương đồng, progress bar
 
 import streamlit as st
-import io, fitz, pdfplumber, re, pandas as pd, numpy as np
-import torch, json
+import io, json, re
+import numpy as np
+import pandas as pd
 from PIL import Image
+import torch
 from torchvision import models, transforms
-from supabase import create_client
 from sklearn.metrics.pairwise import cosine_similarity
+from supabase import create_client
 
 # ================= CONFIG =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 
-st.set_page_config(layout="wide", page_title="AI FASHION AUDITOR V34.2", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI FASHION AUDITOR V35 PRO", page_icon="🧠")
 
 # ================= INIT =================
 @st.cache_resource
@@ -31,7 +33,7 @@ def load_model():
 
 model_ai = load_model()
 
-# ================= VECTOR =================
+# ================= IMAGE VECTOR =================
 def get_vector(img_bytes):
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
@@ -42,110 +44,116 @@ def get_vector(img_bytes):
             transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
         ])
         with torch.no_grad():
-            return model_ai(tf(img).unsqueeze(0)).flatten().numpy().tolist()
-    except:
-        return None
-
-# ================= COMPARE =================
-def compare_val(a,b,tol=0.5):
-    try:
-        return abs(float(a)-float(b))<=tol
-    except:
-        return False
-
-# ================= EXTRACT =================
-def extract_techpack(pdf_file):
-    specs, img, raw = {}, None, ""
-    size_name = "AUTO"
-
-    try:
-        pdf_bytes = pdf_file.read()
-
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2,2)).tobytes("png")
-        doc.close()
-
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            for page in pdf.pages:
-                raw += (page.extract_text() or "")
-                tables = page.extract_tables() or []
-
-                for tb in tables:
-                    if not tb or len(tb)<2: continue
-
-                    header = [str(h).upper() for h in tb[0]]
-
-                    desc_idx = -1
-                    for i,h in enumerate(header):
-                        if "DESCRIPTION" in h:
-                            desc_idx=i
-                            break
-
-                    if desc_idx==-1: continue
-
-                    for row in tb[1:]:
-                        if not row or len(row)<=desc_idx: continue
-
-                        desc = str(row[desc_idx]).strip().upper()
-                        values = [str(x) for i,x in enumerate(row) if i!=desc_idx and x]
-
-                        if not values: continue
-
-                        mid = len(values)//2
-                        size_name = f"SIZE_{mid}"
-
-                        val = re.findall(r"\d+\.?\d*", values[mid])
-
-                        if val:
-                            specs[desc]=val[0]
-
-        return {"spec":specs,"img":img,"size_name":size_name}
-
+            vec = model_ai(tf(img).unsqueeze(0)).flatten().numpy()
+            return vec
     except:
         return None
 
 # ================= LOAD DATA =================
-def load_samples():
+def load_data():
     try:
         res = supabase.table("ai_data").select("*").execute()
         return res.data if res.data else []
     except:
         return []
 
-samples = load_samples()
+# ================= SIMILARITY =================
+def calc_similarity(v1, v2):
+    try:
+        return cosine_similarity([v1], [v2])[0][0]
+    except:
+        return 0
+
+# ================= UI HEADER =================
+st.markdown("""
+<h1 style='text-align:center;color:#4CAF50;'>🧠 AI FASHION AUDITOR V35 PRO</h1>
+<p style='text-align:center;'>So sánh & tìm kiếm mẫu tương đồng bằng AI</p>
+""", unsafe_allow_html=True)
+
+# ================= LOAD =================
+data = load_data()
 
 # ================= SIDEBAR =================
 with st.sidebar:
-    st.header("Kho dữ liệu")
-    st.metric("Số mẫu", len(samples))
+    st.header("📂 Database")
+    st.metric("Tổng mẫu", len(data))
 
-    files = st.file_uploader("Upload PDF", type=["pdf"], accept_multiple_files=True)
+    uploaded = st.file_uploader("Upload ảnh", type=["png","jpg","jpeg"])
 
-    if files and st.button("Nạp dữ liệu"):
-        for f in files:
-            d = extract_techpack(f)
-            if not d: continue
+    if uploaded:
+        st.image(uploaded, caption="Ảnh upload", use_container_width=True)
 
-            name = f.name.replace(".pdf","")
+# ================= MAIN =================
+col1, col2 = st.columns([1,1])
 
-            img_path = f"{name}.png"
-            img_url = None
+query_vec = None
 
-            try:
-                supabase.storage.from_(BUCKET).upload(
-                    img_path,
-                    d['img'],
-                    file_options={"content-type":"image/png"},
-                    upsert=True
-                )
-                img_url = supabase.storage.from_(BUCKET).get_public_url(img_path)
-            except:
-                pass
+with col1:
+    st.subheader("📥 Query")
+    if uploaded:
+        img_bytes = uploaded.read()
+        query_vec = get_vector(img_bytes)
 
-            vec = get_vector(d['img'])
+        if query_vec is None:
+            st.error("Không đọc được ảnh")
 
-            supabase.table("ai_data").upsert({
-                "file_name":name,
-                "vector":vec,
-                "spec_json":d['spec'],
-                "image_url":img_url
+with col2:
+    st.subheader("📊 Kết quả AI")
+
+    if query_vec is not None and data:
+
+        results = []
+
+        for item in data:
+            if not item.get("vector"):
+                continue
+
+            sim = calc_similarity(query_vec, item["vector"])
+
+            results.append({
+                "name": item["file_name"],
+                "score": sim,
+                "img": item.get("image_url")
+            })
+
+        # sort
+        results = sorted(results, key=lambda x: x["score"], reverse=True)
+
+        # top 5
+        top_k = results[:5]
+
+        for r in top_k:
+            st.markdown("---")
+
+            c1, c2 = st.columns([1,2])
+
+            with c1:
+                if r["img"]:
+                    st.image(r["img"], use_container_width=True)
+
+            with c2:
+                percent = round(r["score"]*100,2)
+
+                st.markdown(f"### {r['name']}")
+
+                st.progress(r["score"])
+
+                st.success(f"Độ tương đồng: {percent}%")
+
+# ================= SEARCH FILTER =================
+st.markdown("---")
+st.subheader("🔎 Tìm kiếm nâng cao")
+
+keyword = st.text_input("Nhập tên mẫu")
+
+if keyword:
+    filtered = [d for d in data if keyword.lower() in d["file_name"].lower()]
+
+    st.write(f"Tìm thấy {len(filtered)} mẫu")
+
+    for f in filtered:
+        st.write(f["file_name"])
+
+# ================= FOOTER =================
+st.markdown("---")
+st.caption("V35 PRO | AI Similarity Engine | ResNet50")
