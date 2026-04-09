@@ -11,7 +11,7 @@ URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 
-st.set_page_config(layout="wide", page_title="AI FASHION AUDITOR V35.2", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI FASHION AUDITOR V35.3", page_icon="📊")
 
 # ================= KẾT NỐI =================
 @st.cache_resource
@@ -28,7 +28,7 @@ def load_model():
 
 model_ai = load_model()
 
-# ================= CÔNG CỤ =================
+# ================= CÔNG CỤ XỬ LÝ =================
 def get_vector(img_bytes):
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
@@ -94,8 +94,8 @@ with st.sidebar:
                 except: pass
         st.success("Nạp xong!"); st.rerun()
 
-# ================= GIAO DIỆN CHÍNH =================
-st.title("🔍 AI FASHION AUDITOR V35.2")
+# ================= MAIN AREA =================
+st.title("🔍 AI FASHION AUDITOR V35.3")
 test_file = st.file_uploader("Kéo tệp PDF cần kiểm tra vào đây", type=["pdf"])
 
 if test_file:
@@ -103,11 +103,11 @@ if test_file:
     if test_data and test_data['img']:
         col1, col2 = st.columns([1, 1.3])
         with col1:
-            st.image(test_data['img'], caption="Bản vẽ mẫu kiểm", use_container_width=True)
+            st.image(test_data['img'], caption="Mẫu đang kiểm tra", use_container_width=True)
             t_vec = get_vector(test_data['img'])
 
         if samples and t_vec:
-            # 1. AI gợi ý mã hàng
+            # AI gợi ý mã hàng
             results = [{"data": s, "sim": float(cosine_similarity([t_vec], [s['vector']])[0][0])} for s in samples]
             best_ai = max(results, key=lambda x: x['sim'])
             
@@ -127,7 +127,7 @@ if test_file:
                     # Lấy bảng có nhiều cột nhất
                     df_test = max(test_data['tables'], key=lambda x: len(x.columns))
                     
-                    # BIẾN NOISE ĐÃ ĐƯỢC FIX LỖI CÚ PHÁP
+                    # FIX DÒNG 131: Viết danh sách noise trên một dòng và đóng ngoặc chính xác
                     noise =
                     
                     # Lọc cột Size thực tế
@@ -157,10 +157,13 @@ if test_file:
                                 
                                 if not match.empty:
                                     try:
-                                        v1 = float(re.findall(r"\d+\.?\d*", str(row_t.get(sel_size, '0')))[0])
-                                        v2 = float(re.findall(r"\d+\.?\d*", str(match.iloc[0].get(sel_size, '0')))[0])
-                                        diff = round(v1 - v2, 2)
-                                        audit_list.append({"Hạng mục": desc, f"Kiểm ({sel_size})": v1, f"Gốc ({sel_size})": v2, "Lệch": diff, "Kết quả": "✅ OK" if abs(diff) <= 0.5 else "❌ LỆCH"})
+                                        # Lấy số từ chuỗi
+                                        v1_list = re.findall(r"\d+\.?\d*", str(row_t.get(sel_size, '0')))
+                                        v2_list = re.findall(r"\d+\.?\d*", str(match.iloc[0].get(sel_size, '0')))
+                                        if v1_list and v2_list:
+                                            v1, v2 = float(v1_list[0]), float(v2_list[0])
+                                            diff = round(v1 - v2, 2)
+                                            audit_list.append({"Hạng mục": desc, f"Kiểm ({sel_size})": v1, f"Gốc ({sel_size})": v2, "Lệch": diff, "Kết quả": "✅ OK" if abs(diff) <= 0.5 else "❌ LỆCH"})
                                     except: pass
                             
                             if audit_list:
@@ -173,4 +176,4 @@ if test_file:
                     else:
                         st.warning("⚠️ Không tìm thấy cột Size hợp lệ (S, M, L, 30, 32...).")
     else:
-        st.error("Không đọc được dữ liệu từ PDF.")
+        st.error("Không trích xuất được dữ liệu từ PDF.")
