@@ -1,5 +1,5 @@
 # ==========================================================
-# AI FASHION AUDITOR V38.3 - POM DESCRIPTION & SIZE SELECTOR
+# AI FASHION AUDITOR V38.4 - STABLE VERSION
 # ==========================================================
 import streamlit as st
 import io, fitz, pdfplumber, re, pandas as pd, numpy as np
@@ -9,13 +9,13 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# --- CONFIG ---
+# --- CONFIG (Thay URL/KEY của bạn) ---
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V38.3", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V38.4", page_icon="📊")
 
 @st.cache_resource
 def load_ai():
@@ -24,7 +24,7 @@ def load_ai():
 
 model_ai = load_ai()
 
-# --- CÔNG CỤ TRÍCH XUẤT BẢNG THÔNG MINH ---
+# --- CÔNG CỤ TRÍCH XUẤT ---
 def parse_val(t):
     try:
         txt = str(t).replace(',', '.').strip()
@@ -37,8 +37,8 @@ def parse_val(t):
         return eval(v) if '/' in v else float(v)
     except: return 0
 
-def extract_techpack_v383(pdf_file):
-    """Trích xuất POM: Lấy Description làm Key, lưu tất cả các Size"""
+def extract_techpack(pdf_file):
+    """Trích xuất POM: Lấy Description làm Hạng mục, lưu đa Size"""
     full_specs, img_bytes, all_txt = {}, None, ""
     try:
         pdf_content = pdf_file.read()
@@ -54,49 +54,47 @@ def extract_techpack_v383(pdf_file):
                 for tb in tables:
                     if len(tb) < 2: continue
                     df = pd.DataFrame(tb)
-                    
-                    # 1. Tìm dòng Header (chứa chữ Description hoặc POM)
                     desc_col_idx = -1
-                    size_cols = {} # Lưu {Tên Size: Index Cột}
+                    size_cols = {}
                     
                     for row_idx, row in df.iterrows():
                         row_up = [str(c).upper() for c in row if c]
                         if any("DESC" in s for s in row_up):
-                            # Tìm vị trí cột Description
                             for i, val in enumerate(row):
                                 val_up = str(val).upper()
                                 if "DESC" in val_up: desc_col_idx = i
-                                # Tìm các cột Size (Thường là tên ngắn: S, M, L, 28, 30...)
                                 elif val and len(str(val)) <= 3 and val_up not in ["TOL", "NO", "CODE"]:
                                     size_cols[val_up] = i
                             
-                            # Quét dữ liệu từ các dòng tiếp theo
                             for d_idx in range(row_idx + 1, len(df)):
                                 d_row = df.iloc[d_idx]
                                 name = str(d_row[desc_col_idx]).replace('\n',' ').strip().upper()
                                 if len(name) < 3 or name == 'NAN': continue
-                                
-                                # Lưu thông số cho từng Size
                                 if name not in full_specs: full_specs[name] = {}
                                 for s_name, s_idx in size_cols.items():
                                     val = parse_val(d_row[s_idx])
                                     if val > 0: full_specs[name][s_name] = val
                             break
-        
-        # Nhận diện loại hàng
         cat = "QUẦN" if any(k in all_txt for k in ['INSEAM', 'RISE', 'PANT', 'WAIST']) else "ÁO"
         return {"specs": full_specs, "img": img_bytes, "cat": cat}
     except: return None
 
-# --- SIDEBAR: NẠP KHO ---
+# --- SIDEBAR: QUẢN LÝ ---
 with st.sidebar:
     st.header("📂 KHO DỮ LIỆU")
-    files = st.file_uploader("Nạp Techpacks", accept_multiple_files=True)
+    
+    # HIỂN THỊ SỐ MẪU TRONG KHO
+    try:
+        res_db = supabase.table("ai_data").select("file_name", count="exact").execute()
+        st.metric("Tổng số mẫu hiện có", res_db.count if res_db.count else 0)
+    except:
+        st.info("Chưa có dữ liệu trong kho.")
+
+    files = st.file_uploader("Nạp Techpacks mới", accept_multiple_files=True)
     if files and st.button("🚀 NẠP VÀO HỆ THỐNG"):
         p_bar = st.progress(0)
-        p_text = st.empty()
         for i, f in enumerate(files):
-            d = extract_techpack_v383(f)
+            d = extract_techpack(f)
             if d and d['specs']:
                 img_p = Image.open(io.BytesIO(d['img'])).convert('RGB')
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
@@ -108,26 +106,22 @@ with st.sidebar:
                     "img_base64": base64.b64encode(d['img']).decode(), "category": d['cat']
                 }, on_conflict="file_name").execute()
             p_bar.progress((i + 1) / len(files))
-            p_text.text(f"Đang nạp: {int(((i+1)/len(files))*100)}%")
-        st.success("✅ Đã nạp thành công!")
-        st.rerun()
+        st.success("✅ Đã nạp xong!"); st.rerun()
 
 # --- MAIN: ĐỐI SOÁT ---
-st.title("🔍 AI Fashion Auditor V38.3")
+st.title("🔍 AI Fashion Auditor V38.4")
 test_file = st.file_uploader("Upload file kiểm tra", type="pdf")
 
 if test_file:
-    target = extract_techpack_v383(test_file)
-    if target and target['img']:
-        # 1. Chọn Size muốn so sánh
+    target = extract_techpack(test_file)
+    if target and target['specs']:
+        # 1. Chọn Size
         available_sizes = set()
-        for p in target['specs'].values():
-            available_sizes.update(p.keys())
-        
+        for p in target['specs'].values(): available_sizes.update(p.keys())
         sel_size = st.selectbox("🎯 CHỌN SIZE ĐỐI SOÁT:", sorted(list(available_sizes)), index=0)
         
         # 2. Tìm mẫu trong kho
-        res = supabase.table("ai_data").select("*").eq("category", target['cat']).execute()
+        res = supabase.table("ai_data").select("*").execute()
         if res.data:
             img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
             tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
@@ -136,31 +130,29 @@ if test_file:
 
             matches = []
             for i in res.data:
-                v_ref = np.array(i['vector']).reshape(1, -1)
-                sim = float(cosine_similarity(v_test, v_ref)) * 100
-                matches.append({"name": i['file_name'], "sim": sim, "spec": i['spec_json'], "img": i['img_base64']})
+                if i.get('vector'):
+                    v_ref = np.array(i['vector']).reshape(1, -1)
+                    # FIX LỖI TYPEERROR: Lấy giá trị đầu tiên [0][0]
+                    sim_score = cosine_similarity(v_test, v_ref)[0][0]
+                    sim = float(sim_score) * 100
+                    matches.append({"data": i, "sim": sim})
             
             best = sorted(matches, key=lambda x: x['sim'], reverse=True)[:1]
             for m in best:
-                st.subheader(f"✨ Mẫu khớp: {m['name']} ({m['sim']:.1f}%) - Đang so sánh Size: {sel_size}")
+                st.subheader(f"✨ Khớp: {m['data']['file_name']} ({m['sim']:.1f}%)")
                 c1, c2 = st.columns(2)
-                c1.image(target['img'], caption="File đang kiểm")
-                c2.image(base64.b64decode(m['img']), caption="Mẫu trong kho")
+                with c1: st.image(target['img'], caption="File đang kiểm")
+                with c2: st.image(base64.b64decode(m['data']['img_base64']), caption="Mẫu gốc trong kho")
 
                 # Bảng đối soát
                 diff = []
                 for p_name, p_vals in target['specs'].items():
                     v1 = p_vals.get(sel_size, 0)
-                    # Tìm thông số tương ứng trong mẫu kho (cùng hạng mục, cùng size)
-                    v2 = 0
-                    if p_name in m['spec']:
-                        v2 = m['spec'][p_name].get(sel_size, 0)
-                    
+                    v2 = m['data']['spec_json'].get(p_name, {}).get(sel_size, 0)
                     if v1 > 0 or v2 > 0:
                         diff.append({
-                            "Hạng mục (Description)": p_name,
-                            f"Thực tế ({sel_size})": v1,
-                            f"Mẫu gốc ({sel_size})": v2,
+                            "Hạng mục (Vị trí)": p_name,
+                            f"Thực tế ({sel_size})": v1, f"Mẫu gốc ({sel_size})": v2,
                             "Chênh lệch": round(v1 - v2, 2)
                         })
                 
@@ -168,4 +160,4 @@ if test_file:
                     df = pd.DataFrame(diff)
                     st.table(df.style.map(lambda x: 'color: red; font-weight: bold' if abs(x) > 0.5 else 'color: white', subset=['Chênh lệch']))
                 else:
-                    st.warning(f"Không có dữ liệu cho Size {sel_size} trong mẫu này.")
+                    st.warning("Không có dữ liệu cho Size này.")
