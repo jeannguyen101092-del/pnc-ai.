@@ -6,13 +6,13 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# --- CONFIG ---
+# --- CONFIG (Giữ nguyên URL/KEY của bạn) ---
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V42.8", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V42.9", page_icon="📊")
 
 if "up_key" not in st.session_state: st.session_state.up_key = 0
 if "au_key" not in st.session_state: st.session_state.au_key = 0
@@ -23,15 +23,13 @@ def load_ai():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_ai()
 
-# --- HÀM LÀM SẠCH CHUỖI CỰC MẠNH ---
-def clean_text_v428(t):
-    # Chỉ giữ chữ cái và số, xóa sạch khoảng trắng và ký tự lạ để khớp 100%
+# --- HÀM LÀM SẠCH CHUỖI ĐỂ KHỚP 100% ---
+def clean_text_v429(t):
     return re.sub(r'[^A-Z0-9]', '', str(t).upper())
 
 def parse_val(t):
     try:
         txt = str(t).replace(',', '.').strip().lower()
-        if not txt or txt == 'nan': return 0
         found = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not found: return 0
         v = found[0]
@@ -46,7 +44,7 @@ def detect_brand(text):
     if "REITMANS" in text: return "REITMANS"
     return "OTHER"
 
-# --- TRÍCH XUẤT V42.8 (FIX LỖI MẤT DÒNG) ---
+# --- TRÍCH XUẤT (FIX LỖI MẤT DÒNG) ---
 def extract_data(pdf_file):
     full_specs, img_bytes, brand, all_txt = {}, None, "OTHER", ""
     try:
@@ -79,9 +77,7 @@ def extract_data(pdf_file):
                                 for data_idx in range(r_idx + 1, len(df)):
                                     d_row = df.iloc[data_idx]
                                     name = str(d_row[d_idx]).replace('\n',' ').strip().upper()
-                                    # 🔥 SỬA LỖI: Cho phép tên ngắn (như HIP) và không chặn MASTER/REF
                                     if len(name) < 2 or name == 'NAN': continue
-                                    
                                     if name not in full_specs: full_specs[name] = {}
                                     for s_n, s_i in s_cols.items():
                                         v_num = parse_val(d_row[s_i])
@@ -116,7 +112,7 @@ with st.sidebar:
         st.rerun()
 
 # --- MAIN ---
-st.title("🔍 AI Fashion Auditor V42.8")
+st.title("🔍 AI Fashion Auditor V42.9")
 t_file = st.file_uploader("Upload file kiểm tra", type="pdf", key=f"a_{st.session_state.au_key}")
 
 if t_file:
@@ -141,23 +137,24 @@ if t_file:
                 if i.get('vector'):
                     v_ref = np.array(i['vector']).reshape(1, -1)
                     sim_m = cosine_similarity(v_test, v_ref)
-                    matches.append({"data": i, "sim": float(sim_m) * 100})
+                    # 🔥 FIX LỖI TYPEERROR DÒNG 144: Lấy giá trị đầu tiên của ma trận
+                    matches.append({"data": i, "sim": float(sim_m[0][0]) * 100})
             
             top = sorted(matches, key=lambda x: x['sim'], reverse=True)[:1]
             for m in top:
                 st.subheader(f"✨ Khớp mẫu: {m['data']['file_name']} ({m['sim']:.1f}%)")
                 c1, c2 = st.columns(2)
                 with c1: st.image(target['img'], caption="Bản vẽ đang kiểm")
-                with c2: st.image(m['data']['image_url'], caption="Mẫu gốc trong kho")
+                with c2: st.image(m['data']['image_url'], caption="Mẫu trong kho")
 
                 diff_list = []
                 for p_name, p_vals in target['specs'].items():
                     v1 = p_vals.get(sel_sz, 0)
                     v2 = 0
-                    p_name_clean = clean_text_v428(p_name)
-                    # 🔥 KHỚP DÒNG THÔNG MINH
+                    p_name_clean = clean_text_v429(p_name)
+                    # KHỚP DÒNG 100%
                     for k_ref, v_ref_map in m['data']['spec_json'].items():
-                        ref_clean = clean_text_v428(k_ref)
+                        ref_clean = clean_text_v429(k_ref)
                         if p_name_clean in ref_clean or ref_clean in p_name_clean:
                             v2 = v_ref_map.get(sel_sz, 0)
                             break
@@ -175,5 +172,3 @@ if t_file:
             if st.button("🗑️ Xóa file vừa quét"):
                 st.session_state.au_key += 1
                 st.rerun()
-    else:
-        st.error("⚠️ Không tìm thấy bảng đo. Hãy kiểm tra PDF có chữ GRADING NOT APPROVED.")
