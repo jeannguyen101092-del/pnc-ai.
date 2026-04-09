@@ -12,7 +12,7 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V42.5", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V42.6", page_icon="📊")
 
 if "up_key" not in st.session_state: st.session_state.up_key = 0
 if "au_key" not in st.session_state: st.session_state.au_key = 0
@@ -25,7 +25,6 @@ model_ai = load_ai()
 
 # --- HÀM LÀM SẠCH CHUỖI ĐỂ KHỚP DÒNG ---
 def clean_text(t):
-    # Xóa khoảng trắng dư, ký tự đặc biệt, xuống dòng để khớp chính xác hơn
     return re.sub(r'[^A-Z0-9]', '', str(t).upper())
 
 def parse_val(t):
@@ -68,7 +67,7 @@ def extract_data(pdf_file):
                     d_idx, s_cols = -1, {}
                     for r_idx, row in df.iterrows():
                         r_up = [str(c).upper().strip() for c in row if c]
-                        if any(k in " ".join(r_up) for k in ["POM NAME", "DESC"]):
+                        if any(k in " ".join(row_up) for k in ["POM NAME", "DESC"]):
                             for i, v in enumerate(row):
                                 v_s = str(v).upper().strip()
                                 if "POM NAME" in v_s or "DESC" in v_s: d_idx = i
@@ -113,7 +112,7 @@ with st.sidebar:
         st.rerun()
 
 # --- MAIN: ĐỐI SOÁT ---
-st.title("🔍 AI Fashion Auditor V42.5")
+st.title("🔍 AI Fashion Auditor V42.6")
 t_file = st.file_uploader("Upload file Reitmans kiểm tra", type="pdf", key=f"a_{st.session_state.au_key}")
 
 if t_file:
@@ -138,7 +137,8 @@ if t_file:
                 if i.get('vector'):
                     v_ref = np.array(i['vector']).reshape(1, -1)
                     sim_m = cosine_similarity(v_test, v_ref)
-                    matches.append({"data": i, "sim": float(sim_m) * 100})
+                    # 🔥 FIX LỖI TYPEERROR DÒNG 141 TRONG HÌNH: Thêm index [0][0]
+                    matches.append({"data": i, "sim": float(sim_m[0][0]) * 100})
             
             top = sorted(matches, key=lambda x: x['sim'], reverse=True)[:1]
             for m in top:
@@ -147,19 +147,15 @@ if t_file:
                 with c1: st.image(target['img'], caption="Bản vẽ đang kiểm")
                 with c2: st.image(m['data']['image_url'], caption="Mẫu gốc trong kho")
 
-                # --- ĐỐI SOÁT CHI TIẾT ---
                 diff_list = []
                 for p_name, p_vals in target['specs'].items():
                     v1 = p_vals.get(sel_sz, 0)
                     v2 = 0
-                    
-                    # 🔥 CẢI TIẾN KHỚP CHUỖI: Làm sạch cả 2 bên rồi so sánh
                     p_name_clean = clean_text(p_name)
                     for k_ref, v_ref_map in m['data']['spec_json'].items():
                         if p_name_clean in clean_text(k_ref) or clean_text(k_ref) in p_name_clean:
                             v2 = v_ref_map.get(sel_sz, 0)
                             break
-                    
                     if v1 > 0 or v2 > 0:
                         diff_list.append({
                             "Hạng mục (Vị trí)": p_name,
