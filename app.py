@@ -1,144 +1,172 @@
-# ==========================================================
-# TOOL QUẢN LÝ MÃ HÀNG NỘI BỘ - AI SEARCH V1
-# ==========================================================
-
+# AI FASHION AUDITOR V34.2 - FIXED VERSION
 import streamlit as st
-import os, fitz, io, pdfplumber, re, pandas as pd
-import numpy as np
+import io, fitz, pdfplumber, re, pandas as pd, numpy as np
+import torch, json
 from PIL import Image
-import torch, base64
 from torchvision import models, transforms
+from supabase import create_client
 from sklearn.metrics.pairwise import cosine_similarity
-from supabase import create_client, Client
 
-# --- KẾT NỐI DATABASE ---
-# Thay thế URL và KEY của bạn vào đây
+# ================= CONFIG =================
+# Thay đổi URL và KEY thật của bạn vào đây
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
-supabase: Client = create_client(URL, KEY)
+BUCKET = "fashion-imgs"
 
-st.set_page_config(layout="wide", page_title="Hệ Thống Lưu Trữ Mã Hàng", page_icon="📦")
+st.set_page_config(layout="wide", page_title="AI FASHION AUDITOR V34.2", page_icon="📊")
 
-# --- LOAD AI MODEL (So sánh ảnh) ---
+# ================= INIT =================
 @st.cache_resource
-def load_ai():
-    # Sử dụng ResNet18 để tạo đặc trưng ảnh (Vector)
-    model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-    model = torch.nn.Sequential(*(list(model.children())[:-1])) # Bỏ lớp phân loại cuối
-    return model.eval()
+def init_supabase():
+    return create_client(URL, KEY)
 
-ai_brain = load_ai()
+try:
+    supabase = init_supabase()
+except:
+    st.error("Chưa cấu hình Supabase URL/KEY!")
 
-def get_image_embedding(img_bytes):
-    tf = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-    img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-    with torch.no_grad():
-        vector = ai_brain(tf(img).unsqueeze(0)).flatten().numpy()
-    return vector
+# ================= MODEL =================
+@st.cache_resource
+def load_model():
+    model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+    return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 
-# --- HÀM XỬ LÝ FILE PDF ---
-def process_pdf(pdf_file):
+model_ai = load_model()
+
+# ================= VECTOR =================
+def get_vector(img_bytes):
     try:
-        # 1. Tách trang đầu tiên làm hình ảnh (Trang bìa/Hình mẫu)
-        doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
-        first_page = doc.load_page(0)
-        pix = first_page.get_pixmap(matrix=fitz.Matrix(2, 2)) # Zoom 2x cho nét
-        img_bytes = pix.tobytes("png")
-        img_b64 = base64.b64encode(img_bytes).decode()
-
-        # 2. Trích xuất thông số (Quét tất cả các trang có bảng)
-        all_specs = {}
-        pdf_file.seek(0)
-        with pdfplumber.open(pdf_file) as pdf:
-            for page in pdf.pages:
-                tables = page.extract_tables()
-                for table in tables:
-                    for row in table:
-                        # Logic đơn giản: Cột 0 là tên thông số, Cột 1 là giá trị
-                        if row and len(row) >= 2 and row[0] and row[1]:
-                            key = str(row[0]).strip().upper()
-                            val = str(row[1]).strip()
-                            # Chỉ lấy các dòng có số
-                            if any(char.isdigit() for char in val):
-                                all_specs[key] = val
-        
-        doc.close()
-        return {"img_bytes": img_bytes, "img_b64": img_b64, "specs": all_specs}
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        tf = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
+        ])
+        with torch.no_grad():
+            vec = model_ai(tf(img).unsqueeze(0)).flatten().numpy()
+            return vec.tolist()
     except Exception as e:
-        st.error(f"Lỗi xử lý PDF: {e}")
+        st.error(f"Lỗi tạo vector: {e}")
         return None
 
-# ================= GIAO DIỆN CHÍNH =================
-menu = ["Tìm kiếm mã hàng", "Nạp kho dữ liệu"]
-choice = st.sidebar.selectbox("Chức năng", menu)
+# ================= EXTRACT PDF =================
+def extract_techpack(pdf_file):
+    specs, img_bytes, raw = {}, None, ""
+    try:
+        pdf_content = pdf_file.read()
+        doc = fitz.open(stream=pdf_content, filetype="pdf")
+        # Lấy ảnh trang đầu làm mẫu
+        img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2,2)).tobytes("png")
+        doc.close()
 
-if choice == "Nạp kho dữ liệu":
-    st.header("📤 Tải lên mã hàng mới")
-    uploaded_files = st.file_uploader("Chọn các file PDF mã hàng", type="pdf", accept_multiple_files=True)
+        with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
+            for page in pdf.pages:
+                tables = page.extract_tables() or []
+                for tb in tables:
+                    if len(tb) < 2: continue
+                    for row in tb:
+                        if not row or not row[0]: continue
+                        desc = str(row[0]).strip().upper()
+                        # Logic tìm số đơn giản
+                        nums = re.findall(r"\d+\.?\d*", str(row[-1]))
+                        if nums: specs[desc] = nums[0]
+        
+        return {"spec": specs, "img": img_bytes}
+    except Exception as e:
+        st.error(f"Lỗi đọc PDF: {e}")
+        return None
+
+# ================= MAIN APP =================
+def load_samples():
+    try:
+        res = supabase.table("ai_data").select("*").execute()
+        return res.data if res.data else []
+    except:
+        return []
+
+samples = load_samples()
+
+# SIDEBAR: UPLOAD & DATABASE
+with st.sidebar:
+    st.header("📦 Kho dữ liệu")
+    st.metric("Số mẫu trong kho", len(samples))
     
-    if uploaded_files and st.button("Lưu vào kho"):
-        for f in uploaded_files:
-            data = process_pdf(f)
-            if data:
-                vector = get_image_embedding(data['img_bytes']).tolist()
-                # Lưu vào Supabase
-                res = supabase.table("product_warehouse").upsert({
-                    "file_name": f.name,
-                    "img_base64": data['img_b64'],
-                    "specs": data['specs'],
-                    "vector": vector
+    uploaded_files = st.file_uploader("Upload Techpacks (PDF)", type=["pdf"], accept_multiple_files=True)
+    
+    if uploaded_files and st.button("🚀 Nạp vào hệ thống"):
+        progress_bar = st.progress(0)
+        for idx, f in enumerate(uploaded_files):
+            d = extract_techpack(f)
+            if d:
+                name = f.name.replace(".pdf","")
+                # Upload ảnh
+                img_path = f"{name}.png"
+                supabase.storage.from_(BUCKET).upload(img_path, d['img'], 
+                    file_options={"content-type":"image/png"}, upsert=True)
+                img_url = supabase.storage.from_(BUCKET).get_public_url(img_path)
+                
+                # Tạo vector & Lưu DB
+                vec = get_vector(d['img'])
+                supabase.table("ai_data").upsert({
+                    "file_name": name,
+                    "vector": vec,
+                    "spec_json": d['spec'],
+                    "image_url": img_url
                 }).execute()
-                st.success(f"Đã lưu: {f.name}")
+            progress_bar.progress((idx + 1) / len(uploaded_files))
+        st.success("Đã nạp xong!")
+        st.rerun()
 
-elif choice == "Tìm kiếm mã hàng":
-    st.header("🔍 Tìm kiếm mã hàng tương đồng")
-    test_file = st.file_uploader("Đẩy file PDF mới để đối chiếu", type="pdf")
+# MAIN INTERFACE: AUDIT
+st.title("🔍 AI FASHION AUDITOR V34.2")
+
+test_file = st.file_uploader("Kéo tệp PDF cần kiểm tra vào đây", type=["pdf"], key="checker")
+
+if test_file:
+    col1, col2 = st.columns([1, 2])
+    test_data = extract_techpack(test_file)
     
-    if test_file:
-        current_data = process_pdf(test_file)
-        if current_data:
-            st.subheader("Dữ liệu file vừa tải lên")
-            col1, col2 = st.columns([1, 2])
-            col1.image(current_data['img_bytes'], caption="Ảnh mẫu trang đầu")
-            col2.write("Thông số trích xuất được:")
-            col2.json(current_data['specs'])
-
-            # Lấy vector ảnh để so sánh
-            v_test = get_image_embedding(current_data['img_bytes'])
-
-            # Lấy toàn bộ kho dữ liệu từ DB (Có thể tối ưu bằng cách search vector trên DB nếu dữ liệu lớn)
-            db = supabase.table("product_warehouse").select("*").execute()
+    if test_data:
+        with col1:
+            st.image(test_data['img'], caption="Ảnh từ file kiểm tra", use_container_width=True)
+            test_vec = get_vector(test_data['img'])
+        
+        # Tìm mẫu tương đồng nhất
+        if samples and test_vec:
+            best_match = None
+            max_sim = 0
             
-            if db.data:
-                matches = []
-                for item in db.data:
-                    v_db = np.array(item['vector'])
-                    # Tính độ giống nhau của ảnh (0 đến 100%)
-                    img_sim = float(cosine_similarity([v_test], [v_db])[0][0]) * 100
+            for s in samples:
+                sim = cosine_similarity([test_vec], [s['vector']])[0][0]
+                if sim > max_sim:
+                    max_sim = sim
+                    best_match = s
+            
+            with col2:
+                st.subheader(f"Kết quả phân tích AI")
+                sim_percent = round(max_sim * 100, 2)
+                st.write(f"**Độ tương đồng:** {sim_percent}%")
+                st.progress(max_sim)
+                
+                if best_match:
+                    st.write(f"✅ Mẫu khớp nhất: **{best_match['file_name']}**")
                     
-                    matches.append({
-                        "name": item['file_name'],
-                        "sim": img_sim,
-                        "img": item['img_base64'],
-                        "specs": item['specs']
-                    })
-                
-                # Sắp xếp kết quả giống nhất lên đầu
-                matches = sorted(matches, key=lambda x: x['sim'], reverse=True)[:5]
-
-                st.divider()
-                st.subheader("Kết quả tìm kiếm giống nhất:")
-                
-                for m in matches:
-                    with st.container():
-                        c1, c2, c3 = st.columns([1, 1, 2])
-                        c1.image(base64.b64decode(m['img']), caption=f"Mã: {m['name']}")
-                        c2.metric("Độ giống nhau", f"{m['sim']:.2f}%")
-                        c3.write("Thông số kỹ thuật trong kho:")
-                        c3.json(m['specs'])
-                        st.divider()
+                    # So sánh thông số (Specs)
+                    st.write("### So sánh thông số kỹ thuật")
+                    df_comp = []
+                    s1 = test_data['spec']
+                    s2 = best_match['spec_json']
+                    
+                    for k in s1:
+                        if k in s2:
+                            diff = float(s1[k]) - float(s2[k])
+                            status = "✅ Khớp" if abs(diff) < 0.5 else "❌ Lệch"
+                            df_comp.append({"Hạng mục": k, "Mẫu kiểm": s1[k], "Kho dữ liệu": s2[k], "Chênh lệch": diff, "Trạng thái": status})
+                    
+                    if df_comp:
+                        st.table(pd.DataFrame(df_comp))
+                    else:
+                        st.warning("Không tìm thấy thông số chung để so sánh.")
+    else:
+        st.error("Không thể trích xuất dữ liệu từ file này.")
