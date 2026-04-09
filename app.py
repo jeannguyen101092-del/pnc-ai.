@@ -12,7 +12,7 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V42.0", page_icon="👔")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V42.2", page_icon="📊")
 
 if "up_key" not in st.session_state: st.session_state.up_key = 0
 if "au_key" not in st.session_state: st.session_state.au_key = 0
@@ -23,6 +23,7 @@ def load_ai():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_ai()
 
+# --- CÔNG CỤ XỬ LÝ SỐ & PHÂN SỐ ---
 def parse_val(t):
     try:
         txt = str(t).replace(',', '.').strip().lower()
@@ -30,12 +31,11 @@ def parse_val(t):
         if not found: return 0
         v = found[0]
         if ' ' in v:
-            p = v.split()
-            return float(p[0]) + eval(p[1])
+            parts = v.split()
+            return float(parts[0]) + eval(parts[1])
         return eval(v) if '/' in v else float(v)
     except: return 0
 
-# --- LOGIC NHẬN DIỆN THƯƠNG HIỆU ---
 def detect_brand(text):
     text = text.upper()
     if "REITMANS" in text: return "REITMANS"
@@ -43,17 +43,16 @@ def detect_brand(text):
     if "NIKE" in text: return "NIKE"
     return "OTHER"
 
-# --- TRÍCH XUẤT V42 (LỌC GRADING & BRAND) ---
-def extract_v42(pdf_file):
+# --- TRÍCH XUẤT (LỌC GRADING & BRAND) ---
+def extract_data(pdf_file):
     full_specs, img_bytes, brand, all_txt = {}, None, "OTHER", ""
     try:
         pdf_content = pdf_file.read()
         doc = fitz.open(stream=pdf_content, filetype="pdf")
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2)).tobytes("png")
         
-        # Quét nhanh text toàn bộ để nhận diện Brand
         for page in doc:
-            all_txt += page.get_text().upper() + " "
+            all_txt += (page.get_text() or "").upper() + " "
         brand = detect_brand(all_txt)
         doc.close()
 
@@ -61,7 +60,7 @@ def extract_v42(pdf_file):
             for page in pdf.pages:
                 txt_p = (page.extract_text() or "").upper()
                 
-                # ĐIỀU KIỆN REITMANS: Chỉ quét nếu có GRADING NOT APPROVED
+                # ĐIỀU KIỆN REITMANS: Chỉ quét trang có GRADING NOT APPROVED
                 if brand == "REITMANS" and "GRADING NOT APPROVED" not in txt_p:
                     continue
                 
@@ -82,7 +81,7 @@ def extract_v42(pdf_file):
                                     for d_row_idx in range(r_idx + 1, len(df)):
                                         d_row = df.iloc[d_row_idx]
                                         name = str(d_row[d_idx]).replace('\n',' ').strip().upper()
-                                        if len(name) < 3: continue
+                                        if len(name) < 3 or name == 'NAN': continue
                                         if name not in full_specs: full_specs[name] = {}
                                         for s_n, s_i in s_cols.items():
                                             val = parse_val(d_row[s_i])
@@ -91,18 +90,19 @@ def extract_v42(pdf_file):
         return {"specs": full_specs, "img": img_bytes, "brand": brand}
     except: return None
 
-# --- SIDEBAR ---
+# --- SIDEBAR: QUẢN LÝ ---
 with st.sidebar:
-    st.image("https://wikimedia.org", width=150)
     st.header("📂 HỆ THỐNG DỮ LIỆU")
-    res_db = supabase.table("ai_data").select("file_name", count="exact").execute()
-    st.metric("Tổng mẫu trong kho", res_db.count if res_db.count else 0)
+    try:
+        res_count = supabase.table("ai_data").select("file_name", count="exact").execute()
+        st.metric("Tổng mẫu trong kho", res_count.count if res_count.count else 0)
+    except: pass
 
-    files = st.file_uploader("Nạp mẫu mới", accept_multiple_files=True, key=f"u_{st.session_state.up_key}")
+    files = st.file_uploader("Nạp Techpacks mới", accept_multiple_files=True, key=f"u_{st.session_state.up_key}")
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
-        p = st.progress(0)
+        p_bar = st.progress(0)
         for i, f in enumerate(files):
-            d = extract_v42(f)
+            d = extract_data(f)
             if d and d['specs']:
                 img_p = Image.open(io.BytesIO(d['img'])).convert('RGB')
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
@@ -112,31 +112,28 @@ with st.sidebar:
                 path = f"lib_{f.name.replace('.pdf', '.png')}"
                 supabase.storage.from_(BUCKET).upload(path=path, file=d['img'], file_options={"content-type":"image/png", "x-upsert":"true"})
                 
-                # Lưu thêm cột BRAND để ưu tiên tìm kiếm
                 supabase.table("ai_data").upsert({
                     "file_name": f.name, "vector": vec, "spec_json": d['specs'],
                     "image_url": supabase.storage.from_(BUCKET).get_public_url(path),
-                    "category": d['brand'] # Dùng category để lưu Brand
+                    "category": d['brand']
                 }, on_conflict="file_name").execute()
-            p.progress((i + 1) / len(files))
+            p_bar.progress((i + 1) / len(files))
         st.session_state.up_key += 1
         st.rerun()
 
 # --- MAIN ---
-st.title("🔍 AI Fashion Auditor V42.0")
+st.title("🔍 AI Fashion Auditor V42.2")
 t_file = st.file_uploader("Upload file đối soát", type="pdf", key=f"a_{st.session_state.au_key}")
 
 if t_file:
-    target = extract_v42(t_file)
+    target = extract_data(t_file)
     if target and target['specs']:
         st.info(f"🏷️ Thương hiệu: **{target['brand']}**")
         
-        # 1. ƯU TIÊN TÌM KIẾM THEO BRAND
+        # ƯU TIÊN BRAND
         db_res = supabase.table("ai_data").select("*").eq("category", target['brand']).execute()
-        
-        # 2. Nếu cùng Brand không có, mới tìm sang các Brand khác
         if not db_res.data:
-            st.warning(f"Không tìm thấy mẫu {target['brand']} nào. Đang tìm kiếm toàn bộ kho...")
+            st.warning(f"⚠️ Không tìm thấy mẫu {target['brand']} nào. Đang tìm toàn kho...")
             db_res = supabase.table("ai_data").select("*").execute()
 
         if db_res.data:
@@ -144,15 +141,18 @@ if t_file:
             sel_size = st.selectbox("🎯 CHỌN SIZE ĐỐI SOÁT:", all_sizes)
 
             img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
+            tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
             with torch.no_grad():
-                tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
                 v_test = model_ai(tf(img_t).unsqueeze(0)).flatten().numpy().reshape(1, -1)
 
             matches = []
             for i in db_res.data:
-                v_ref = np.array(i['vector']).reshape(1, -1)
-                sim = float(cosine_similarity(v_test, v_ref)) * 100
-                matches.append({"data": i, "sim": sim})
+                if i.get('vector'):
+                    v_ref = np.array(i['vector']).reshape(1, -1)
+                    # 🔥 FIX LỖI TYPEERROR DÒNG 134: Lấy giá trị đầu tiên [0][0]
+                    sim_matrix = cosine_similarity(v_test, v_ref)
+                    sim = float(sim_matrix[0][0]) * 100
+                    matches.append({"data": i, "sim": sim})
             
             top = sorted(matches, key=lambda x: x['sim'], reverse=True)[:1]
             for m in top:
@@ -169,16 +169,16 @@ if t_file:
                         diff_list.append({"Hạng mục (POM Name)": p_name, "Thực tế": v1, "Mẫu gốc": v2, "Lệch": round(v1 - v2, 2)})
                 
                 if diff_list:
-                    df = pd.DataFrame(diff_list)
-                    st.table(df.style.map(lambda x: 'color: red; font-weight: bold' if abs(x) > 0.5 else 'color: white', subset=['Lệch']))
+                    df_res = pd.DataFrame(diff_list)
+                    st.table(df_res.style.map(lambda x: 'color: red; font-weight: bold' if abs(x) > 0.5 else 'color: white', subset=['Lệch']))
                     
                     # Xuất Excel
                     out = io.BytesIO()
-                    df.to_excel(out, index=False)
+                    df_res.to_excel(out, index=False)
                     st.download_button(f"📥 Tải Excel {sel_size}", out.getvalue(), f"Audit_{sel_size}.xlsx")
             
-            if st.button("🗑️ Xóa để quét file mới"):
+            if st.button("🗑️ Xóa file để quét mới"):
                 st.session_state.au_key += 1
                 st.rerun()
     else:
-        st.error("⚠️ File không thỏa mãn điều kiện (Đối với Reitmans phải là trang GRADING NOT APPROVED).")
+        st.error("⚠️ Không tìm thấy bảng POM có GRADING NOT APPROVED.")
