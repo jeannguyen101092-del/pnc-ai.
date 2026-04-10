@@ -6,13 +6,13 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# --- CONFIG (Kiểm tra kỹ URL và KEY) ---
+# --- CONFIG ---
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V44.7", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V44.8", page_icon="📊")
 
 if "up_key" not in st.session_state: st.session_state.up_key = 0
 if "au_key" not in st.session_state: st.session_state.au_key = 0
@@ -42,7 +42,8 @@ def parse_val(t):
 def clean_pos(t):
     return re.sub(r'[^A-Z0-9]', '', str(t).upper())
 
-def extract_pom_v447(pdf_file):
+# --- HÀM QUÉT CẠN THÔNG SỐ ---
+def extract_pom_v448(pdf_file):
     full_specs, img_bytes = {}, None
     try:
         pdf_content = pdf_file.read()
@@ -54,38 +55,51 @@ def extract_pom_v447(pdf_file):
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
+                if not tables: continue
                 for tb in tables:
                     df = pd.DataFrame(tb)
                     if df.empty or len(df.columns) < 2: continue
+                    
                     p_name_idx, val_idx = -1, -1
+                    # Quét Header linh hoạt (15 dòng đầu mỗi bảng)
                     for r_idx, row in df.head(15).iterrows():
                         row_up = [str(c).upper().strip() if c else "" for c in row]
+                        
+                        # Tìm cột Tên: Thêm DESCRIPTION, POM #, ITEM
                         for i, cell in enumerate(row_up):
-                            if any(k in cell for k in ["DESCRIPTION", "POM NAME", "ITEM"]): p_name_idx = i
-                            if any(k in cell for k in ["NEW", "FINAL", "SAMPLE", "VALUE", "SPEC", " M "]): val_idx = i
+                            if any(k in cell for k in ["DESCRIPTION", "POM NAME", "ITEM", "POM #", "POINT OF MEASURE"]):
+                                p_name_idx = i
+                                break
+                        # Tìm cột Số đo: Thêm NEW, FINAL, SPEC, VALUE, M, L, S
+                        for i, cell in enumerate(row_up):
+                            if i != p_name_idx and any(k in cell for k in ["NEW", "FINAL", "SAMPLE", "VALUE", "SPEC", " M ", " L ", " S "]):
+                                val_idx = i
+                                break
+                        
                         if p_name_idx != -1 and val_idx != -1:
                             for d_idx in range(r_idx + 1, len(df)):
                                 d_row = df.iloc[d_idx]
                                 name = str(d_row[p_name_idx]).replace('\n',' ').strip().upper()
-                                if len(name) < 2: continue
+                                # Chấp nhận cả mã POM ngắn (như A1, B)
+                                if len(name) < 2 or any(x in name for x in ["DATE", "PAGE", "REVISION"]): continue
+                                
                                 val_num = parse_val(d_row[val_idx])
                                 if val_num > 0: full_specs[name] = val_num
         return {"specs": full_specs, "img": img_bytes}
     except: return None
 
-# --- SIDEBAR: NẠP FILE VỚI BẪY LỖI CHI TIẾT ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("📂 KHO DỮ LIỆU CHUẨN")
     try:
         res_c = supabase.table("ai_data").select("file_name", count="exact").execute()
         st.metric("Mẫu đã nạp", res_c.count if res_c.count is not None else 0)
-    except Exception as e:
-        st.error(f"Lỗi kết nối Supabase: {e}")
+    except: pass
 
     files = st.file_uploader("Nạp Techpack mẫu", accept_multiple_files=True, key=f"u_{st.session_state.up_key}")
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         for f in files:
-            d = extract_pom_v447(f)
+            d = extract_pom_v448(f)
             if d and d['specs']:
                 vec, url = None, ""
                 try:
@@ -97,30 +111,23 @@ with st.sidebar:
                         tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
                         with torch.no_grad():
                             vec = model_ai(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
-                except Exception as img_err:
-                    st.warning(f"Lỗi xử lý ảnh/storage: {img_err}")
+                except: pass
 
-                # --- BẪY LỖI NẠP DATA ---
                 try:
-                    res = supabase.table("ai_data").insert({
-                        "file_name": f.name, "vector": vec, 
-                        "spec_json": d['specs'], "image_url": url
-                    }).execute()
-                    st.success(f"Nạp thành công: {f.name}")
+                    supabase.table("ai_data").insert({"file_name": f.name, "vector": vec, "spec_json": d['specs'], "image_url": url}).execute()
+                    st.success(f"Đã nạp: {f.name} ({len(d['specs'])} dòng)")
                 except Exception as db_err:
-                    # HIỆN LỖI CHI TIẾT TẠI ĐÂY
-                    st.error(f"❌ LỖI NẠP DB ({f.name}):")
-                    st.code(str(db_err)) 
+                    st.error(f"Lỗi DB: {db_err}")
             else:
-                st.warning(f"Không tìm thấy thông số trong: {f.name}")
+                st.warning(f"Không tìm thấy bảng thông số trong: {f.name}")
         st.rerun()
 
 # --- MAIN ---
-st.title("🔍 AI Fashion Auditor V44.7")
+st.title("🔍 AI Fashion Auditor V44.8")
 t_file = st.file_uploader("Upload file đối soát", type="pdf", key=f"a_{st.session_state.au_key}")
 
 if t_file:
-    target = extract_pom_v447(t_file)
+    target = extract_pom_v448(t_file)
     if target and target['specs']:
         st.success(f"✅ Quét được {len(target['specs'])} hạng mục.")
         db_res = supabase.table("ai_data").select("*").execute()
@@ -133,7 +140,7 @@ if t_file:
                 for i in db_res.data:
                     if i.get('vector'):
                         v_ref = np.array(i['vector']).reshape(1, -1)
-                        sim = float(cosine_similarity(v_test, v_ref)[0][0]) * 100
+                        sim = float(cosine_similarity(v_test, v_ref)) * 100
                         matches.append({"data": i, "sim": sim})
             
             top = sorted(matches, key=lambda x: x['sim'], reverse=True)[:1] if matches else [{"data": db_res.data[-1], "sim": 0}]
