@@ -1,10 +1,11 @@
 import streamlit as st
-import io, fitz, pdfplumber, re, pandas as pd, numpy as np
+import io, fitz, pdfplumber, re, pandas as pd, numpy as np, requests
 import torch
 from PIL import Image
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
+from streamlit_image_comparison import image_comparison
 
 # ================= CONFIG =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
@@ -13,22 +14,9 @@ BUCKET = "fashion-imgs"
 
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V7 PRO", page_icon="👖")
+st.set_page_config(layout="wide", page_title="AI Auditor V50", page_icon="🔥")
 
-# ================= UTILS =================
-def parse_reitmans_val(t):
-    try:
-        if t is None or str(t).lower() in ['nan', '-', 'none', '']: return 0
-        txt = str(t).replace(',', '.').strip().lower()
-        match = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
-        if not match: return 0
-        v = match[0]
-        if ' ' in v:
-            p = v.split()
-            return float(p[0]) + eval(p[1])
-        return eval(v) if '/' in v else float(v)
-    except: return 0
-
+# ================= MODEL =================
 @st.cache_resource
 def load_ai():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -38,131 +26,181 @@ def load_ai():
 
 model_ai = load_ai()
 
-def get_vector(img_bytes):
-    if not img_bytes: return [0.0]*512
+# ================= PARSE =================
+def parse_val(t):
     try:
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor()])
-        with torch.no_grad():
-            v = model_ai(tf(img).unsqueeze(0)).view(-1).numpy()
-            v = v / (np.linalg.norm(v) + 1e-7)
-        return v.tolist()
-    except: return [0.0]*512
+        txt = str(t).replace(',', '.')
+        match = re.findall(r'\d+\.?\d*', txt)
+        return float(match[0]) if match else 0
+    except:
+        return 0
 
-def extract_data(pdf_file):
-    img_bytes = None
-    pdf_content = pdf_file.read()
-    doc = fitz.open(stream=pdf_content, filetype="pdf")
-    if len(doc) > 0:
-        img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
-    doc.close()
+# ================= EXTRACT =================
+def extract_pom(pdf_file):
+    specs, img_bytes = {}, None
+    pdf_bytes = pdf_file.read()
 
-    tables = []
-    with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    if len(doc):
+        img_bytes = doc.load_page(0).get_pixmap().tobytes("png")
+
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
-            tbs = page.extract_tables()
-            for tb in tbs:
+            tables = page.extract_tables()
+            for tb in tables:
                 df = pd.DataFrame(tb)
                 if len(df.columns) < 2: continue
-                df.columns = [str(c).replace('\n',' ').strip().upper() for c in df.iloc[0]]
-                df = df[1:].reset_index(drop=True).fillna("")
-                tables.append(df)
-    return {"img": img_bytes, "tables": tables}
+                for i in range(len(df)):
+                    k = str(df.iloc[i][0]).upper()
+                    v = parse_val(df.iloc[i][1])
+                    if v > 0:
+                        specs[k] = v
+
+    return {"specs": specs, "img": img_bytes}
+
+# ================= VECTOR =================
+def get_vector(img_bytes):
+    if not img_bytes: return None
+    try:
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        tf = transforms.Compose([
+            transforms.Resize((224,224)),
+            transforms.ToTensor()
+        ])
+        with torch.no_grad():
+            v = model_ai(tf(img).unsqueeze(0))
+            v = v.view(-1).numpy()
+            v = v / np.linalg.norm(v)
+        return v.tolist()
+    except:
+        return None
+
+# ================= SPEC =================
+def spec_similarity(s1, s2):
+    keys = set(s1) & set(s2)
+    if not keys: return 0
+    diff = np.mean([abs(s1[k] - s2[k]) for k in keys])
+    return max(0, 100 - diff)
+
+# ================= EXPORT =================
+def export_excel(df):
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False)
+    return out.getvalue()
+
+# ================= IMAGE LOAD =================
+def load_url_img(url):
+    try:
+        return Image.open(requests.get(url, stream=True).raw).convert("RGBA")
+    except:
+        return None
 
 # ================= SIDEBAR =================
 with st.sidebar:
-    st.header("📂 QUẢN TRỊ KHO")
-    files = st.file_uploader("NẠP KHO (PDF)", accept_multiple_files=True)
+    st.header("📂 DATA")
+
+    res = supabase.table("ai_data").select("*", count="exact").execute()
+    st.metric("Records", res.count)
+
+    files = st.file_uploader("Upload Techpack", accept_multiple_files=True)
+
     if files and st.button("🚀 NẠP"):
         for f in files:
-            d = extract_data(f)
+            d = extract_pom(f)
             vec = get_vector(d['img'])
-            # Lấy bảng có nhiều dữ liệu nhất để làm mẫu
-            main_df = max(d['tables'], key=len) if d['tables'] else pd.DataFrame()
-            specs = main_df.to_dict('records')
-            
+
             img_url = ""
             if d['img']:
                 path = f"lib/{f.name}.png"
-                supabase.storage.from_(BUCKET).upload(path, d['img'], {"upsert":"true"})
-                res_url = supabase.storage.from_(BUCKET).get_public_url(path)
-                img_url = res_url if isinstance(res_url, str) else getattr(res_url, "public_url", "")
-            
+                try:
+                    supabase.storage.from_(BUCKET).upload(path, d['img'], {"upsert":"true"})
+                    img_url = supabase.storage.from_(BUCKET).get_public_url(path)["publicUrl"]
+                except:
+                    pass
+
             supabase.table("ai_data").insert({
-                "file_name": f.name, "vector": vec, "spec_json": specs, "image_url": img_url
+                "file_name": f.name,
+                "vector": vec,
+                "spec_json": d['specs'],
+                "image_url": img_url
             }).execute()
-        st.success("Đã nạp thành công!")
+
+            st.success(f"✅ {f.name}")
+
         st.rerun()
 
 # ================= MAIN =================
-st.title("👖 AI Fashion Pro V7 PRO")
+st.title("🔥 AI Auditor V50 – VISUAL QC TOOL")
 
-f_test = st.file_uploader("Upload PDF kiểm tra", type="pdf")
+file_test = st.file_uploader("Upload file kiểm", type="pdf")
 
-if f_test:
-    target = extract_data(f_test)
-    if target['tables']:
-        df_target = target['tables'][0] # Lấy bảng đầu tiên
-        cols = df_target.columns.tolist()
-        
-        c1, c2 = st.columns(2)
-        with c1: pom_col = st.selectbox("Cột Vị trí (POM):", cols, index=0)
-        with c2: size_col = st.selectbox("Chọn Size kiểm:", [c for c in cols if c != pom_col])
+if file_test:
+    target = extract_pom(file_test)
+    vec_test = get_vector(target['img'])
 
-        # Tìm mẫu AI
-        v_test = get_vector(target['img'])
-        db = supabase.table("ai_data").select("*").execute()
-        
-        if db.data:
-            matches = []
-            for row in db.data:
-                sim = cosine_similarity([v_test], [row['vector']])[0][0] if row['vector'] else 0
-                matches.append({"row": row, "sim": sim})
-            
-            best = sorted(matches, key=lambda x: x['sim'], reverse=True)[0]
-            ref_row = best['row']
-            
-            # --- FIX VALUEERROR TẠI ĐÂY ---
-            spec_data = ref_row['spec_json']
-            df_ref = pd.DataFrame(spec_data) if isinstance(spec_data, list) else pd.DataFrame([spec_data])
+    db = supabase.table("ai_data").select("*").execute()
 
-            st.info(f"🏆 Mẫu khớp nhất: **{ref_row['file_name']}** ({best['sim']*100:.1f}%)")
+    results = []
 
-            # Ảnh 2 bên
-            im_c1, im_c2 = st.columns(2)
-            with im_c1: st.image(target['img'], caption="ẢNH KIỂM", use_container_width=True)
-            with im_c2: st.image(ref_row['image_url'], caption="ẢNH MẪU", use_container_width=True)
+    for row in db.data:
+        sim_img, sim_spec = 0, 0
 
-            # --- SO SÁNH ĐÚNG DÒNG (MAP THEO POM) ---
-            st.write("### 📊 BẢNG ĐỐI CHIẾU THÔNG SỐ")
-            
-            # Tạo bản đồ giá trị từ file mẫu
-            ref_map = {}
-            if not df_ref.empty:
-                # Giả định cột đầu tiên của file mẫu là tên POM
-                ref_pom_key = df_ref.columns[0]
-                for _, r in df_ref.iterrows():
-                    p_key = str(r[ref_pom_key]).strip().upper()
-                    ref_map[p_key] = parse_reitmans_val(r.get(size_col, r.iloc[1] if len(r)>1 else 0))
+        if vec_test and row.get("vector"):
+            v1 = np.array(vec_test).reshape(1,-1)
+            v2 = np.array(row["vector"]).reshape(1,-1)
+            sim_img = cosine_similarity(v1, v2)[0][0] * 100
 
-            compare_results = []
-            for _, r_t in df_target.iterrows():
-                pom_name = str(r_t[pom_col]).strip()
-                if not pom_name: continue
-                
-                val_new = parse_reitmans_val(r_t[size_col])
-                val_ref = ref_map.get(pom_name.upper(), 0)
-                diff = round(val_new - val_ref, 3)
+        sim_spec = spec_similarity(target['specs'], row['spec_json'])
 
-                compare_results.append({
-                    "VỊ TRÍ ĐO (POM)": pom_name,
-                    "KIỂM (NEW)": val_new,
-                    "MẪU (REF)": val_ref,
-                    "LỆCH": diff,
-                    "KẾT QUẢ": "✅ OK" if abs(diff) <= 0.125 else "❌ SAI"
-                })
+        sim = 0.4*sim_img + 0.6*sim_spec
 
-            res_df = pd.DataFrame(compare_results)
-            st.table(res_df) # Hiển thị bảng đối xứng đúng dòng
+        results.append({"row": row, "sim": sim, "img": sim_img, "spec": sim_spec})
 
-if st.button("LÀM MỚI"): st.rerun()
+    top = sorted(results, key=lambda x: x['sim'], reverse=True)[:1]
+
+    for r in top:
+        st.subheader(f"{r['row']['file_name']} → {r['sim']:.1f}%")
+        st.write(f"AI: {r['img']:.1f}% | SPEC: {r['spec']:.1f}%")
+
+        # ===== LOAD IMAGE =====
+        img1 = Image.open(io.BytesIO(target['img'])).convert("RGBA") if target['img'] else None
+        img2 = load_url_img(r['row'].get("image_url"))
+
+        # ===== MODE =====
+        mode = st.radio("Chế độ so sánh", ["Slider", "Overlay", "Diff"])
+
+        if img1 and img2:
+            img1 = img1.resize(img2.size)
+
+            if mode == "Slider":
+                image_comparison(img1=img1, img2=img2, width=700)
+
+            elif mode == "Overlay":
+                alpha = st.slider("Blend", 0.0, 1.0, 0.5)
+                blended = Image.blend(img1, img2, alpha)
+                st.image(blended, use_column_width=True)
+
+            elif mode == "Diff":
+                diff = np.abs(np.array(img1) - np.array(img2))
+                st.image(diff, use_column_width=True)
+
+        # ===== SPEC TABLE =====
+        diff_data = []
+        for k, v in target['specs'].items():
+            ref = r['row']['spec_json'].get(k, 0)
+            diff_data.append([k, v, ref, round(v-ref,2)])
+
+        df = pd.DataFrame(diff_data, columns=["POM","NEW","REF","DIFF"])
+        st.dataframe(df)
+
+        # ===== EXPORT =====
+        st.download_button(
+            "📥 Export Excel",
+            export_excel(df),
+            file_name="compare.xlsx"
+        )
+
+# ================= RESET =================
+if st.button("RESET"):
+    st.rerun()
