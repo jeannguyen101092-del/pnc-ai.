@@ -12,7 +12,7 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V43.9", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V44.0", page_icon="📊")
 
 if "up_key" not in st.session_state: st.session_state.up_key = 0
 if "au_key" not in st.session_state: st.session_state.au_key = 0
@@ -23,11 +23,13 @@ def load_ai():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_ai()
 
-# --- HÀM XỬ LÝ SỐ REITMANS & CHUNG ---
+# --- HÀM XỬ LÝ SỐ ĐO (HỖ TRỢ PHÂN SỐ & ĐƠN VỊ) ---
 def parse_val(t):
     try:
+        if t is None: return 0
         txt = str(t).replace(',', '.').strip().lower()
-        if not txt or txt in ['nan', '-', 'none']: return 0
+        if not txt or txt in ['nan', '-', 'none', 'tbd']: return 0
+        # Regex bắt số nguyên, số thập phân và phân số (1 1/2, 3/4)
         match = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
         v = match[0]
@@ -40,8 +42,8 @@ def parse_val(t):
 def clean_pos(t):
     return re.sub(r'[^A-Z0-9]', '', str(t).upper())
 
-# --- TRÍCH XUẤT THÔNG SỐ ĐA DÒNG HÀNG ---
-def extract_pom_new_v439(pdf_file):
+# --- TRÍCH XUẤT TOÀN BỘ THÔNG SỐ (VÉT SẠCH DỮ LIỆU) ---
+def extract_pom_all_v44(pdf_file):
     full_specs, img_bytes, brand = {}, None, "OTHER"
     try:
         pdf_content = pdf_file.read()
@@ -58,48 +60,55 @@ def extract_pom_new_v439(pdf_file):
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 pg_txt = page.extract_text().upper() if page.extract_text() else ""
-                # Chỉ quét trang có từ khóa kỹ thuật
-                if not any(k in pg_txt for k in ["POM", "SPEC", "MEASURE", "TOLERANCE", "SIZE", "DESCRIPTION"]):
+                # Mở rộng từ khóa nhận diện trang POM
+                if not any(k in pg_txt for k in ["POM", "SPEC", "MEASURE", "TOLERANCE", "SIZE", "DESCRIPTION", "CRITICAL"]):
                     continue
 
-                               tables = page.extract_tables()
+                tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb)
                     if df.empty or len(df.columns) < 2: continue
                     
                     p_name_idx, val_idx = -1, -1
-                    # Quét Header để tìm cột
-                    for r_idx, row in df.head(10).iterrows(): 
+                    # Quét tìm Header trong 15 dòng đầu của mỗi bảng
+                    for r_idx, row in df.head(15).iterrows(): 
                         row_up = [str(c).upper().strip() for c in row if c]
                         
-                        # Tìm cột Tên (Linh hoạt hơn)
+                        # Tìm cột Tên (Ưu tiên Reitmans: POM NAME, sau đó là DESCRIPTION/ITEM)
                         for i, cell in enumerate(row_up):
-                            if any(k in cell for k in ["POM NAME", "DESCRIPTION", "ITEM", "POINT OF MEASURE"]):
+                            if any(k in cell for k in ["POM NAME", "DESCRIPTION", "POINT OF MEASURE", "ITEM", "POM #"]):
                                 p_name_idx = i
                                 break
-                        # Tìm cột Giá trị
+                        
+                        # Tìm cột Số đo (Ưu tiên NEW, sau đó là FINAL, SPEC, VALUE)
                         for i, cell in enumerate(row_up):
-                            if any(k in cell for k in ["NEW", "FINAL", "SAMPLE", "SPEC", "TOTAL", "VALUE"]):
-                                val_idx = i
-                                break
+                            if any(k in cell for k in ["NEW", "FINAL", "SAMPLE", "SPEC", "TOTAL", "VALUE", "TOLERANCE"]):
+                                # Đảm bảo không trùng với cột tên
+                                if i != p_name_idx:
+                                    val_idx = i
+                                    break
                         
                         if p_name_idx != -1 and val_idx != -1:
+                            # Quét toàn bộ các dòng còn lại của bảng
                             for d_idx in range(r_idx + 1, len(df)):
                                 d_row = df.iloc[d_idx]
                                 name = str(d_row[p_name_idx]).replace('\n',' ').strip().upper()
                                 
-                                # Loại bỏ các dòng tiêu đề phụ hoặc dòng trống
-                                if len(name) < 2 or any(x in name for x in ["DATE", "PAGE", "REVISION", "NOTE"]): 
+                                # Loại bỏ dòng rác (len < 2) hoặc tiêu đề lặp lại
+                                if len(name) < 2 or any(x in name for x in ["REF:", "DATE:", "PAGE", "REVISION", "NOTE"]): 
                                     continue
                                 
                                 val_num = parse_val(d_row[val_idx])
-                                # Lấy cả các thông số nhỏ (chấp nhận giá trị > 0)
+                                # Lưu thông số vào dict (nếu trùng tên sẽ lấy giá trị cuối cùng tìm thấy)
                                 if val_num > 0: 
                                     full_specs[name] = val_num
-                            # KHÔNG dùng break ở đây để nó quét tiếp các cột/bảng khác nếu có
+                            # Không dùng break ở đây để nếu trang có nhiều bảng nhỏ lồng nhau vẫn quét hết
+        return {"specs": full_specs, "img": img_bytes, "brand": brand}
+    except Exception as e:
+        st.error(f"Lỗi hệ thống: {e}")
+        return None
 
-
-# --- SIDEBAR ---
+# --- SIDEBAR: KHO DỮ LIỆU ---
 with st.sidebar:
     st.header("📂 KHO DỮ LIỆU CHUẨN")
     try:
@@ -114,7 +123,7 @@ with st.sidebar:
             check = supabase.table("ai_data").select("file_name").eq("file_name", f.name).execute()
             if check.data: continue
 
-            d = extract_pom_new_v439(f)
+            d = extract_pom_all_v44(f)
             if d and d['specs']:
                 img_p = Image.open(io.BytesIO(d['img'])).convert('RGB')
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
@@ -131,14 +140,14 @@ with st.sidebar:
         st.session_state.up_key += 1
         st.rerun()
 
-# --- MAIN ---
-st.title("🔍 AI Fashion Auditor V43.9")
+# --- MAIN: ĐỐI SOÁT ---
+st.title("🔍 AI Fashion Auditor V44.0 (Enhanced Scan)")
 t_file = st.file_uploader("Upload file đối soát", type="pdf", key=f"a_{st.session_state.au_key}")
 
 if t_file:
-    target = extract_pom_new_v439(t_file)
+    target = extract_pom_all_v44(t_file)
     if target and target['specs']:
-        st.success(f"✅ Brand: {target['brand']} | Tìm thấy **{len(target['specs'])}** hạng mục.")
+        st.success(f"✅ Brand: {target['brand']} | Đã quét được **{len(target['specs'])}** hạng mục thông số.")
         
         db_res = supabase.table("ai_data").select("*").execute()
         if db_res.data:
@@ -151,7 +160,7 @@ if t_file:
             for i in db_res.data:
                 if i.get('vector'):
                     v_ref = np.array(i['vector']).reshape(1, -1)
-                    sim_val = float(cosine_similarity(v_test, v_ref)[0][0]) * 100
+                    sim_val = float(cosine_similarity(v_test, v_ref)) * 100
                     matches.append({"data": i, "sim": sim_val})
             
             top = sorted(matches, key=lambda x: x['sim'], reverse=True)[:1]
@@ -165,21 +174,22 @@ if t_file:
                 for p_name, v_target in target['specs'].items():
                     v_ref = 0
                     p_clean = clean_pos(p_name)
+                    # Tìm thông số tương ứng trong mẫu gốc
                     for k_ref, val_ref in m['data']['spec_json'].items():
                         if p_clean == clean_pos(k_ref):
                             v_ref = val_ref
                             break
+                    
                     diff_list.append({
-                        "Hạng mục": p_name,
-                        "Kiểm tra": v_target,
-                        "Mẫu gốc": v_ref,
+                        "Hạng mục (Description)": p_name,
+                        "File Kiểm tra": v_target,
+                        "Mẫu Gốc (KHO)": v_ref,
                         "Lệch": round(v_target - v_ref, 2) if v_ref > 0 else "N/A"
                     })
                 
                 if diff_list:
                     df_r = pd.DataFrame(diff_list)
                     
-                    # Sửa lỗi AttributeError: Sử dụng .map() thay cho .applymap()
                     def style_diff(val):
                         try:
                             if isinstance(val, (int, float)) and abs(val) > 0.5:
@@ -191,10 +201,10 @@ if t_file:
                     
                     out = io.BytesIO()
                     df_r.to_excel(out, index=False)
-                    st.download_button("📥 Tải báo cáo Excel", out.getvalue(), "Audit_Report.xlsx")
+                    st.download_button("📥 Tải báo cáo Excel", out.getvalue(), f"Audit_{target['brand']}.xlsx")
             
-            if st.button("🗑️ Xóa để quét file khác"):
+            if st.button("🗑️ Quét file mới"):
                 st.session_state.au_key += 1
                 st.rerun()
     else:
-        st.error("⚠️ AI không tìm thấy bảng thông số. Kiểm tra lại trang POM trong PDF.")
+        st.error("⚠️ AI không tìm thấy bảng thông số. Hãy kiểm tra xem PDF có cột 'Description' và số đo không.")
