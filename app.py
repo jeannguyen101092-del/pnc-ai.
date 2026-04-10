@@ -7,7 +7,7 @@ URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V45.5", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V45.6", page_icon="📊")
 
 # --- HÀM PARSE SỐ (GIỮ CHUẨN REITMANS: PHÂN SỐ & THẬP PHÂN) ---
 def parse_val(t):
@@ -17,7 +17,7 @@ def parse_val(t):
         if not txt or any(x in txt for x in ['nan', '-', 'none', 'tol']): return 0
         match = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0] 
+        v = match[0] # Sửa lỗi lấy giá trị đầu tiên từ danh sách
         if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
@@ -94,7 +94,7 @@ with st.sidebar:
         st.rerun()
 
 # --- MAIN: ĐỐI SOÁT ---
-st.title("🔍 AI Fashion Auditor V45.5")
+st.title("🔍 AI Fashion Auditor V45.6")
 t_file = st.file_uploader("Upload file đối soát (PDF)", type="pdf")
 
 if t_file:
