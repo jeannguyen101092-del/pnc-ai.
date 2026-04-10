@@ -12,7 +12,7 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V45.2", page_icon="🔍")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V45.3", page_icon="🔍")
 
 # --- MODEL AI ---
 @st.cache_resource
@@ -36,11 +36,11 @@ def parse_val(t):
     except: return 0
 
 def normalize_pom(t):
-    """Chuẩn hóa tên POM để soi đúng dòng giữa các khách hàng"""
+    """Làm sạch tên POM để soi đúng vị trí đo"""
     if not t: return ""
     s = str(t).upper().strip()
-    s = re.sub(r'[^A-Z0-9\s]', '', s) # Giữ lại chữ và số để so khớp
-    return " ".join(s.split())
+    s = re.sub(r'[^A-Z0-9]', '', s) # Chỉ giữ lại chữ và số để so khớp tuyệt đối
+    return s
 
 # --- TRÍCH XUẤT (QUÉT ĐÚNG TRANG & ẢNH SIÊU NHẸ) ---
 def extract_pom_pro(pdf_file):
@@ -49,7 +49,7 @@ def extract_pom_pro(pdf_file):
         pdf_content = pdf_file.read()
         doc = fitz.open(stream=io.BytesIO(pdf_content))
         
-        # Ảnh JPG 30% (Matrix 0.6) - Siêu nhẹ để app chạy mượt
+        # Ảnh JPG 30% - Siêu nhẹ
         if len(doc) > 0:
             pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(0.6, 0.6))
             img_bytes = pix.tobytes("jpg", jpg_quality=30)
@@ -59,7 +59,7 @@ def extract_pom_pro(pdf_file):
         if "REITMANS" in all_text: brand = "REITMANS"
         doc.close()
 
-        POM_KEYS = ["POM", "POINT", "MEASURE", "DESCRIPTION", "DIMENSION"]
+        POM_KEYS = ["POM", "POINT", "MEASURE", "DESCRIPTION", "DIMENSION", "SPEC"]
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 text_page = (page.extract_text() or "").upper()
@@ -94,10 +94,11 @@ def extract_pom_pro(pdf_file):
 with st.sidebar:
     st.header("📂 KHO DỮ LIỆU")
     try:
-        res_count = supabase.table("ai_data").select("id", count="exact").execute()
+        # Đếm bằng '*' để không phụ thuộc vào cột id nếu SQL chưa cập nhật xong
+        res_count = supabase.table("ai_data").select("*", count="exact").execute()
         st.metric("Mẫu hiện có", res_count.count if res_count.count else 0)
     except Exception as e:
-        st.error(f"⚠️ Lỗi kết nối DB: {e}")
+        st.error(f"⚠️ Hãy chạy SQL tạo bảng ai_data")
     
     files = st.file_uploader("Nạp mẫu chuẩn", accept_multiple_files=True)
     if files and st.button("🚀 NẠP HỆ THỐNG"):
@@ -111,17 +112,16 @@ with st.sidebar:
                 
                 path = f"thumbs/{f.name.replace('.pdf', '')}.jpg"
                 supabase.storage.from_(BUCKET).upload(path=path, file=d['img'], file_options={"content-type":"image/jpeg", "x-upsert":"true"})
-                img_url = supabase.storage.from_(BUCKET).get_public_url(path)
                 
                 supabase.table("ai_data").insert({
                     "file_name": f.name, "vector": vec, "spec_json": d['specs'], 
-                    "image_url": img_url, "category": d['brand']
+                    "image_url": supabase.storage.from_(BUCKET).get_public_url(path), "category": d['brand']
                 }).execute()
         st.success("✅ Đã nạp xong!")
         st.rerun()
 
-# --- MAIN: ĐỐI SOÁT ---
-st.title("🔍 AI Fashion Auditor V45.2 PRO")
+# --- MAIN ---
+st.title("🔍 AI Fashion Auditor V45.3 PRO")
 t_file = st.file_uploader("Upload file đối soát (PDF)", type="pdf")
 
 if t_file:
@@ -138,36 +138,35 @@ if t_file:
             for i in db_res.data:
                 if i.get('vector'):
                     v_ref = np.array(i['vector']).reshape(1, -1)
-                    sim_val = float(cosine_similarity(v_test, v_ref)[0][0]) * 100
+                    sim_val = float(cosine_similarity(v_test, v_ref)) * 100
                     matches.append({"data": i, "sim": sim_val})
             
-            best_match = sorted(matches, key=lambda x: x['sim'], reverse=True)[:1]
-            for m in best_match:
+            top_m = sorted(matches, key=lambda x: x['sim'], reverse=True)[:1]
+            for m in top_m:
                 st.subheader(f"✨ Khớp mẫu: {m['data']['file_name']} ({m['sim']:.1f}%)")
                 c1, c2 = st.columns(2)
                 with c1: st.image(target['img'], caption="Bản vẽ Kiểm", use_container_width=True)
                 with c2: st.image(m['data']['image_url'], caption="Bản vẽ Mẫu", use_container_width=True)
 
-                # --- LOGIC SOI ĐÚNG DÒNG THEO TÊN POM ---
+                # --- SOI ĐÚNG DÒNG (ALIGNED) ---
                 st.write("### 📊 Chi tiết đối soát thông số")
-                ref_specs = m['data']['spec_json']
-                # Tạo map tra cứu từ file mẫu
-                ref_map = {normalize_pom(k): v for k, v in ref_specs.items()}
+                # Tạo map tra cứu từ file mẫu (Normalize POM -> Value)
+                ref_map = {normalize_pom(k): v for k, v in m['data']['spec_json'].items()}
                 
-                diff_data = []
+                diff_list = []
                 for p_name, v_target in target['specs'].items():
-                    norm_name = normalize_pom(p_name)
-                    v_ref = ref_map.get(norm_name, 0)
+                    p_key = normalize_pom(p_name)
+                    v_ref = ref_map.get(p_key, 0)
                     diff = round(v_target - v_ref, 3)
                     
-                    diff_data.append({
+                    diff_list.append({
                         "Vị trí đo (POM)": p_name,
                         "Thực tế": v_target,
                         "Mẫu chuẩn": v_ref if v_ref > 0 else "N/A",
                         "Chênh lệch": diff,
                         "Kết quả": "✅ OK" if abs(diff) <= 0.125 else "❌ SAI"
                     })
-                st.table(pd.DataFrame(diff_list if 'diff_list' in locals() else diff_data))
+                st.table(pd.DataFrame(diff_list))
 
 st.divider()
 if st.button("♻️ RESET"): st.rerun()
