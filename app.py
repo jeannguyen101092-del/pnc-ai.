@@ -5,13 +5,13 @@ from PIL import Image
 from torchvision import models, transforms
 from supabase import create_client, Client
 
-# --- CONFIG (Hãy điền đúng URL và KEY của bạn) ---
+# --- CONFIG (Hãy kiểm tra kỹ URL và KEY) ---
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V45.7 PRO", page_icon="🔍")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V45.8 PRO", page_icon="🔍")
 
 # --- MODEL AI ---
 @st.cache_resource
@@ -20,7 +20,7 @@ def load_ai():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_ai()
 
-# --- UTILS ---
+# --- UTILS: CHUẨN HÓA ĐỂ SOI ĐÚNG DÒNG ---
 def parse_val(t):
     try:
         if t is None or str(t).lower() in ['nan', '', 'none', '-']: return 0
@@ -35,19 +35,20 @@ def parse_val(t):
     except: return 0
 
 def normalize_pom(t):
-    """Chuẩn hóa tên POM để soi đúng vị trí dù Brand nào"""
+    """Làm sạch tên POM để so khớp chính xác dù khách hàng khác nhau"""
     if not t: return ""
     s = str(t).upper().strip()
-    s = re.sub(r'[^A-Z0-9]', '', s) # Chỉ giữ chữ và số để khớp tuyệt đối
+    s = re.sub(r'[^A-Z0-9]', '', s) # Chỉ giữ lại chữ và số
     return s
 
-# --- TRÍCH XUẤT ---
+# --- TRÍCH XUẤT THÔNG SỐ & ẢNH SIÊU NHẸ ---
 def extract_pom_pro(pdf_file):
     full_specs, img_bytes, brand = {}, None, "OTHER"
     try:
         pdf_content = pdf_file.read()
         doc = fitz.open(stream=io.BytesIO(pdf_content))
         if len(doc) > 0:
+            # Ảnh JPG 30% cực nhẹ
             pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(0.6, 0.6))
             img_bytes = pix.tobytes("jpg", jpg_quality=30)
         
@@ -84,7 +85,9 @@ def extract_pom_pro(pdf_file):
                         val = parse_val(df.iloc[i][v_idx])
                         if val > 0: full_specs[name] = float(val)
         return {"specs": full_specs, "img": img_bytes, "brand": brand}
-    except: return None
+    except Exception as e:
+        st.error(f"Lỗi đọc file: {e}")
+        return None
 
 # --- SIDEBAR: KHO DỮ LIỆU ---
 with st.sidebar:
@@ -92,7 +95,7 @@ with st.sidebar:
     try:
         res = supabase.table("ai_data").select("id", count="exact").execute()
         st.metric("Mẫu hiện có", res.count if res.count else 0)
-    except: st.error("Lỗi kết nối SQL")
+    except: st.error("⚠️ Lỗi kết nối DB")
     
     files = st.file_uploader("Nạp mẫu chuẩn", accept_multiple_files=True)
     if files and st.button("🚀 NẠP HỆ THỐNG"):
@@ -102,27 +105,32 @@ with st.sidebar:
                 img_p = Image.open(io.BytesIO(d['img'])).convert('RGB')
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
                 with torch.no_grad():
-                    vec = model_ai(tf(img_p).unsqueeze(0)).flatten().numpy().astype(float).tolist()
+                    vec = model_ai(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
                 
                 path = f"thumbs/{f.name.replace('.pdf', '')}.jpg"
                 supabase.storage.from_(BUCKET).upload(path=path, file=d['img'], file_options={"content-type":"image/jpeg", "x-upsert":"true"})
                 
+                img_url = supabase.storage.from_(BUCKET).get_public_url(path)
                 supabase.table("ai_data").insert({
                     "file_name": f.name, "vector": vec, "spec_json": d['specs'], 
-                    "image_url": supabase.storage.from_(BUCKET).get_public_url(path), "category": d['brand']
+                    "image_url": img_url, "category": d['brand']
                 }).execute()
         st.success("Đã nạp xong!")
         st.rerun()
 
-# --- MAIN ---
-st.title("🔍 AI Fashion Auditor V45.7 PRO")
+# --- MAIN: ĐỐI SOÁT ---
+st.title("🔍 AI Fashion Auditor V45.8 PRO")
 t_file = st.file_uploader("Upload file PDF đối soát", type="pdf")
 
 if t_file:
     target = extract_pom_pro(t_file)
     if target and target['specs']:
+        st.info(f"Đã trích xuất được {len(target['specs'])} thông số. Đang đối soát...")
+        
         db_res = supabase.table("ai_data").select("*").execute()
-        if db_res.data:
+        if not db_res.data:
+            st.warning("Kho dữ liệu đang trống. Hãy nạp mẫu ở Sidebar.")
+        else:
             img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
             tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
             with torch.no_grad():
@@ -131,35 +139,30 @@ if t_file:
             matches = []
             for i in db_res.data:
                 v_ref = i.get('vector')
-                # 🔥 FIX CHÍNH: Kiểm tra vector hợp lệ trước khi tính toán
                 if v_ref and len(v_ref) == 512:
                     try:
-                        v1 = np.array(v_test, dtype=np.float64)
-                        v2 = np.array(v_ref, dtype=np.float64)
+                        v1, v2 = np.array(v_test), np.array(v_ref)
                         denom = (np.linalg.norm(v1) * np.linalg.norm(v2))
                         sim = np.dot(v1, v2) / denom if denom != 0 else 0
                         matches.append({"data": i, "sim": float(sim) * 100})
-                    except: continue # Bỏ qua mẫu nếu ép kiểu lỗi
+                    except: continue
             
             if matches:
-                # Sắp xếp và lấy mẫu khớp nhất
-                best_match_list = sorted(matches, key=lambda x: x['sim'], reverse=True)
-                m = best_match_list[0]
+                m = sorted(matches, key=lambda x: x['sim'], reverse=True)[0]
+                st.success(f"🏆 Khớp mẫu: **{m['data']['file_name']}** ({m['sim']:.1f}%)")
                 
-                st.subheader(f"✨ Khớp mẫu: {m['data']['file_name']} ({m['sim']:.1f}%)")
                 c1, c2 = st.columns(2)
                 with c1: st.image(target['img'], caption="Bản vẽ Kiểm", use_container_width=True)
                 with c2: st.image(m['data']['image_url'], caption="Mẫu gốc trong kho", use_container_width=True)
 
                 # --- SOI ĐÚNG DÒNG (ALIGNED) ---
                 st.write("### 📊 Chi tiết đối soát thông số")
-                ref_specs = m['data']['spec_json']
-                ref_map = {normalize_pom(k): v for k, v in ref_specs.items()}
+                ref_map = {normalize_pom(k): v for k, v in m['data']['spec_json'].items()}
                 
                 diff_data = []
                 for p_name, v_target in target['specs'].items():
                     p_key = normalize_pom(p_name)
-                    v_ref = ref_map.get(p_key, 0)
+                    v_ref = ref_map.get(p_key, 0) # Tìm đúng vị trí dựa trên tên POM
                     diff = round(v_target - v_ref, 3)
                     
                     diff_data.append({
@@ -170,6 +173,8 @@ if t_file:
                         "Kết quả": "✅ OK" if abs(diff) <= 0.125 else "❌ SAI"
                     })
                 st.table(pd.DataFrame(diff_data))
+            else:
+                st.error("Không tìm thấy mẫu tương đồng trong kho.")
 
 st.divider()
 if st.button("♻️ RESET"): st.rerun()
