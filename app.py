@@ -12,7 +12,7 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V44.4", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V44.5", page_icon="📊")
 
 if "up_key" not in st.session_state: st.session_state.up_key = 0
 if "au_key" not in st.session_state: st.session_state.au_key = 0
@@ -23,7 +23,7 @@ def load_ai():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_ai()
 
-# --- FIX LỖI PARSE SỐ ĐO ---
+# --- CHUẨN HÓA SỐ ĐO (HỖ TRỢ PHÂN SỐ REITMANS) ---
 def parse_val(t):
     try:
         if t is None: return 0
@@ -31,7 +31,7 @@ def parse_val(t):
         if not txt or any(x in txt for x in ['nan', '-', 'none', 'tbd']): return 0
         match = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0] # Lấy giá trị đầu tiên trong danh sách match
+        v = match[0] 
         if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
@@ -41,8 +41,8 @@ def parse_val(t):
 def clean_pos(t):
     return re.sub(r'[^A-Z0-9]', '', str(t).upper())
 
-# --- TRÍCH XUẤT (GIỮ ƯU TIÊN REITMANS) ---
-def extract_pom_v444(pdf_file):
+# --- TRÍCH XUẤT (VÉT SẠCH THÔNG SỐ) ---
+def extract_pom_v445(pdf_file):
     full_specs, img_bytes, brand = {}, None, "OTHER"
     try:
         pdf_content = pdf_file.read()
@@ -87,18 +87,18 @@ def extract_pom_v444(pdf_file):
         return {"specs": full_specs, "img": img_bytes, "brand": brand}
     except: return None
 
-# --- SIDEBAR: QUẢN LÝ ---
+# --- SIDEBAR: XỬ LÝ NẠP FILE (CÓ CƠ CHẾ CHỐNG LỖI DB) ---
 with st.sidebar:
     st.header("📂 KHO DỮ LIỆU CHUẨN")
     try:
         res_c = supabase.table("ai_data").select("file_name", count="exact").execute()
         st.metric("Mẫu đã nạp", res_c.count if res_c.count else 0)
-    except: pass
+    except: st.error("Lỗi kết nối Supabase")
 
     files = st.file_uploader("Nạp Techpack mẫu", accept_multiple_files=True, key=f"u_{st.session_state.up_key}")
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
-        for i, f in enumerate(files):
-            d = extract_pom_v444(f)
+        for f in files:
+            d = extract_pom_v445(f)
             if d and d['specs']:
                 img_p = Image.open(io.BytesIO(d['img'])).convert('RGB')
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
@@ -108,22 +108,30 @@ with st.sidebar:
                 path = f"lib_{f.name.replace('.pdf', '.png')}"
                 supabase.storage.from_(BUCKET).upload(path=path, file=d['img'], file_options={"content-type":"image/png", "x-upsert":"true"})
                 
-                # THÊM TRY-EXCEPT ĐỂ HIỆN LỖI DB CHI TIẾT
+                # CƠ CHẾ NẠP THÔNG MINH: Thử nạp full, nếu lỗi thì nạp bản tối giản
+                data_to_insert = {
+                    "file_name": f.name, "vector": vec, "spec_json": d['specs'],
+                    "image_url": supabase.storage.from_(BUCKET).get_public_url(path),
+                    "category": d['brand'] # Đây là cột dễ gây lỗi nếu chưa tạo trong DB
+                }
                 try:
-                    supabase.table("ai_data").insert({
-                        "file_name": f.name, "vector": vec, "spec_json": d['specs'],
-                        "image_url": supabase.storage.from_(BUCKET).get_public_url(path), "category": d['brand']
-                    }).execute()
-                except Exception as db_err:
-                    st.error(f"Lỗi Supabase tại file {f.name}: {db_err}")
+                    supabase.table("ai_data").insert(data_to_insert).execute()
+                except:
+                    # Nếu lỗi, thử nạp lại nhưng bỏ cột 'category'
+                    data_to_insert.pop("category", None)
+                    try:
+                        supabase.table("ai_data").insert(data_to_insert).execute()
+                        st.warning(f"Đã nạp {f.name} (Chưa có cột Brand trong DB)")
+                    except Exception as e:
+                        st.error(f"Không thể nạp {f.name}: {e}")
         st.rerun()
 
 # --- MAIN ---
-st.title("🔍 AI Fashion Auditor V44.4")
+st.title("🔍 AI Fashion Auditor V44.5")
 t_file = st.file_uploader("Upload file đối soát", type="pdf", key=f"a_{st.session_state.au_key}")
 
 if t_file:
-    target = extract_pom_v444(t_file)
+    target = extract_pom_v445(t_file)
     if target and target['specs']:
         st.success(f"✅ Quét được {len(target['specs'])} thông số từ {target['brand']}.")
         db_res = supabase.table("ai_data").select("*").execute()
@@ -137,7 +145,6 @@ if t_file:
             for i in db_res.data:
                 if i.get('vector'):
                     v_ref = np.array(i['vector']).reshape(1, -1)
-                    # Sửa lỗi trích xuất similarity
                     sim_val = float(cosine_similarity(v_test, v_ref)[0][0]) * 100
                     matches.append({"data": i, "sim": sim_val})
             
