@@ -6,13 +6,13 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# --- CONFIG (Hãy kiểm tra kỹ URL và KEY) ---
+# --- CONFIG (Điền thông tin của bạn) ---
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V45.1", page_icon="🔍")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V45.2", page_icon="🔍")
 
 # --- MODEL AI ---
 @st.cache_resource
@@ -21,7 +21,7 @@ def load_ai():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_ai()
 
-# --- UTILS ---
+# --- UTILS: CHUẨN HÓA ĐỂ SOI ĐÚNG DÒNG ---
 def parse_val(t):
     try:
         if t is None or str(t).lower() in ['nan', '', 'none', '-']: return 0
@@ -36,10 +36,10 @@ def parse_val(t):
     except: return 0
 
 def normalize_pom(t):
-    """Chuẩn hóa tên POM để soi đúng dòng giữa các Brand khác nhau"""
+    """Chuẩn hóa tên POM để soi đúng dòng giữa các khách hàng"""
     if not t: return ""
     s = str(t).upper().strip()
-    s = re.sub(r'[^A-Z0-9\s]', '', s) # Bỏ ký tự lạ, giữ chữ và số
+    s = re.sub(r'[^A-Z0-9\s]', '', s) # Giữ lại chữ và số để so khớp
     return " ".join(s.split())
 
 # --- TRÍCH XUẤT (QUÉT ĐÚNG TRANG & ẢNH SIÊU NHẸ) ---
@@ -49,18 +49,17 @@ def extract_pom_pro(pdf_file):
         pdf_content = pdf_file.read()
         doc = fitz.open(stream=io.BytesIO(pdf_content))
         
-        # 1. Ảnh JPG 40% (Matrix 0.7) - Cực nhẹ để tránh lag
+        # Ảnh JPG 30% (Matrix 0.6) - Siêu nhẹ để app chạy mượt
         if len(doc) > 0:
-            pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(0.7, 0.7))
-            img_bytes = pix.tobytes("jpg", jpg_quality=40)
+            pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(0.6, 0.6))
+            img_bytes = pix.tobytes("jpg", jpg_quality=30)
 
         all_text = ""
         for page in doc: all_text += (page.get_text() or "").upper() + " "
         if "REITMANS" in all_text: brand = "REITMANS"
         doc.close()
 
-        # 2. Quét trang có từ khóa thông số
-        POM_KEYS = ["POM", "POINT", "MEASURE", "DESCRIPTION", "DIMENSION", "SPEC"]
+        POM_KEYS = ["POM", "POINT", "MEASURE", "DESCRIPTION", "DIMENSION"]
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 text_page = (page.extract_text() or "").upper()
@@ -71,13 +70,12 @@ def extract_pom_pro(pdf_file):
                     df = pd.DataFrame(tb).fillna("")
                     if df.empty or len(df.columns) < 2: continue
 
-                    # Tìm Header tự động
                     h_row, p_idx, v_idx = -1, -1, -1
                     for r_idx, row in df.head(8).iterrows():
                         row_up = [str(c).upper().strip() for c in row]
                         for i, c in enumerate(row_up):
                             if any(k in c for k in POM_KEYS): p_idx = i
-                            if "NEW" in c or "SPEC" in c or "MEAS" in c or "SIZE" in c: v_idx = i
+                            if any(k in c for k in ["NEW", "SPEC", "SIZE", "SAMPLE"]): v_idx = i
                         if p_idx != -1 and v_idx != -1:
                             h_row = r_idx; break
                     
@@ -85,7 +83,7 @@ def extract_pom_pro(pdf_file):
 
                     for i in range(h_row + 1, len(df)):
                         name = str(df.iloc[i][p_idx]).replace("\n", " ").strip().upper()
-                        if len(name) < 3 or any(x in name for x in ["NOTE", "DATE", "TOL"]): continue
+                        if len(name) < 3 or any(x in name for x in ["NOTE", "DATE"]): continue
                         val = parse_val(df.iloc[i][v_idx])
                         if val > 0: full_specs[name] = float(val)
 
@@ -95,12 +93,11 @@ def extract_pom_pro(pdf_file):
 # --- SIDEBAR: KHO DỮ LIỆU ---
 with st.sidebar:
     st.header("📂 KHO DỮ LIỆU")
-    # Sử dụng Try-Except để xử lý lỗi APIError dòng 101
     try:
         res_count = supabase.table("ai_data").select("id", count="exact").execute()
         st.metric("Mẫu hiện có", res_count.count if res_count.count else 0)
     except Exception as e:
-        st.error("Lỗi kết nối DB. Hãy kiểm tra bảng 'ai_data'")
+        st.error(f"⚠️ Lỗi kết nối DB: {e}")
     
     files = st.file_uploader("Nạp mẫu chuẩn", accept_multiple_files=True)
     if files and st.button("🚀 NẠP HỆ THỐNG"):
@@ -120,12 +117,12 @@ with st.sidebar:
                     "file_name": f.name, "vector": vec, "spec_json": d['specs'], 
                     "image_url": img_url, "category": d['brand']
                 }).execute()
-        st.success("Đã nạp xong!")
+        st.success("✅ Đã nạp xong!")
         st.rerun()
 
 # --- MAIN: ĐỐI SOÁT ---
-st.title("🔍 AI Fashion Auditor V45.1")
-t_file = st.file_uploader("Upload file PDF đối soát", type="pdf")
+st.title("🔍 AI Fashion Auditor V45.2 PRO")
+t_file = st.file_uploader("Upload file đối soát (PDF)", type="pdf")
 
 if t_file:
     target = extract_pom_pro(t_file)
@@ -141,19 +138,21 @@ if t_file:
             for i in db_res.data:
                 if i.get('vector'):
                     v_ref = np.array(i['vector']).reshape(1, -1)
-                    sim_score = cosine_similarity(v_test, v_ref)[0][0] # Fix bóc tách mảng
-                    matches.append({"data": i, "sim": float(sim_score) * 100})
+                    sim_val = float(cosine_similarity(v_test, v_ref)[0][0]) * 100
+                    matches.append({"data": i, "sim": sim_val})
             
-            top = sorted(matches, key=lambda x: x['sim'], reverse=True)[:1]
-            for m in top:
+            best_match = sorted(matches, key=lambda x: x['sim'], reverse=True)[:1]
+            for m in best_match:
                 st.subheader(f"✨ Khớp mẫu: {m['data']['file_name']} ({m['sim']:.1f}%)")
                 c1, c2 = st.columns(2)
                 with c1: st.image(target['img'], caption="Bản vẽ Kiểm", use_container_width=True)
                 with c2: st.image(m['data']['image_url'], caption="Bản vẽ Mẫu", use_container_width=True)
 
-                # --- SOI ĐÚNG DÒNG (ALIGNED) ---
+                # --- LOGIC SOI ĐÚNG DÒNG THEO TÊN POM ---
                 st.write("### 📊 Chi tiết đối soát thông số")
-                ref_map = {normalize_pom(k): v for k, v in m['data']['spec_json'].items()}
+                ref_specs = m['data']['spec_json']
+                # Tạo map tra cứu từ file mẫu
+                ref_map = {normalize_pom(k): v for k, v in ref_specs.items()}
                 
                 diff_data = []
                 for p_name, v_target in target['specs'].items():
@@ -168,7 +167,7 @@ if t_file:
                         "Chênh lệch": diff,
                         "Kết quả": "✅ OK" if abs(diff) <= 0.125 else "❌ SAI"
                     })
-                st.table(pd.DataFrame(diff_data))
+                st.table(pd.DataFrame(diff_list if 'diff_list' in locals() else diff_data))
 
 st.divider()
 if st.button("♻️ RESET"): st.rerun()
