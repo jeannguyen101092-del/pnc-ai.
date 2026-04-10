@@ -7,7 +7,7 @@ URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V45.6", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V45.7", page_icon="📊")
 
 # --- HÀM PARSE SỐ (GIỮ CHUẨN REITMANS: PHÂN SỐ & THẬP PHÂN) ---
 def parse_val(t):
@@ -17,7 +17,7 @@ def parse_val(t):
         if not txt or any(x in txt for x in ['nan', '-', 'none', 'tol']): return 0
         match = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0] # Sửa lỗi lấy giá trị đầu tiên từ danh sách
+        v = match[0] 
         if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
@@ -27,8 +27,8 @@ def parse_val(t):
 def clean_pos(t):
     return re.sub(r'[^A-Z0-9]', '', str(t).upper())
 
-# --- TRÍCH XUẤT THÔNG SỐ SIÊU CẤP (QUÉT MỌI BẢNG) ---
-def extract_pom_deep(pdf_file):
+# --- TRÍCH XUẤT THÔNG SỐ (TỐI ƯU CHO BẢNG TRONG ẢNH) ---
+def extract_pom_deep_v457(pdf_file):
     full_specs = {}
     try:
         pdf_content = pdf_file.read()
@@ -48,14 +48,14 @@ def extract_pom_deep(pdf_file):
                     for r_idx, row in df.head(15).iterrows():
                         row_up = [str(c).upper().strip() if c else "" for c in row]
                         
-                        # 1. Tìm cột Tên (POM Name / Description / Item)
+                        # 1. Tìm cột Tên (Trong ảnh là cột 'Description')
                         for i, cell in enumerate(row_up):
-                            if any(k in cell for k in ["DESCRIPTION", "POM NAME", "ITEM", "POM #", "POINT OF MEASURE"]):
+                            if any(k in cell for k in ["DESCRIPTION", "POM NAME", "ITEM", "POINT OF MEASURE"]):
                                 p_col = i
                                 break
-                        # 2. Tìm cột Số đo (New / Final / Sample / Spec / Size M / Size 32)
+                        # 2. Tìm cột Số đo (Trong ảnh là cột '12' - Sample Size)
                         for i, cell in enumerate(row_up):
-                            if i != p_col and any(k in cell for k in ["NEW", "FINAL", "SAMPLE", "VALUE", "SPEC", " M ", " L ", " 32 ", " 30 "]):
+                            if i > p_col and any(k in cell for k in ["12", "NEW", "FINAL", "SAMPLE", "SPEC", " M "]):
                                 v_col = i
                                 break
                         
@@ -63,7 +63,9 @@ def extract_pom_deep(pdf_file):
                             for d_idx in range(r_idx + 1, len(df)):
                                 d_row = df.iloc[d_idx]
                                 name = str(d_row[p_col]).replace('\n',' ').strip().upper()
-                                if len(name) < 2 or any(x in name for x in ["DATE", "PAGE", "REVISION"]): continue
+                                # Lọc dòng rác
+                                if len(name) < 3 or any(x in name for x in ["DATE", "PAGE", "REVISION"]): continue
+                                
                                 val = parse_val(d_row[v_col])
                                 if val > 0: full_specs[name] = val
                             break
@@ -82,7 +84,7 @@ with st.sidebar:
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         p_bar = st.progress(0)
         for idx, f in enumerate(files):
-            specs = extract_pom_deep(f)
+            specs = extract_pom_deep_v457(f)
             if specs:
                 try:
                     supabase.table("ai_data").insert({"file_name": f.name, "spec_json": specs}).execute()
@@ -94,11 +96,11 @@ with st.sidebar:
         st.rerun()
 
 # --- MAIN: ĐỐI SOÁT ---
-st.title("🔍 AI Fashion Auditor V45.6")
+st.title("🔍 AI Fashion Auditor V45.7")
 t_file = st.file_uploader("Upload file đối soát (PDF)", type="pdf")
 
 if t_file:
-    target_specs = extract_pom_deep(t_file)
+    target_specs = extract_pom_deep_v457(t_file)
     if target_specs:
         st.success(f"✅ Tìm thấy **{len(target_specs)}** hạng mục thông số.")
         db_res = supabase.table("ai_data").select("*").execute()
@@ -124,5 +126,3 @@ if t_file:
                 out = io.BytesIO()
                 df_r.to_excel(out, index=False)
                 st.download_button("📥 Tải báo cáo Excel", out.getvalue(), "Audit_Report.xlsx")
-    else:
-        st.warning("⚠️ Không quét được bảng thông số. Hãy kiểm tra lại file PDF.")
