@@ -6,31 +6,29 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# --- CONFIG ---
-# Vui lòng điền thông tin Supabase của bạn vào đây
+# ================= CONFIG =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V43.8", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V43.9", page_icon="📊")
 
-# --- LOAD MODEL AI ---
+# ================= MODEL AI =================
 @st.cache_resource
 def load_ai():
-    # Sử dụng ResNet18 để lấy vector đặc trưng của hình ảnh
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 
 model_ai = load_ai()
 
-# --- UTILS: XỬ LÝ SỐ & CHUẨN HÓA TÊN ---
+# ================= UTILS =================
 def parse_val(t):
-    """Xử lý các định dạng số: 1 1/2, 3/4, 10.5, 10"""
+    """Xử lý số Reitmans/Phân số: 1 1/2, 3/4..."""
     try:
+        if t is None or str(t).lower() in ['nan', '', 'none', '-']: return 0
         txt = str(t).replace(',', '.').strip().lower()
-        if not txt or txt in ['nan', '-', 'none', 'null']: return 0
         match = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
         v = match[0]
@@ -41,72 +39,68 @@ def parse_val(t):
     except: return 0
 
 def normalize_pom(t):
-    """Chuẩn hóa tên vị trí đo để so khớp dễ hơn"""
+    """Chuẩn hóa tên POM để so khớp giữa các Brand"""
     if not t: return ""
-    # Viết hoa, bỏ dấu câu, bỏ khoảng trắng thừa
     s = str(t).upper().strip()
     s = re.sub(r'[^A-Z0-9\s]', '', s)
     return " ".join(s.split())
 
-# --- TRÍCH XUẤT DỮ LIỆU ĐA CỘT (MULTI-SIZE) ---
+# ================= EXTRACT & CLEAN =================
 def extract_tp_data(pdf_file):
-    img_bytes = None
-    all_tables = []
+    img_bytes, all_tables = None, []
     pdf_content = pdf_file.read()
     
-    # 1. Lấy ảnh đại diện
+    # 1. Image
     doc = fitz.open(stream=pdf_content, filetype="pdf")
     if len(doc) > 0:
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
     doc.close()
 
-    # 2. Quét bảng thông số
+    # 2. Tables
     with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
         for page in pdf.pages:
             tbs = page.extract_tables()
             for tb in tbs:
                 df = pd.DataFrame(tb)
                 if len(df.columns) < 2: continue
-                
-                # Làm sạch Header (Lấy dòng đầu tiên có chữ làm tiêu đề)
+                # Fix Header & Clean NaN
                 df.columns = [str(c).replace('\n',' ').strip().upper() for c in df.iloc[0]]
-                df = df[1:].reset_index(drop=True).fillna("")
+                df = df[1:].reset_index(drop=True)
+                # QUAN TRỌNG: Thay thế NaN bằng chuỗi rỗng để không lỗi Supabase
+                df = df.replace({np.nan: None}).fillna("") 
                 all_tables.append(df)
                 
     return {"img": img_bytes, "tables": all_tables}
 
-def get_image_vector(img_bytes):
+def get_vector(img_bytes):
     if not img_bytes: return None
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
         tf = transforms.Compose([
-            transforms.Resize(224),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
+            transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
         with torch.no_grad():
-            vec = model_ai(tf(img).unsqueeze(0)).flatten().numpy().tolist()
-        return vec
+            return model_ai(tf(img).unsqueeze(0)).flatten().numpy().tolist()
     except: return None
 
-# --- GIAO DIỆN SIDEBAR: NẠP KHO ---
+# ================= SIDEBAR =================
 with st.sidebar:
-    st.header("📦 KHO DỮ LIỆU MẪU")
-    uploaded_files = st.file_uploader("Nạp Techpack chuẩn", accept_multiple_files=True)
-    if uploaded_files and st.button("🚀 LƯU VÀO HỆ THỐNG"):
-        for f in uploaded_files:
-            data = extract_tp_data(f)
-            if data['tables']:
-                # Lấy bảng dài nhất làm chuẩn
-                main_df = max(data['tables'], key=len)
-                vec = get_image_vector(data['img'])
+    st.header("📂 KHO DỮ LIỆU MẪU")
+    up_files = st.file_uploader("Nạp Techpack chuẩn", accept_multiple_files=True)
+    if up_files and st.button("🚀 LƯU VÀO HỆ THỐNG"):
+        for f in up_files:
+            d = extract_tp_data(f)
+            if d['tables']:
+                main_df = max(d['tables'], key=len)
+                vec = get_vector(d['img'])
                 
                 path = f"lib/{f.name}.png"
-                supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
-                res_url = supabase.storage.from_(BUCKET).get_public_url(path)
-                img_url = res_url if isinstance(res_url, str) else getattr(res_url, "public_url", "")
+                supabase.storage.from_(BUCKET).upload(path, d['img'], {"upsert":"true"})
+                img_url = supabase.storage.from_(BUCKET).get_public_url(path)
+                if not isinstance(img_url, str): img_url = getattr(img_url, "public_url", "")
 
+                # Insert an toàn với spec_json đã lọc NaN
                 supabase.table("ai_data").insert({
                     "file_name": f.name,
                     "vector": vec,
@@ -116,95 +110,66 @@ with st.sidebar:
         st.success("Đã nạp xong!")
         st.rerun()
 
-# --- GIAO DIỆN CHÍNH: AUDIT ---
-st.title("🔍 AI Fashion Auditor V43.8 PRO")
-
-f_target = st.file_uploader("📤 Upload bản vẽ cần đối soát", type="pdf")
+# ================= MAIN =================
+st.title("🔍 AI Fashion Auditor V43.9")
+f_target = st.file_uploader("📤 Upload file đối soát", type="pdf")
 
 if f_target:
     target_data = extract_tp_data(f_target)
-    
     if target_data['tables']:
-        # Lấy bảng đầu tiên của file upload
-        df_target = target_data['tables'][0]
+        df_target = target_data['tables'][0] # Lấy bảng đầu
         cols = df_target.columns.tolist()
         
-        # --- BƯỚC 1: CHỌN VỊ TRÍ & SIZE ---
-        st.write("### ⚙️ Thiết lập đối soát")
         c1, c2 = st.columns(2)
-        with c1:
-            pom_col = st.selectbox("Cột chứa Tên vị trí (Description/POM):", cols, index=0)
-        with c2:
-            size_col = st.selectbox("Chọn cột Size cần Audit (S, M, L...):", [c for c in cols if c != pom_col])
+        with c1: pom_col = st.selectbox("Cột Vị trí (POM):", cols, index=0)
+        with c2: size_col = st.selectbox("Chọn Size Audit:", [c for c in cols if c != pom_col])
 
-        # --- BƯỚC 2: TÌM MẪU KHỚP BẰNG AI ---
-        v_test = get_image_vector(target_data['img'])
+        # Tìm mẫu AI
+        v_test = get_vector(target_data['img'])
         db = supabase.table("ai_data").select("*").execute()
         
         if db.data:
             matches = []
             for row in db.data:
-                sim = cosine_similarity([v_test], [row['vector']])[0][0] if v_test and row['vector'] else 0
-                matches.append({"row": row, "sim": sim * 100})
+                sim = cosine_similarity([v_test], [row['vector']])[0][0] * 100 if row['vector'] else 0
+                matches.append({"row": row, "sim": sim})
             
             best = sorted(matches, key=lambda x: x['sim'], reverse=True)[0]
             ref_row = best['row']
             df_ref = pd.DataFrame(ref_row['spec_json'])
 
             st.divider()
-            st.subheader(f"✨ Kết quả: Khớp với mẫu `{ref_row['file_name']}` ({best['sim']:.1f}%)")
+            st.subheader(f"✨ Khớp mẫu: {ref_row['file_name']} ({best['sim']:.1f}%)")
 
-            # Hiển thị ảnh so sánh
+            # Ảnh Side-by-side
             im1, im2 = st.columns(2)
-            with im1: st.image(target_data['img'], caption="Bản vẽ Kiểm tra")
-            with im2: st.image(ref_row['image_url'], caption="Mẫu gốc hệ thống")
+            with im1: st.image(target_data['img'], caption="File Kiểm")
+            with im2: st.image(ref_row['image_url'], caption="File Mẫu")
 
-            # --- BƯỚC 3: SO SÁNH ĐÚNG DÒNG (LOGIC QUAN TRỌNG) ---
-            st.write(f"### 📊 Bảng đối chiếu chi tiết (Size: {size_col})")
-            
-            # Tạo bản đồ Map từ file mẫu (Nomalize POM -> Value)
+            # --- LOGIC SOI ĐÚNG DÒNG ---
             ref_map = {}
-            # Giả định cột đầu tiên của bảng mẫu là tên POM
-            ref_pom_col_name = df_ref.columns[0] 
+            ref_cols = df_ref.columns
             for _, r in df_ref.iterrows():
-                key = normalize_pom(r[ref_pom_col_name])
-                # Lấy giá trị cột size tương ứng, nếu không có lấy cột đầu tiên sau POM
-                val = parse_val(r.get(size_col, r.iloc[1]))
-                ref_map[key] = val
+                # Map theo tên POM đã chuẩn hóa
+                key = normalize_pom(r[ref_cols[0]])
+                ref_map[key] = parse_val(r.get(size_col, r.iloc[1] if len(r)>1 else 0))
 
-            # Xây dựng bảng so sánh dựa trên file upload
-            comparison = []
-            for _, r_t in df_target.iterrows():
-                raw_name = r_t[pom_col]
-                norm_name = normalize_pom(raw_name)
-                if not norm_name: continue
+            results = []
+            for _, rt in df_target.iterrows():
+                p_name = rt[pom_col]
+                norm_p = normalize_pom(p_name)
+                if not norm_p: continue
                 
-                val_actual = parse_val(r_t[size_col])
-                val_standard = ref_map.get(norm_name, 0)
-                diff = round(val_actual - val_standard, 3)
+                v_new = parse_val(rt[size_col])
+                v_ref = ref_map.get(norm_p, 0)
+                diff = round(v_new - v_ref, 3)
 
-                comparison.append({
-                    "Vị trí đo (Description)": raw_name,
-                    "Thực tế (Kiểm)": val_actual,
-                    "Tiêu chuẩn (Mẫu)": val_standard,
-                    "Chênh lệch": diff,
-                    "Kết luận": "✅ Đạt" if abs(diff) <= 0.125 else "❌ Lệch"
+                results.append({
+                    "Description": p_name,
+                    "Kiểm (New)": v_new,
+                    "Mẫu (Ref)": v_ref,
+                    "Lệch": diff,
+                    "Kết quả": "✅ OK" if abs(diff) <= 0.125 else "❌ SAI"
                 })
 
-            res_df = pd.DataFrame(comparison)
-            
-            # Hiển thị bảng màu sắc
-            def color_diff(row):
-                return ['background-color: #ffcccc' if row['Chênh lệch'] != 0 else '' for _ in row]
-
-            st.dataframe(res_df.style.apply(color_diff, axis=1), use_container_width=True, height=600)
-
-            # Xuất Excel
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                res_df.to_excel(writer, index=False, sheet_name='Audit_Report')
-            st.download_button("📥 Tải báo cáo Audit", output.getvalue(), f"Audit_{ref_row['file_name']}.xlsx")
-
-st.divider()
-if st.button("♻️ Reset Hệ thống"):
-    st.rerun()
+            st.table(pd.DataFrame(results)) # Hiển thị đúng dòng đối xứng
