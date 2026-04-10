@@ -62,25 +62,24 @@ def extract_pom_new_v439(pdf_file):
                 if not any(k in pg_txt for k in ["POM", "SPEC", "MEASURE", "TOLERANCE", "SIZE", "DESCRIPTION"]):
                     continue
 
-                tables = page.extract_tables()
+                               tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb)
                     if df.empty or len(df.columns) < 2: continue
                     
                     p_name_idx, val_idx = -1, -1
-                    # Quét tìm Header linh hoạt
+                    # Quét Header để tìm cột
                     for r_idx, row in df.head(10).iterrows(): 
                         row_up = [str(c).upper().strip() for c in row if c]
                         
-                        # Tìm cột Tên (Ưu tiên Reitmans: POM NAME, sau đó là DESCRIPTION)
+                        # Tìm cột Tên (Linh hoạt hơn)
                         for i, cell in enumerate(row_up):
-                            if any(k in cell for k in ["POM NAME", "DESCRIPTION", "POINT OF MEASURE", "ITEM"]):
+                            if any(k in cell for k in ["POM NAME", "DESCRIPTION", "ITEM", "POINT OF MEASURE"]):
                                 p_name_idx = i
                                 break
-                        
-                        # Tìm cột Số đo (Ưu tiên Reitmans: NEW, sau đó là các loại thông số khác)
+                        # Tìm cột Giá trị
                         for i, cell in enumerate(row_up):
-                            if any(k in cell for k in ["NEW", "FINAL", "SAMPLE", "SPEC", "TOTAL"]):
+                            if any(k in cell for k in ["NEW", "FINAL", "SAMPLE", "SPEC", "TOTAL", "VALUE"]):
                                 val_idx = i
                                 break
                         
@@ -88,13 +87,17 @@ def extract_pom_new_v439(pdf_file):
                             for d_idx in range(r_idx + 1, len(df)):
                                 d_row = df.iloc[d_idx]
                                 name = str(d_row[p_name_idx]).replace('\n',' ').strip().upper()
-                                if len(name) < 3 or any(x in name for x in ["REF:", "DATE", "PAGE"]): continue
+                                
+                                # Loại bỏ các dòng tiêu đề phụ hoặc dòng trống
+                                if len(name) < 2 or any(x in name for x in ["DATE", "PAGE", "REVISION", "NOTE"]): 
+                                    continue
                                 
                                 val_num = parse_val(d_row[val_idx])
-                                if val_num > 0: full_specs[name] = val_num
-                            break
-        return {"specs": full_specs, "img": img_bytes, "brand": brand}
-    except: return None
+                                # Lấy cả các thông số nhỏ (chấp nhận giá trị > 0)
+                                if val_num > 0: 
+                                    full_specs[name] = val_num
+                            # KHÔNG dùng break ở đây để nó quét tiếp các cột/bảng khác nếu có
+
 
 # --- SIDEBAR ---
 with st.sidebar:
