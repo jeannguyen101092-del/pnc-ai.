@@ -6,13 +6,13 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# --- CONFIG ---
+# --- CONFIG (Kiểm tra kỹ URL và KEY) ---
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V45.0", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V45.1", page_icon="📊")
 
 if "up_key" not in st.session_state: st.session_state.up_key = 0
 if "au_key" not in st.session_state: st.session_state.au_key = 0
@@ -29,7 +29,7 @@ def parse_val(t):
     try:
         if t is None: return 0
         txt = str(t).replace(',', '.').strip().lower()
-        if not txt or any(x in txt for x in ['nan', '-', 'none', 'tbd', 'tol']): return 0
+        if not txt or any(x in txt for x in ['nan', '-', 'none', 'tol']): return 0
         match = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
         v = match[0]
@@ -42,22 +42,20 @@ def parse_val(t):
 def clean_pos(t):
     return re.sub(r'[^A-Z0-9]', '', str(t).upper())
 
-# --- TRÍCH XUẤT ĐÚNG TRANG POM & HÌNH ẢNH ---
-def extract_pom_v450(pdf_file):
+# --- TRÍCH XUẤT THÔNG SỐ (VÉT SẠCH TRANG POM/SPEC) ---
+def extract_pom_v451(pdf_file):
     full_specs, img_bytes = {}, None
     try:
         pdf_content = pdf_file.read()
         doc = fitz.open(stream=pdf_content, filetype="pdf")
-        
-        # Tìm trang có hình ảnh hoặc trang đầu tiên làm thumbnail
         if len(doc) > 0:
-            img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
+            img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2)).tobytes("png")
         
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 text = (page.extract_text() or "").upper()
-                # BỎ QUA các trang chứa từ khóa Nguyên phụ liệu (BOM)
-                if any(x in text for x in ["POLY CORE", "SEWING THREAD", "BUTTON", "ZIPPER", "HANGTAG"]):
+                # Chỉ quét trang có từ khóa thông số, bỏ qua trang BOM (phụ liệu)
+                if not any(k in text for k in ["POM", "SPEC", "MEASURE", "SIZE"]) or "POLY CORE" in text:
                     continue
                 
                 tables = page.extract_tables()
@@ -66,17 +64,14 @@ def extract_pom_v450(pdf_file):
                     if df.empty or len(df.columns) < 2: continue
                     
                     desc_col, val_col = -1, -1
-                    for r_idx, row in df.head(10).iterrows():
+                    for r_idx, row in df.head(15).iterrows():
                         row_up = [str(c).upper().strip() if c else "" for c in row]
-                        # Tìm cột Description
                         for i, cell in enumerate(row_up):
-                            if any(k in cell for k in ["DESCRIPTION", "POM NAME", "POINT OF MEASURE"]):
+                            if any(k in cell for k in ["DESCRIPTION", "POM NAME", "ITEM", "POM #"]):
                                 desc_col = i
                                 break
-                        # Tìm cột Size mẫu (Ưu tiên NEW của Reitmans hoặc M, L, SAMPLE)
                         for i, cell in enumerate(row_up):
-                            if i == desc_col: continue
-                            if any(k in cell for k in ["NEW", "FINAL", "SAMPLE", "SPEC", " M ", " L "]):
+                            if i != desc_col and any(k in cell for k in ["NEW", "FINAL", "SAMPLE", "SPEC", " M ", " L ", " 32 "]):
                                 val_col = i
                                 break
                         
@@ -84,62 +79,65 @@ def extract_pom_v450(pdf_file):
                             for d_idx in range(r_idx + 1, len(df)):
                                 d_row = df.iloc[d_idx]
                                 name = str(d_row[desc_col]).replace('\n',' ').strip().upper()
-                                # Lọc dòng rác và BOM rò rỉ
-                                if len(name) < 4 or any(x in name for x in ["CORE", "POLY", "TAPE", "THREAD"]): continue
-                                
+                                if len(name) < 3 or any(x in name for x in ["DATE", "PAGE", "NOTE"]): continue
                                 val_num = parse_val(d_row[val_col])
                                 if val_num > 0: full_specs[name] = val_num
-                            break
         doc.close()
         return {"specs": full_specs, "img": img_bytes}
     except: return None
 
-# --- SIDEBAR ---
+# --- SIDEBAR: NẠP FILE (AN TOÀN TUYỆT ĐỐI) ---
 with st.sidebar:
     st.header("📂 KHO DỮ LIỆU CHUẨN")
-    res_c = supabase.table("ai_data").select("file_name", count="exact").execute()
-    st.metric("Mẫu đã nạp", res_c.count if res_c.count is not None else 0)
+    try:
+        res_c = supabase.table("ai_data").select("file_name", count="exact").execute()
+        st.metric("Mẫu đã nạp", res_c.count if res_c.count is not None else 0)
+    except: st.error("Lỗi kết nối database")
 
     files = st.file_uploader("Nạp Techpack mẫu", accept_multiple_files=True, key=f"u_{st.session_state.up_key}")
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         for f in files:
-            d = extract_pom_v450(f)
+            d = extract_pom_v451(f)
             if d and d['specs']:
-                # Upload ảnh lên Storage
-                path = f"lib_{f.name.replace('.pdf', '.png')}"
-                supabase.storage.from_(BUCKET).upload(path=path, file=d['img'], file_options={"content-type":"image/png", "x-upsert":"true"})
-                img_url = supabase.storage.from_(BUCKET).get_public_url(path)
-                
-                # Tính Vector
-                vec = None
-                if model_ai:
-                    img_p = Image.open(io.BytesIO(d['img'])).convert('RGB')
-                    tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-                    vec = model_ai(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
-                
-                supabase.table("ai_data").insert({
-                    "file_name": f.name, "vector": vec, "spec_json": d['specs'], "image_url": img_url
-                }).execute()
-                st.success(f"Đã nạp đúng bảng POM: {f.name}")
+                # 1. Thử upload ảnh (Bỏ qua nếu lỗi Storage)
+                img_url = ""
+                try:
+                    path = f"lib_{f.name.replace('.pdf', '.png')}"
+                    supabase.storage.from_(BUCKET).upload(path=path, file=d['img'], file_options={"x-upsert":"true"})
+                    img_url = supabase.storage.from_(BUCKET).get_public_url(path)
+                except Exception as e: st.warning(f"Không lưu được ảnh: {e}")
+
+                # 2. Nạp dữ liệu vào bảng ai_data
+                try:
+                    supabase.table("ai_data").insert({
+                        "file_name": f.name, 
+                        "spec_json": d['specs'], 
+                        "image_url": img_url
+                    }).execute()
+                    st.success(f"Nạp xong: {f.name} ({len(d['specs'])} dòng)")
+                except Exception as db_err:
+                    st.error(f"❌ LỖI DB ({f.name}):")
+                    st.code(str(db_err)) # Hiện mã lỗi để debug
+            else:
+                st.warning(f"Không quét được bảng POM trong: {f.name}")
         st.rerun()
 
 # --- MAIN ---
-st.title("🔍 AI Fashion Auditor V45.0")
+st.title("🔍 AI Fashion Auditor V45.1")
 t_file = st.file_uploader("Upload file đối soát", type="pdf", key=f"a_{st.session_state.au_key}")
 
 if t_file:
-    target = extract_pom_v450(t_file)
+    target = extract_pom_v451(t_file)
     if target and target['specs']:
-        st.success(f"✅ Đã quét trang POM: Tìm thấy {len(target['specs'])} thông số đo.")
+        st.success(f"✅ Tìm thấy {len(target['specs'])} thông số từ file đối soát.")
         db_res = supabase.table("ai_data").select("*").execute()
         if db_res.data:
-            # Lấy mẫu khớp nhất (tạm thời lấy mẫu cuối nếu chưa có logic vector hoàn chỉnh)
             m = db_res.data[-1] 
-            st.subheader(f"✨ Đối chiếu: {m['file_name']}")
+            st.subheader(f"✨ Đối chiếu với: {m['file_name']}")
             
             c1, c2 = st.columns(2)
-            with c1: st.image(target['img'], caption="Bản vẽ đang kiểm")
-            with c2: st.image(m['image_url'], caption="Mẫu gốc trong kho")
+            if target['img']: with c1: st.image(target['img'], caption="Bản vẽ đang kiểm")
+            if m['image_url']: with c2: st.image(m['image_url'], caption="Mẫu gốc trong kho")
 
             diff_list = []
             for p_name, v_target in target['specs'].items():
