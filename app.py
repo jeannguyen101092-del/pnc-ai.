@@ -43,73 +43,68 @@ def clean_pos(t):
     return re.sub(r'[^A-Z0-9]', '', str(t).upper())
 
 # --- TRÍCH XUẤT THÔNG SỐ ĐA DẠNG (NÂNG CẤP) ---
+# --- HÀM TRÍCH XUẤT CẢI TIẾN ---
 def extract_pom_new_v437(pdf_file):
-    full_specs, img_bytes, brand = {}, None, "OTHER"
+    full_specs, img_bytes, brand = {}, None, "GENERIC"
     try:
         pdf_content = pdf_file.read()
+        # 1. Lấy ảnh trang đầu làm thumbnail (giữ nguyên logic cũ)
         doc = fitz.open(stream=pdf_content, filetype="pdf")
         if len(doc) > 0:
             img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2)).tobytes("png")
         
+        # 2. Xác định Brand/Loại hàng sơ bộ qua text
         all_text = ""
         for page in doc: all_text += (page.get_text() or "").upper() + " "
         if "REITMANS" in all_text: brand = "REITMANS"
+        elif "WALMART" in all_text: brand = "WALMART"
+        elif "TARGET" in all_text: brand = "TARGET"
         doc.close()
 
+        # 3. Quét bảng từ PDF
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
+                # Kiểm tra xem trang này có phải trang POM không
+                page_text = page.extract_text().upper() if page.extract_text() else ""
+                if not any(k in page_text for k in ["POM", "SPECIFICATION", "MEASUREMENT", "TOLERANCE"]):
+                    continue # Bỏ qua trang không liên quan
+
                 tables = page.extract_tables()
                 for tb in tables:
-                    df = pd.DataFrame(tb).replace({None: np.nan})
+                    df = pd.DataFrame(tb)
                     if df.empty or len(df.columns) < 2: continue
                     
-                    # Tìm tọa độ cột
-                    p_name_idx, val_idx = -1, -1
+                    # Tìm tọa độ cột: Cột mô tả (Desc) và Cột thông số (Value)
+                    desc_idx, val_idx = -1, -1
                     
-                    for r_idx, row in df.head(10).iterrows():
-                        row_up = [str(c).upper().strip() for c in row if c is not np.nan]
+                    for r_idx, row in df.iterrows():
+                        row_up = [str(c).upper().strip() for c in row if c]
                         
-                        # Ưu tiên 1: Cấu trúc Reitmans (POM NAME + NEW)
-                        if "POM NAME" in row_up and "NEW" in row_up:
-                            p_name_idx = [str(c).upper().strip() for c in row].index("POM NAME")
-                            val_idx = [str(c).upper().strip() for c in row].index("NEW")
-                            break
+                        # Tìm cột Description (hoặc POM Name)
+                        for i, cell in enumerate(row_up):
+                            if any(k in cell for k in ["DESCRIPTION", "POM NAME", "ITEM", "POINT OF MEASURE"]):
+                                desc_idx = i
+                            if any(k in cell for k in ["NEW", "FINAL", "SAMPLE", "SPEC", "TOTAL"]):
+                                val_idx = i
                         
-                        # Ưu tiên 2: Cấu trúc hãng khác (POM/Description + TOL + Size)
-                        elif any(x in row_up for x in ["POM", "DESCRIPTION", "SPEC DESCRIPTION"]):
-                            # Lấy cột tên (thường là cột đầu tiên hoặc cột chứa chữ DESCRIPTION)
-                            for i, col_val in enumerate(row_up):
-                                if any(x in col_val for x in ["POM", "DESCRIPTION"]): 
-                                    p_name_idx = i
-                                    break
-                            
-                            # Tìm cột giá trị (thường nằm sau cột TOL hoặc +/-)
-                            for i, col_val in enumerate(row_up):
-                                if "TOL" in col_val or "+/-" in col_val:
-                                    val_idx = i + 1 # Cột size đầu tiên thường sau TOL
-                                    break
-                            
-                            if p_name_idx != -1 and val_idx != -1: break
-
-                    # Nếu tìm thấy cột, bắt đầu lấy dữ liệu
-                    if p_name_idx != -1 and val_idx != -1:
-                        for d_idx in range(r_idx + 1, len(df)):
-                            d_row = df.iloc[d_idx]
-                            name = str(d_row[p_name_idx]).replace('\n',' ').strip().upper()
-                            
-                            # Bỏ qua dòng rác
-                            if len(name) < 3 or any(x in name for x in ["REF:", "RELATED:", "PAGE", "TOTAL"]): continue
-                            
-                            raw_val = d_row[val_idx]
-                            val_num = parse_reitmans_val(raw_val)
-                            
-                            if val_num > 0:
-                                full_specs[name] = val_num
+                        # Nếu tìm thấy Header thì bắt đầu lấy dữ liệu từ dòng tiếp theo
+                        if desc_idx != -1 and val_idx != -1:
+                            for d_idx in range(r_idx + 1, len(df)):
+                                d_row = df.iloc[d_idx]
+                                name = str(d_row[desc_idx]).replace('\n',' ').strip().upper()
                                 
+                                # Lọc bỏ rác
+                                if len(name) < 3 or any(x in name for x in ["REF:", "DATE", "PAGE", "TOTAL"]): 
+                                    continue
+                                    
+                                raw_val = d_row[val_idx]
+                                val_num = parse_reitmans_val(raw_val) # Dùng hàm parse cũ vẫn rất tốt
+                                
+                                if val_num > 0:
+                                    full_specs[name] = val_num
+                            break # Đã xong bảng này, chuyển bảng/trang khác
+                            
         return {"specs": full_specs, "img": img_bytes, "brand": brand}
     except Exception as e:
         print(f"Lỗi: {e}")
         return None
-
-# --- PHẦN UI VÀ LOGIC CÒN LẠI GIỮ NGUYÊN ---
-# (Copy tiếp các phần SIDEBAR và MAIN của bạn vào đây)
