@@ -3,7 +3,6 @@ import io, fitz, pdfplumber, re, pandas as pd, numpy as np
 import torch
 from PIL import Image
 from torchvision import models, transforms
-from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
 # --- CONFIG (Hãy điền đúng URL và KEY của bạn) ---
@@ -12,7 +11,7 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V46.3", page_icon="🔍")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V46.4 PRO", page_icon="🔍")
 
 # --- MODEL AI ---
 @st.cache_resource
@@ -21,7 +20,7 @@ def load_ai():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_ai()
 
-# --- UTILS ---
+# --- UTILS: CHUẨN HÓA ĐỂ SOI ĐÚNG DÒNG ---
 def parse_val(t):
     try:
         if t is None or str(t).lower() in ['nan', '', 'none', '-']: return 0
@@ -36,12 +35,13 @@ def parse_val(t):
     except: return 0
 
 def normalize_pom(t):
-    """Chuẩn hóa tên POM để soi đúng vị trí đo"""
+    """Làm sạch tên POM để so khớp chính xác dù khách hàng khác nhau"""
     if not t: return ""
     s = str(t).upper().strip()
     s = re.sub(r'[^A-Z0-9]', '', s) # Chỉ giữ chữ và số
     return s
 
+# --- TRÍCH XUẤT THÔNG SỐ & ẢNH ---
 def extract_pom_pro(pdf_file):
     full_specs, img_bytes, brand = {}, None, "OTHER"
     try:
@@ -100,10 +100,8 @@ def get_img_vec(img_bytes):
 # --- SIDEBAR: KHO DỮ LIỆU ---
 with st.sidebar:
     st.header("📂 KHO DỮ LIỆU CHUẨN")
-    try:
-        res_c = supabase.table("ai_data").select("id", count="exact").execute()
-        st.metric("Số mẫu trong kho", res_c.count if res_c.count else 0)
-    except: st.error("⚠️ Lỗi kết nối DB")
+    res_c = supabase.table("ai_data").select("id", count="exact").execute()
+    st.metric("Số mẫu trong kho", res_c.count if res_c.count else 0)
     
     files = st.file_uploader("Nạp Techpack mẫu", accept_multiple_files=True)
     if files and st.button("🚀 NẠP HỆ THỐNG"):
@@ -114,15 +112,17 @@ with st.sidebar:
                 vec = get_img_vec(d['img'])
                 path = f"lib/{f.name.replace('.pdf', '.jpg')}"
                 supabase.storage.from_(BUCKET).upload(path=path, file=d['img'], file_options={"content-type":"image/jpeg", "x-upsert":"true"})
+                
                 supabase.table("ai_data").insert({
                     "file_name": f.name, "vector": vec, "spec_json": d['specs'], 
                     "image_url": supabase.storage.from_(BUCKET).get_public_url(path), "category": d['brand']
                 }).execute()
             p.progress((i + 1) / len(files))
+        st.success("✅ Đã nạp thành công!")
         st.rerun()
 
-# --- MAIN ---
-st.title("🔍 AI Fashion Auditor V46.3 PRO")
+# --- MAIN: ĐỐI SOÁT ---
+st.title("🔍 AI Fashion Auditor V46.4 PRO")
 t_file = st.file_uploader("Upload file PDF cần kiểm tra", type="pdf")
 
 if t_file:
@@ -134,40 +134,40 @@ if t_file:
         if not db.data:
             st.error("Kho đang trống!")
         else:
-            # Vector của file đang kiểm
             v_test = np.array(get_img_vec(target['img']), dtype=float)
             
             matches = []
             for row in db.data:
-                # 🔥 FIX CHÍNH TẠI ĐÂY: Kiểm tra vector hợp lệ trước khi ép kiểu
                 v_raw = row.get('vector')
-                if v_raw and isinstance(v_raw, list) and len(v_raw) == 512:
+                if v_raw:
                     try:
                         v_ref = np.array(v_raw, dtype=float)
+                        # Tính tương đồng Cosine
                         denom = (np.linalg.norm(v_test) * np.linalg.norm(v_ref))
                         sim = np.dot(v_test, v_ref) / denom if denom != 0 else 0
                         matches.append({"data": row, "sim": float(sim) * 100})
-                    except: continue # Bỏ qua nếu dòng dữ liệu đó bị lỗi
+                    except: continue
             
             if matches:
-                top_m = sorted(matches, key=lambda x: x['sim'], reverse=True)
-                m = top_m[0] # Lấy mẫu khớp nhất
+                # Sắp xếp và lấy mẫu khớp nhất (Dù độ khớp thấp vẫn lấy để so sánh)
+                top_m = sorted(matches, key=lambda x: x['sim'], reverse=True)[0]
                 
-                st.success(f"🏆 Khớp mẫu: **{m['data']['file_name']}** ({m['sim']:.1f}%)")
+                st.success(f"🏆 Khớp mẫu: **{top_m['data']['file_name']}** ({top_m['sim']:.1f}%)")
                 
                 c1, col2 = st.columns(2)
                 with c1: st.image(target['img'], caption="Bản vẽ Kiểm", use_container_width=True)
-                with col2: st.image(m['data']['image_url'], caption="Mẫu gốc trong Kho", use_container_width=True)
+                with col2: st.image(top_m['data']['image_url'], caption="Mẫu gốc trong Kho", use_container_width=True)
 
                 # --- SOI ĐÚNG DÒNG (ALIGNED) ---
                 st.write("### 📊 Chi tiết đối soát thông số")
-                ref_specs = m['data']['spec_json']
+                ref_specs = top_m['data']['spec_json']
+                # Tạo map tra cứu từ file mẫu
                 ref_map = {normalize_pom(k): v for k, v in ref_specs.items()}
                 
                 diff_list = []
                 for p_name, v_target in target['specs'].items():
                     p_key = normalize_pom(p_name)
-                    v_ref = ref_map.get(p_key, 0)
+                    v_ref = ref_map.get(p_key, 0) # Tìm đúng vị trí dựa trên tên POM
                     diff = round(v_target - v_ref, 3)
                     
                     diff_list.append({
@@ -179,6 +179,6 @@ if t_file:
                     })
                 st.table(pd.DataFrame(diff_list))
             else:
-                st.error("Không tìm thấy mẫu hợp lệ trong kho để so sánh!")
+                st.error("Không tìm thấy dữ liệu vector hợp lệ trong kho!")
 
 if st.button("RESET"): st.rerun()
