@@ -1,15 +1,15 @@
 import streamlit as st
-import io, fitz, pdfplumber, re, pandas as pd, numpy as np
+import io, pdfplumber, re, pandas as pd, numpy as np
 from supabase import create_client, Client
 
-# --- CONFIG (BẮT BUỘC: Thay URL và KEY của bạn vào đây) ---
+# --- CONFIG (BẮT BUỘC: Điền đúng URL và KEY của bạn) ---
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V45.9", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V46.0", page_icon="📊")
 
-# --- HÀM PARSE SỐ (GIỮ CHUẨN REITMANS PHÂN SỐ) ---
+# --- HÀM PARSE SỐ (GIỮ CHUẨN PHÂN SỐ REITMANS) ---
 def parse_val(t):
     try:
         if t is None: return 0
@@ -28,7 +28,7 @@ def clean_pos(t):
     return re.sub(r'[^A-Z0-9]', '', str(t).upper())
 
 # --- TRÍCH XUẤT THÔNG SỐ (QUÉT CẠN TRANG POM) ---
-def extract_pom_v459(pdf_file):
+def extract_pom_v460(pdf_file):
     full_specs = {}
     try:
         pdf_content = pdf_file.read()
@@ -68,42 +68,49 @@ def extract_pom_v459(pdf_file):
         return full_specs
     except: return None
 
-# --- SIDEBAR: NẠP FILE ---
+# --- SIDEBAR: NẠP FILE (FIX TREO) ---
 with st.sidebar:
     st.header("📂 KHO DỮ LIỆU CHUẨN")
     try:
+        # Kiểm tra kết nối và đếm số lượng file trong DB
         res_c = supabase.table("ai_data").select("file_name", count="exact").execute()
         st.metric("Mẫu đã nạp", res_c.count if res_c.count is not None else 0)
-    except: st.error("Lỗi kết nối database")
+    except Exception as conn_err:
+        st.error(f"Lỗi kết nối: {conn_err}")
 
     files = st.file_uploader("Nạp Techpack mẫu", accept_multiple_files=True)
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
         p_bar = st.progress(0)
         for idx, f in enumerate(files):
-            specs = extract_pom_v459(f)
+            specs = extract_pom_v460(f)
             if specs:
                 try:
-                    # NẠP TỐI GIẢN (Chỉ nạp 2 cột chắc chắn DB cũ có)
+                    # NẠP TỐI GIẢN (Chỉ nạp các cột chắc chắn tồn tại để không bị crash)
                     supabase.table("ai_data").insert({
                         "file_name": f.name, 
                         "spec_json": specs
                     }).execute()
-                    st.success(f"Nạp xong: {f.name} ({len(specs)} dòng)")
-                except Exception as e:
-                    st.error(f"Lỗi DB tại file {f.name}: {e}")
+                    st.toast(f"Đã nạp: {f.name}")
+                except Exception as db_err:
+                    st.error(f"Lỗi nạp DB ({f.name}): {db_err}")
+            else:
+                st.warning(f"Không quét được bảng trong {f.name}")
             p_bar.progress((idx + 1) / len(files))
+        
+        # Buộc app load lại để cập nhật số lượng
         st.rerun()
 
 # --- MAIN: ĐỐI SOÁT ---
-st.title("🔍 AI Fashion Auditor V45.9")
+st.title("🔍 AI Fashion Auditor V46.0")
 t_file = st.file_uploader("Upload file đối soát (PDF)", type="pdf")
 
 if t_file:
-    target_specs = extract_pom_v459(t_file)
+    target_specs = extract_pom_v460(t_file)
     if target_specs:
-        st.success(f"✅ Quét được {len(target_specs)} thông số từ file kiểm.")
+        st.success(f"✅ Quét được {len(target_specs)} thông số từ file đối soát.")
         db_res = supabase.table("ai_data").select("*").execute()
         if db_res.data:
+            # Lấy mẫu mới nhất nạp vào kho để đối chiếu
             m = db_res.data[-1] 
             st.subheader(f"✨ Đối chiếu với: {m['file_name']}")
             
@@ -115,13 +122,18 @@ if t_file:
                     if p_clean == clean_pos(k_ref):
                         v_ref = val_ref
                         break
-                diff_list.append({"Hạng mục": p_name, "Kiểm tra (NEW)": v_target, "Mẫu gốc (REF)": v_ref, "Lệch": round(v_target - v_ref, 2) if v_ref > 0 else "N/A"})
+                diff_list.append({
+                    "Hạng mục": p_name, 
+                    "Kiểm tra (NEW)": v_target, 
+                    "Mẫu gốc (REF)": v_ref, 
+                    "Lệch": round(v_target - v_ref, 2) if v_ref > 0 else "N/A"
+                })
             
             if diff_list:
                 df_r = pd.DataFrame(diff_list)
                 st.table(df_r.style.map(lambda x: 'color: red; font-weight: bold' if isinstance(x, (int, float)) and abs(x) > 0.5 else 'color: white', subset=['Lệch']))
                 
-                # XUẤT EXCEL
+                # XUẤT EXCEL BÁO CÁO
                 out = io.BytesIO()
                 df_r.to_excel(out, index=False)
                 st.download_button("📥 Tải báo cáo Excel", out.getvalue(), f"Report_{m['file_name']}.xlsx")
