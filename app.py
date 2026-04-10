@@ -13,7 +13,7 @@ BUCKET = "fashion-imgs"
 
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V43.9", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V44.0", page_icon="📊")
 
 # ================= MODEL AI =================
 @st.cache_resource
@@ -24,8 +24,8 @@ def load_ai():
 model_ai = load_ai()
 
 # ================= UTILS =================
-def parse_val(t):
-    """Xử lý số Reitmans/Phân số: 1 1/2, 3/4..."""
+def parse_reitmans_val(t):
+    """Xử lý số Reitmans/Phân số: 1 1/2, 3/4, 10.5..."""
     try:
         if t is None or str(t).lower() in ['nan', '', 'none', '-']: return 0
         txt = str(t).replace(',', '.').strip().lower()
@@ -39,10 +39,10 @@ def parse_val(t):
     except: return 0
 
 def normalize_pom(t):
-    """Chuẩn hóa tên POM để so khớp giữa các Brand"""
+    """Chuẩn hóa tên POM để soi đúng dòng giữa các Brand"""
     if not t: return ""
     s = str(t).upper().strip()
-    s = re.sub(r'[^A-Z0-9\s]', '', s)
+    s = re.sub(r'[^A-Z0-9\s]', '', s) # Bỏ ký tự đặc biệt
     return " ".join(s.split())
 
 # ================= EXTRACT & CLEAN =================
@@ -50,24 +50,26 @@ def extract_tp_data(pdf_file):
     img_bytes, all_tables = None, []
     pdf_content = pdf_file.read()
     
-    # 1. Image
+    # 1. Lấy ảnh
     doc = fitz.open(stream=pdf_content, filetype="pdf")
     if len(doc) > 0:
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
     doc.close()
 
-    # 2. Tables
+    # 2. Lấy bảng và xử lý sạch dữ liệu
     with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
         for page in pdf.pages:
             tbs = page.extract_tables()
             for tb in tbs:
                 df = pd.DataFrame(tb)
                 if len(df.columns) < 2: continue
-                # Fix Header & Clean NaN
+                
+                # Header & Clean
                 df.columns = [str(c).replace('\n',' ').strip().upper() for c in df.iloc[0]]
                 df = df[1:].reset_index(drop=True)
-                # QUAN TRỌNG: Thay thế NaN bằng chuỗi rỗng để không lỗi Supabase
-                df = df.replace({np.nan: None}).fillna("") 
+                
+                # FIX LỖI APIError: Chuyển NaN thành None/Chuỗi rỗng
+                df = df.replace({np.nan: None}) 
                 all_tables.append(df)
                 
     return {"img": img_bytes, "tables": all_tables}
@@ -88,7 +90,8 @@ def get_vector(img_bytes):
 with st.sidebar:
     st.header("📂 KHO DỮ LIỆU MẪU")
     up_files = st.file_uploader("Nạp Techpack chuẩn", accept_multiple_files=True)
-    if up_files and st.button("🚀 LƯU VÀO HỆ THỐNG"):
+    
+    if up_files and st.button("🚀 NẠP HỆ THỐNG"):
         for f in up_files:
             d = extract_tp_data(f)
             if d['tables']:
@@ -100,31 +103,32 @@ with st.sidebar:
                 img_url = supabase.storage.from_(BUCKET).get_public_url(path)
                 if not isinstance(img_url, str): img_url = getattr(img_url, "public_url", "")
 
-                # Insert an toàn với spec_json đã lọc NaN
+                # Nạp dữ liệu đã xử lý NaN
                 supabase.table("ai_data").insert({
                     "file_name": f.name,
                     "vector": vec,
                     "spec_json": main_df.to_dict('records'),
                     "image_url": img_url
                 }).execute()
-        st.success("Đã nạp xong!")
+        st.success("✅ Đã nạp thành công!")
         st.rerun()
 
-# ================= MAIN =================
-st.title("🔍 AI Fashion Auditor V43.9")
+# ================= MAIN AUDIT =================
+st.title("🔍 AI Fashion Auditor V44.0")
 f_target = st.file_uploader("📤 Upload file đối soát", type="pdf")
 
 if f_target:
     target_data = extract_tp_data(f_target)
     if target_data['tables']:
-        df_target = target_data['tables'][0] # Lấy bảng đầu
+        # Lấy bảng thông số đầu tiên
+        df_target = target_data['tables'][0]
         cols = df_target.columns.tolist()
         
         c1, c2 = st.columns(2)
-        with c1: pom_col = st.selectbox("Cột Vị trí (POM):", cols, index=0)
-        with c2: size_col = st.selectbox("Chọn Size Audit:", [c for c in cols if c != pom_col])
+        with c1: pom_col = st.selectbox("Cột Tên Vị Trí (POM):", cols, index=0)
+        with c2: size_col = st.selectbox("Cột Size cần Audit:", [c for c in cols if c != pom_col])
 
-        # Tìm mẫu AI
+        # Tìm mẫu AI tương đồng
         v_test = get_vector(target_data['img'])
         db = supabase.table("ai_data").select("*").execute()
         
@@ -141,35 +145,45 @@ if f_target:
             st.divider()
             st.subheader(f"✨ Khớp mẫu: {ref_row['file_name']} ({best['sim']:.1f}%)")
 
-            # Ảnh Side-by-side
+            # Ảnh so sánh 2 bên
             im1, im2 = st.columns(2)
-            with im1: st.image(target_data['img'], caption="File Kiểm")
-            with im2: st.image(ref_row['image_url'], caption="File Mẫu")
+            with im1: st.image(target_data['img'], caption="Bản vẽ Kiểm tra")
+            with im2: st.image(ref_row['image_url'], caption="Bản vẽ Mẫu Gốc")
 
-            # --- LOGIC SOI ĐÚNG DÒNG ---
+            # --- LOGIC SOI ĐÚNG DÒNG (ALIGNED COMPARISON) ---
+            st.write(f"### 📊 Chi tiết đối soát dòng (Size: {size_col})")
+            
+            # Map dữ liệu từ file mẫu (Normalize POM -> Value)
             ref_map = {}
-            ref_cols = df_ref.columns
+            # Lấy cột đầu tiên của file mẫu làm tên POM chuẩn
+            ref_pom_key = df_ref.columns[0] 
             for _, r in df_ref.iterrows():
-                # Map theo tên POM đã chuẩn hóa
-                key = normalize_pom(r[ref_cols[0]])
-                ref_map[key] = parse_val(r.get(size_col, r.iloc[1] if len(r)>1 else 0))
+                k = normalize_pom(r[ref_pom_key])
+                # Ưu tiên cột cùng tên size, nếu không bốc cột giá trị đầu tiên sau POM
+                val = parse_reitmans_val(r.get(size_col, r.iloc[1] if len(r)>1 else 0))
+                ref_map[k] = val
 
-            results = []
+            audit_results = []
             for _, rt in df_target.iterrows():
-                p_name = rt[pom_col]
-                norm_p = normalize_pom(p_name)
+                p_raw = rt[pom_col]
+                norm_p = normalize_pom(p_raw)
                 if not norm_p: continue
                 
-                v_new = parse_val(rt[size_col])
-                v_ref = ref_map.get(norm_p, 0)
-                diff = round(v_new - v_ref, 3)
+                val_new = parse_reitmans_val(rt[size_col])
+                val_ref = ref_map.get(norm_p, 0)
+                diff = round(val_new - val_ref, 3)
 
-                results.append({
-                    "Description": p_name,
-                    "Kiểm (New)": v_new,
-                    "Mẫu (Ref)": v_ref,
-                    "Lệch": diff,
-                    "Kết quả": "✅ OK" if abs(diff) <= 0.125 else "❌ SAI"
+                audit_results.append({
+                    "POM / Description": p_raw,
+                    "KIỂM (Actual)": val_new,
+                    "MẪU (Standard)": val_ref,
+                    "LỆCH (Diff)": diff,
+                    "KẾT QUẢ": "✅ OK" if abs(diff) <= 0.125 else "❌ SAI"
                 })
 
-            st.table(pd.DataFrame(results)) # Hiển thị đúng dòng đối xứng
+            # Hiển thị bảng đối soát
+            res_df = pd.DataFrame(audit_results)
+            st.table(res_df) 
+
+st.divider()
+if st.button("♻️ Làm mới hệ thống"): st.rerun()
