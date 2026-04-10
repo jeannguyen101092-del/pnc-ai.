@@ -5,13 +5,13 @@ from PIL import Image
 from torchvision import models, transforms
 from supabase import create_client, Client
 
-# --- CONFIG ---
+# --- CONFIG (Hãy điền đúng URL và KEY của bạn) ---
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V45.6 PRO", page_icon="🔍")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V45.7 PRO", page_icon="🔍")
 
 # --- MODEL AI ---
 @st.cache_resource
@@ -35,7 +35,7 @@ def parse_val(t):
     except: return 0
 
 def normalize_pom(t):
-    """Chuẩn hóa tên POM để soi đúng dòng dù Brand nào"""
+    """Chuẩn hóa tên POM để soi đúng vị trí dù Brand nào"""
     if not t: return ""
     s = str(t).upper().strip()
     s = re.sub(r'[^A-Z0-9]', '', s) # Chỉ giữ chữ và số để khớp tuyệt đối
@@ -115,7 +115,7 @@ with st.sidebar:
         st.rerun()
 
 # --- MAIN ---
-st.title("🔍 AI Fashion Auditor V45.6 PRO")
+st.title("🔍 AI Fashion Auditor V45.7 PRO")
 t_file = st.file_uploader("Upload file PDF đối soát", type="pdf")
 
 if t_file:
@@ -126,32 +126,34 @@ if t_file:
             img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
             tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
             with torch.no_grad():
-                # Ép kiểu float ngay khi trích xuất vector test
                 v_test = model_ai(tf(img_t).unsqueeze(0)).flatten().numpy().astype(float)
             
             matches = []
             for i in db_res.data:
                 v_ref = i.get('vector')
-                if v_ref:
-                    # 🔥 FIX LỖI UFuncNoLoopError: Ép kiểu mảng về float64 trước khi tính toán
-                    v1 = np.array(v_test, dtype=np.float64)
-                    v2 = np.array(v_ref, dtype=np.float64)
-                    
-                    denom = (np.linalg.norm(v1) * np.linalg.norm(v2))
-                    sim = np.dot(v1, v2) / denom if denom != 0 else 0
-                    matches.append({"data": i, "sim": float(sim) * 100})
+                # 🔥 FIX CHÍNH: Kiểm tra vector hợp lệ trước khi tính toán
+                if v_ref and len(v_ref) == 512:
+                    try:
+                        v1 = np.array(v_test, dtype=np.float64)
+                        v2 = np.array(v_ref, dtype=np.float64)
+                        denom = (np.linalg.norm(v1) * np.linalg.norm(v2))
+                        sim = np.dot(v1, v2) / denom if denom != 0 else 0
+                        matches.append({"data": i, "sim": float(sim) * 100})
+                    except: continue # Bỏ qua mẫu nếu ép kiểu lỗi
             
             if matches:
-                m = sorted(matches, key=lambda x: x['sim'], reverse=True)
-                st.subheader(f"✨ Khớp mẫu: {m[0]['data']['file_name']} ({m[0]['sim']:.1f}%)")
+                # Sắp xếp và lấy mẫu khớp nhất
+                best_match_list = sorted(matches, key=lambda x: x['sim'], reverse=True)
+                m = best_match_list[0]
                 
+                st.subheader(f"✨ Khớp mẫu: {m['data']['file_name']} ({m['sim']:.1f}%)")
                 c1, c2 = st.columns(2)
                 with c1: st.image(target['img'], caption="Bản vẽ Kiểm", use_container_width=True)
-                with c2: st.image(m[0]['data']['image_url'], caption="Mẫu gốc trong kho", use_container_width=True)
+                with c2: st.image(m['data']['image_url'], caption="Mẫu gốc trong kho", use_container_width=True)
 
                 # --- SOI ĐÚNG DÒNG (ALIGNED) ---
                 st.write("### 📊 Chi tiết đối soát thông số")
-                ref_specs = m[0]['data']['spec_json']
+                ref_specs = m['data']['spec_json']
                 ref_map = {normalize_pom(k): v for k, v in ref_specs.items()}
                 
                 diff_data = []
@@ -169,4 +171,5 @@ if t_file:
                     })
                 st.table(pd.DataFrame(diff_data))
 
+st.divider()
 if st.button("♻️ RESET"): st.rerun()
