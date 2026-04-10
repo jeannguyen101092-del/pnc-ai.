@@ -1,19 +1,20 @@
 import streamlit as st
-import io, fitz, pdfplumber, re, pandas as pd, numpy as np
+import io, pdfplumber, re, pandas as pd
 from supabase import create_client, Client
 
-# --- CONFIG (BẮT BUỘC: Thay URL và KEY của bạn vào đây) ---
+# --- CONFIG (BẮT BUỘC: Thay đúng URL và KEY của bạn) ---
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V45.3", page_icon="📊")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V45.4")
 
-# --- HÀM PARSE SỐ (GIỮ CHUẨN REITMANS) ---
-def parse_reitmans_val(t):
+# --- HÀM ĐỌC SỐ REITMANS & CHUNG ---
+def parse_val(t):
     try:
+        if t is None: return 0
         txt = str(t).replace(',', '.').strip().lower()
-        if not txt or txt in ['nan', '-', 'none']: return 0
+        if not txt or any(x in txt for x in ['nan', '-', 'none', 'tol']): return 0
         match = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
         v = match[0]
@@ -23,11 +24,8 @@ def parse_reitmans_val(t):
         return eval(v) if '/' in v else float(v)
     except: return 0
 
-def clean_pos(t):
-    return re.sub(r'[^A-Z0-9]', '', str(t).upper())
-
-# --- TRÍCH XUẤT THÔNG SỐ (VÉT SẠCH TRANG POM) ---
-def extract_pom_deep_v453(pdf_file):
+# --- TRÍCH XUẤT THÔNG SỐ SIÊU TỐC ---
+def extract_pom_fast(pdf_file):
     full_specs = {}
     try:
         pdf_content = pdf_file.read()
@@ -50,63 +48,50 @@ def extract_pom_deep_v453(pdf_file):
                                 d_row = df.iloc[d_idx]
                                 name = str(d_row[p_idx]).replace('\n',' ').strip().upper()
                                 if len(name) < 2: continue
-                                val = parse_reitmans_val(d_row[v_idx])
+                                val = parse_val(d_row[v_idx])
                                 if val > 0: full_specs[name] = val
                             break
         return full_specs
-    except Exception as e:
-        st.error(f"Lỗi đọc PDF: {e}")
-        return None
+    except: return None
 
-# --- SIDEBAR (THANH % VÀ BẮT LỖI DB) ---
+# --- SIDEBAR: NẠP DỮ LIỆU ---
 with st.sidebar:
     st.header("📂 KHO DỮ LIỆU CHUẨN")
     try:
+        # Lấy số lượng thực tế từ DB
         res_c = supabase.table("ai_data").select("file_name", count="exact").execute()
         st.metric("Mẫu đã nạp", res_c.count if res_c.count is not None else 0)
-    except Exception as e:
-        st.error("Chưa kết nối được Supabase. Kiểm tra lại URL/KEY.")
-        st.exception(e)
+    except: st.error("Chưa kết nối Supabase")
 
     files = st.file_uploader("Nạp Techpack mẫu", accept_multiple_files=True)
     if files and st.button("🚀 BẮT ĐẦU NẠP"):
-        p_bar = st.progress(0)
-        for i, f in enumerate(files):
-            specs = extract_pom_deep_v453(f)
+        for f in files:
+            specs = extract_pom_fast(f)
             if specs:
                 try:
-                    # NẠP THỬ: Chỉ nạp 2 cột cơ bản nhất để kiểm tra kết nối
+                    # NẠP TỐI GIẢN: Chỉ nạp những gì chắc chắn bảng ai_data đang có
                     supabase.table("ai_data").insert({
                         "file_name": f.name, 
                         "spec_json": specs
                     }).execute()
-                    st.toast(f"Nạp xong: {f.name}")
-                except Exception as db_e:
-                    # HIỆN LỖI ĐỎ NẾU THẤT BẠI
-                    st.error(f"❌ LỖI DATABASE khi nạp {f.name}")
-                    st.exception(db_e)
+                    st.success(f"Đã nạp: {f.name}")
+                except Exception as e:
+                    st.error(f"Lỗi DB: {e}")
             else:
-                st.warning(f"Không tìm thấy bảng POM trong file {f.name}")
-            p_bar.progress((i + 1) / len(files))
+                st.warning(f"Không quét được bảng trong {f.name}")
         st.rerun()
 
-# --- MAIN ---
-st.title("🔍 AI Fashion Auditor V45.3")
+# --- MAIN: ĐỐI SOÁT ---
+st.title("🔍 AI Fashion Auditor V45.4")
 t_file = st.file_uploader("Upload file đối soát", type="pdf")
 
 if t_file:
-    target_specs = extract_pom_deep_v453(t_file)
+    target_specs = extract_pom_fast(t_file)
     if target_specs:
         st.success(f"✅ Tìm thấy {len(target_specs)} thông số.")
         db_res = supabase.table("ai_data").select("*").execute()
         if db_res.data:
             m = db_res.data[-1] 
             st.subheader(f"✨ Đối chiếu với: {m['file_name']}")
-            diff_list = []
-            for name, val in target_specs.items():
-                ref_val = m['spec_json'].get(name, 0)
-                diff_list.append({
-                    "Hạng mục": name, "Kiểm tra": val, 
-                    "Mẫu gốc": ref_val, "Lệch": round(val - ref_val, 2) if ref_val > 0 else "N/A"
-                })
+            diff_list = [{"Hạng mục": k, "Kiểm tra": v, "Gốc": m['spec_json'].get(k, 0), "Lệch": round(v - m['spec_json'].get(k, 0), 2) if m['spec_json'].get(k, 0) > 0 else "N/A"} for k, v in target_specs.items()]
             st.table(pd.DataFrame(diff_list))
