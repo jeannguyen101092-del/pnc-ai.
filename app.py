@@ -1,206 +1,229 @@
 import streamlit as st
-import io, fitz, pdfplumber, re, pandas as pd, numpy as np, requests
-import torch
+import io, fitz, pdfplumber, re, pandas as pd, numpy as np
+import torch, base64, json
 from PIL import Image
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
-from streamlit_image_comparison import image_comparison
 
-# ================= CONFIG =================
+# --- CONFIG ---
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
-
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Auditor V50", page_icon="🔥")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V43.7", page_icon="📊")
 
-# ================= MODEL =================
+if "up_key" not in st.session_state: st.session_state.up_key = 0
+if "au_key" not in st.session_state: st.session_state.au_key = 0
+
 @st.cache_resource
 def load_ai():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-    model = torch.nn.Sequential(*(list(model.children())[:-1]))
-    model.eval()
-    return model
-
+    return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_ai()
 
-# ================= PARSE =================
-def parse_val(t):
+# --- XỬ LÝ SỐ REITMANS ---
+def parse_reitmans_val(t):
     try:
-        txt = str(t).replace(',', '.')
-        match = re.findall(r'\d+\.?\d*', txt)
-        return float(match[0]) if match else 0
-    except:
-        return 0
+        txt = str(t).replace(',', '.').strip().lower()
+        if not txt or txt in ['nan', '-', 'none']: return 0
+        match = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
+        if not match: return 0
+        v = match[0]
+        if ' ' in v:
+            p = v.split()
+            return float(p[0]) + eval(p[1])
+        return eval(v) if '/' in v else float(v)
+    except: return 0
 
-# ================= EXTRACT =================
-def extract_pom(pdf_file):
-    specs, img_bytes = {}, None
-    pdf_bytes = pdf_file.read()
+def clean_pos(t):
+    return re.sub(r'[^A-Z0-9]', '', str(t).upper())
 
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    if len(doc):
-        img_bytes = doc.load_page(0).get_pixmap().tobytes("png")
-
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for page in pdf.pages:
-            tables = page.extract_tables()
-            for tb in tables:
-                df = pd.DataFrame(tb)
-                if len(df.columns) < 2: continue
-                for i in range(len(df)):
-                    k = str(df.iloc[i][0]).upper()
-                    v = parse_val(df.iloc[i][1])
-                    if v > 0:
-                        specs[k] = v
-
-    return {"specs": specs, "img": img_bytes}
-
-# ================= VECTOR =================
-def get_vector(img_bytes):
-    if not img_bytes: return None
+# --- TRÍCH XUẤT THÔNG SỐ NEW (UPGRADE MULTI BRAND) ---
+def extract_pom_new_v437(pdf_file):
+    full_specs, img_bytes, brand = {}, None, "OTHER"
     try:
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        tf = transforms.Compose([
-            transforms.Resize((224,224)),
-            transforms.ToTensor()
-        ])
-        with torch.no_grad():
-            v = model_ai(tf(img).unsqueeze(0))
-            v = v.view(-1).numpy()
-            v = v / np.linalg.norm(v)
-        return v.tolist()
-    except:
+        pdf_content = pdf_file.read()
+        doc = fitz.open(stream=pdf_content, filetype="pdf")
+
+        # --- Lấy ảnh ---
+        if len(doc) > 0:
+            img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2)).tobytes("png")
+
+        # --- Detect brand ---
+        all_text = ""
+        for page in doc:
+            all_text += (page.get_text() or "").upper() + " "
+
+        if "REITMANS" in all_text:
+            brand = "REITMANS"
+        doc.close()
+
+        # --- KEYWORDS ---
+        POM_KEYS = ["POM", "POINT", "MEASURE", "DESCRIPTION", "DIMENSION"]
+        VALUE_KEYS = ["NEW", "SPEC", "MEAS", "MEASURE", "GARMENT", "SIZE", "SAMPLE"]
+
+        # --- Đọc bảng ---
+        with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
+            for page in pdf.pages:
+
+                text_page = (page.extract_text() or "").upper()
+
+                # 🔥 Ưu tiên trang có POM
+                if not any(k in text_page for k in POM_KEYS):
+                    continue
+
+                tables = page.extract_tables()
+
+                for tb in tables:
+                    df = pd.DataFrame(tb)
+                    if df.empty or len(df.columns) < 2:
+                        continue
+
+                    # --- Clean dataframe ---
+                    df = df.fillna("").astype(str)
+
+                    # --- Tìm header ---
+                    header_row = -1
+                    pom_idx, val_idx = -1, -1
+
+                    for r_idx, row in df.head(10).iterrows():
+                        row_up = [str(c).upper().strip() for c in row]
+
+                        for i, c in enumerate(row_up):
+                            if any(k in c for k in POM_KEYS):
+                                pom_idx = i
+                            if any(k in c for k in VALUE_KEYS):
+                                val_idx = i
+
+                        if pom_idx != -1 and val_idx != -1:
+                            header_row = r_idx
+                            break
+
+                    # --- Nếu không tìm thấy header rõ → thử fallback ---
+                    if header_row == -1:
+                        pom_idx = 0
+                        val_idx = 1
+
+                    # --- Đọc dữ liệu ---
+                    for i in range(header_row + 1, len(df)):
+                        row = df.iloc[i]
+
+                        try:
+                            name = str(row[pom_idx]).replace("\n", " ").strip().upper()
+                            val_raw = row[val_idx]
+
+                            if len(name) < 3:
+                                continue
+
+                            if any(x in name for x in ["REF", "NOTE", "TOL", "GRADE"]):
+                                continue
+
+                            val = parse_reitmans_val(val_raw)
+
+                            if val > 0:
+                                full_specs[name] = val
+
+                        except:
+                            continue
+
+        return {"specs": full_specs, "img": img_bytes, "brand": brand}
+
+    except Exception as e:
+        print("ERROR EXTRACT:", e)
         return None
 
-# ================= SPEC =================
-def spec_similarity(s1, s2):
-    keys = set(s1) & set(s2)
-    if not keys: return 0
-    diff = np.mean([abs(s1[k] - s2[k]) for k in keys])
-    return max(0, 100 - diff)
-
-# ================= EXPORT =================
-def export_excel(df):
-    out = io.BytesIO()
-    with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False)
-    return out.getvalue()
-
-# ================= IMAGE LOAD =================
-def load_url_img(url):
-    try:
-        return Image.open(requests.get(url, stream=True).raw).convert("RGBA")
-    except:
-        return None
-
-# ================= SIDEBAR =================
+# --- SIDEBAR ---
 with st.sidebar:
-    st.header("📂 DATA")
+    st.header("📂 KHO DỮ LIỆU CHUẨN")
+    res_c = supabase.table("ai_data").select("file_name", count="exact").execute()
+    st.metric("Mẫu đã nạp", res_c.count if res_c.count else 0)
 
-    res = supabase.table("ai_data").select("*", count="exact").execute()
-    st.metric("Records", res.count)
+    files = st.file_uploader("Nạp Techpack mẫu", accept_multiple_files=True, key=f"u_{st.session_state.up_key}")
+    if files and st.button("🚀 BẮT ĐẦU NẠP"):
+        p = st.progress(0)
+        for i, f in enumerate(files):
+            check = supabase.table("ai_data").select("file_name").eq("file_name", f.name).execute()
+            if check.data: continue
 
-    files = st.file_uploader("Upload Techpack", accept_multiple_files=True)
-
-    if files and st.button("🚀 NẠP"):
-        for f in files:
-            d = extract_pom(f)
-            vec = get_vector(d['img'])
-
-            img_url = ""
-            if d['img']:
-                path = f"lib/{f.name}.png"
-                try:
-                    supabase.storage.from_(BUCKET).upload(path, d['img'], {"upsert":"true"})
-                    img_url = supabase.storage.from_(BUCKET).get_public_url(path)["publicUrl"]
-                except:
-                    pass
-
-            supabase.table("ai_data").insert({
-                "file_name": f.name,
-                "vector": vec,
-                "spec_json": d['specs'],
-                "image_url": img_url
-            }).execute()
-
-            st.success(f"✅ {f.name}")
-
+            d = extract_pom_new_v437(f)
+            if d and d['specs']:
+                img_p = Image.open(io.BytesIO(d['img'])).convert('RGB')
+                tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+                with torch.no_grad():
+                    vec = model_ai(tf(img_p).unsqueeze(0)).flatten().numpy().tolist()
+                
+                path = f"lib_{f.name.replace('.pdf', '.png')}"
+                supabase.storage.from_(BUCKET).upload(path=path, file=d['img'], file_options={"content-type":"image/png", "x-upsert":"true"})
+                supabase.table("ai_data").insert({
+                    "file_name": f.name, "vector": vec, "spec_json": d['specs'],
+                    "image_url": supabase.storage.from_(BUCKET).get_public_url(path), "category": d['brand']
+                }).execute()
+            p.progress((i + 1) / len(files))
+        st.session_state.up_key += 1
         st.rerun()
 
-# ================= MAIN =================
-st.title("🔥 AI Auditor V50 – VISUAL QC TOOL")
+# --- MAIN ---
+st.title("🔍 AI Fashion Auditor V43.7")
+t_file = st.file_uploader("Upload file đối soát", type="pdf", key=f"a_{st.session_state.au_key}")
 
-file_test = st.file_uploader("Upload file kiểm", type="pdf")
+if t_file:
+    target = extract_pom_new_v437(t_file)
+    if target and target['specs']:
+        st.success(f"✅ Tìm thấy **{len(target['specs'])}** hạng mục thông số.")
+        
+        db_res = supabase.table("ai_data").select("*").execute()
+        if db_res.data:
+            img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
+            tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+            with torch.no_grad():
+                v_test = model_ai(tf(img_t).unsqueeze(0)).flatten().numpy().reshape(1, -1)
 
-if file_test:
-    target = extract_pom(file_test)
-    vec_test = get_vector(target['img'])
+            matches = []
+            for i in db_res.data:
+                if i.get('vector'):
+                    v_ref = np.array(i['vector']).reshape(1, -1)
+                    # 🔥 FIX CHÍNH TẠI ĐÂY: Lấy giá trị đầu tiên của ma trận similarity
+                    sim_matrix = cosine_similarity(v_test, v_ref)
+                    sim_val = float(sim_matrix[0][0]) * 100
+                    matches.append({"data": i, "sim": sim_val})
+            
+            top = sorted(matches, key=lambda x: x['sim'], reverse=True)[:1]
+            for m in top:
+                st.subheader(f"✨ Mẫu khớp: {m['data']['file_name']} ({m['sim']:.1f}%)")
+                c1, c2 = st.columns(2)
+                with c1: st.image(target['img'], caption="Bản vẽ đang kiểm")
+                with c2: st.image(m['data']['image_url'], caption="Mẫu gốc trong KHO")
 
-    db = supabase.table("ai_data").select("*").execute()
-
-    results = []
-
-    for row in db.data:
-        sim_img, sim_spec = 0, 0
-
-        if vec_test and row.get("vector"):
-            v1 = np.array(vec_test).reshape(1,-1)
-            v2 = np.array(row["vector"]).reshape(1,-1)
-            sim_img = cosine_similarity(v1, v2)[0][0] * 100
-
-        sim_spec = spec_similarity(target['specs'], row['spec_json'])
-
-        sim = 0.4*sim_img + 0.6*sim_spec
-
-        results.append({"row": row, "sim": sim, "img": sim_img, "spec": sim_spec})
-
-    top = sorted(results, key=lambda x: x['sim'], reverse=True)[:1]
-
-    for r in top:
-        st.subheader(f"{r['row']['file_name']} → {r['sim']:.1f}%")
-        st.write(f"AI: {r['img']:.1f}% | SPEC: {r['spec']:.1f}%")
-
-        # ===== LOAD IMAGE =====
-        img1 = Image.open(io.BytesIO(target['img'])).convert("RGBA") if target['img'] else None
-        img2 = load_url_img(r['row'].get("image_url"))
-
-        # ===== MODE =====
-        mode = st.radio("Chế độ so sánh", ["Slider", "Overlay", "Diff"])
-
-        if img1 and img2:
-            img1 = img1.resize(img2.size)
-
-            if mode == "Slider":
-                image_comparison(img1=img1, img2=img2, width=700)
-
-            elif mode == "Overlay":
-                alpha = st.slider("Blend", 0.0, 1.0, 0.5)
-                blended = Image.blend(img1, img2, alpha)
-                st.image(blended, use_column_width=True)
-
-            elif mode == "Diff":
-                diff = np.abs(np.array(img1) - np.array(img2))
-                st.image(diff, use_column_width=True)
-
-        # ===== SPEC TABLE =====
-        diff_data = []
-        for k, v in target['specs'].items():
-            ref = r['row']['spec_json'].get(k, 0)
-            diff_data.append([k, v, ref, round(v-ref,2)])
-
-        df = pd.DataFrame(diff_data, columns=["POM","NEW","REF","DIFF"])
-        st.dataframe(df)
-
-        # ===== EXPORT =====
-        st.download_button(
-            "📥 Export Excel",
-            export_excel(df),
-            file_name="compare.xlsx"
-        )
-
-# ================= RESET =================
-if st.button("RESET"):
-    st.rerun()
+                diff_list = []
+                for p_name, v_target in target['specs'].items():
+                    v_ref = 0
+                    p_clean = clean_pos(p_name)
+                    # Tìm thông số khớp 100% trong kho
+                    for k_ref, val_ref in m['data']['spec_json'].items():
+                        if p_clean == clean_pos(k_ref):
+                            v_ref = val_ref
+                            break
+                    if v_target > 0 or v_ref > 0:
+                        diff_list.append({
+                            "Hạng mục": p_name,
+                            "NEW (Kiểm tra)": v_target,
+                            "NEW (Mẫu gốc)": v_ref,
+                            "Lệch": round(v_target - v_ref, 2)
+                        })
+                
+                if diff_list:
+                    df_r = pd.DataFrame(diff_list)
+                    st.table(df_r.style.map(lambda x: 'color: red; font-weight: bold' if abs(x) > 0.5 else 'color: white', subset=['Lệch']))
+                    
+                    # Nút tải Excel báo cáo
+                    out = io.BytesIO()
+                    df_r.to_excel(out, index=False)
+                    st.download_button("📥 Tải báo cáo Excel", out.getvalue(), "Audit_Report.xlsx")
+            
+            if st.button("🗑️ Xóa file này để quét file khác"):
+                st.session_state.au_key += 1
+                st.rerun()
+    else:
+        st.error("⚠️ AI không tìm thấy bảng thông số. Kiểm tra lại PDF có cột 'POM NAME' và 'NEW' không.")
