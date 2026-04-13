@@ -6,7 +6,7 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# --- CONFIG ---
+# --- 1. CẤU HÌNH (Thay thông tin của bạn) ---
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
@@ -14,137 +14,136 @@ BUCKET = "fashion-imgs"
 try:
     supabase: Client = create_client(URL, KEY)
 except:
-    st.error("Lỗi kết nối Supabase!")
+    st.error("Chưa kết nối được Supabase.")
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V5.1", page_icon="📏")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V5.2", page_icon="📏")
 
 @st.cache_resource
-def load_ai_model():
+def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 
-model_ai = load_ai_model()
+model_ai = load_model()
 
-def parse_measurement(text):
+# --- 2. HÀM XỬ LÝ DỮ LIỆU ---
+def parse_val(t):
     try:
-        txt = str(text).replace(',', '.').strip().lower()
+        txt = str(t).replace(',', '.').strip().lower()
         if not txt or txt in ['nan', '-', 'none', 'null', '0']: return 0
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        val_str = match[0]
-        if ' ' in val_str:
-            p = val_str.split()
+        v = match[0]
+        if ' ' in v:
+            p = v.split()
             return float(p[0]) + eval(p[1])
-        return eval(val_str) if '/' in val_str else float(val_str)
+        return eval(v) if '/' in v else float(v)
     except: return 0
 
-def clean_text(t):
+def clean_txt(t):
     return re.sub(r'[^A-Z0-9]', '', str(t).upper())
 
-def extract_specs_from_pdf(pdf_file):
-    full_specs, img_bytes = {}, None
+def extract_pdf(pdf_file):
+    specs, img_b = {}, None
     try:
-        pdf_content = pdf_file.read()
-        doc = fitz.open(stream=pdf_content, filetype="pdf")
+        content = pdf_file.read()
+        doc = fitz.open(stream=content, filetype="pdf")
         if len(doc) > 0:
-            pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-            img_bytes = pix.tobytes("png")
+            img_b = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2)).tobytes("png")
         doc.close()
 
-        with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb)
                     if df.empty or len(df.columns) < 2: continue
                     
-                    desc_col, val_col = -1, -1
+                    d_col, v_col = -1, -1
                     for r_idx, row in df.iterrows():
                         row_up = [str(c).upper().strip() for c in row if c]
                         if any(x in row_up for x in ["DESCRIPTION", "POM NAME"]):
-                            desc_col = next((i for i, v in enumerate(row_up) if "DESCRIPTION" in v or "POM NAME" in v), -1)
-                            # Ưu tiên tìm cột Size 32 hoặc NEW
+                            d_col = next((i for i, v in enumerate(row_up) if "DESCRIPTION" in v or "POM NAME" in v), -1)
                             for i, v in enumerate(row_up):
-                                if v in ["32", "NEW", "SAMPLE", "SPEC"]: val_col = i; break
+                                if v in ["32", "NEW", "SAMPLE", "SPEC"]: v_col = i; break
                             
-                            if desc_col != -1 and val_col != -1:
+                            if d_col != -1 and v_col != -1:
                                 for d_idx in range(r_idx + 1, len(df)):
-                                    d_row = df.iloc[d_idx]
-                                    name = str(d_row[desc_col]).strip().upper()
-                                    if len(name) < 3 or "TOL" in name: continue
-                                    val = parse_measurement(d_row[val_col])
-                                    if val > 0: full_specs[name] = val
+                                    row_data = df.iloc[d_idx]
+                                    name = str(row_data[d_col]).strip().upper()
+                                    val = parse_val(row_data[v_col])
+                                    if len(name) > 3 and val > 0: specs[name] = val
                                 break
-        return {"specs": full_specs, "img": img_bytes}
+        return {"specs": specs, "img": img_b}
     except: return None
 
-# --- SIDEBAR ---
+# --- 3. GIAO DIỆN CHÍNH ---
+st.title("🔍 AI Fashion Auditor V5.2")
+
 with st.sidebar:
     st.header("📂 THƯ VIỆN MẪU")
-    files = st.file_uploader("Nạp Techpack Gốc", accept_multiple_files=True)
-    if files and st.button("🚀 LƯU VÀO KHO"):
-        p = st.progress(0)
-        for i, f in enumerate(files):
-            d = extract_specs_from_pdf(f)
-            if d and d['specs'] and d['img']:
-                img = Image.open(io.BytesIO(d['img'])).convert('RGB')
+    up_files = st.file_uploader("Nạp Techpack Gốc", accept_multiple_files=True)
+    if up_files and st.button("🚀 LƯU VÀO KHO"):
+        bar = st.progress(0)
+        for i, f in enumerate(up_files):
+            data = extract_pdf(f)
+            if data and data['specs']:
+                # Xử lý Vector 2D
+                img = Image.open(io.BytesIO(data['img'])).convert('RGB')
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
                 with torch.no_grad():
                     vec = model_ai(tf(img).unsqueeze(0)).flatten().numpy().tolist()
                 
-                # FIX LỖI TÊN FILE: replace dấu chấm để tránh lỗi path
-                f_safe_name = f.name.replace(".", "_")
-                f_path = f"lib_{f_safe_name}.png"
-                
-                supabase.storage.from_(BUCKET).upload(path=f_path, file=d['img'], file_options={"x-upsert":"true", "content-type":"image/png"})
+                f_name = f.name.replace(".", "_")
+                path = f"lib_{f_name}.png"
+                supabase.storage.from_(BUCKET).upload(path=path, file=data['img'], file_options={"x-upsert":"true", "content-type":"image/png"})
                 supabase.table("ai_data").insert({
-                    "file_name": f.name, "vector": vec, "spec_json": d['specs'],
-                    "image_url": supabase.storage.from_(BUCKET).get_public_url(f_path)
+                    "file_name": f.name, "vector": vec, "spec_json": data['specs'],
+                    "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                 }).execute()
-            p.progress((i + 1) / len(files))
+            bar.progress((i + 1) / len(up_files))
         st.success("Đã nạp xong!")
 
-# --- PHẦN CHÍNH ---
-t_file = st.file_uploader("Tải file CẦN KIỂM TRA", type="pdf")
-if t_file:
-    target = extract_specs_from_pdf(t_file)
+# --- 4. ĐỐI SOÁT ---
+audit_file = st.file_uploader("Tải file CẦN KIỂM TRA", type="pdf")
+if audit_file:
+    target = extract_pdf(audit_file)
     if target and target['specs']:
-        st.success(f"Tìm thấy {len(target['specs'])} thông số.")
-        db = supabase.table("ai_data").select("*").execute()
-        if db.data:
+        st.write(f"✅ Đã đọc được {len(target['specs'])} thông số.")
+        res = supabase.table("ai_data").select("*").execute()
+        
+        if res.data:
             img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
             tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
             with torch.no_grad():
-                # CHUẨN HÓA 2D: .reshape(1, -1)
+                # ÉP KIỂU 2D CHO VECTOR KIỂM TRA
                 v_test = model_ai(tf(img_t).unsqueeze(0)).flatten().numpy().reshape(1, -1)
 
             matches = []
-            for item in db.data:
+            for item in res.data:
                 if item.get('vector'):
-                    # FIX LỖI VALUEERROR: Đảm bảo v_ref cũng là 2D
+                    # ÉP KIỂU 2D CHO VECTOR TRONG KHO
                     v_ref = np.array(item['vector']).reshape(1, -1)
-                    sim = float(cosine_similarity(v_test, v_ref)[0][0]) * 100
-                    matches.append({"data": item, "sim": sim})
+                    # Tính toán Similarity an toàn
+                    score = float(cosine_similarity(v_test, v_ref)[0][0]) * 100
+                    matches.append({"data": item, "sim": score})
             
             if matches:
-                best = sorted(matches, key=lambda x: x['sim'], reverse=True)
-                m = best[0]
-                st.subheader(f"✨ Khớp: {m['data']['file_name']} ({m['sim']:.1f}%)")
+                top = sorted(matches, key=lambda x: x['sim'], reverse=True)[0]
+                st.subheader(f"✨ Khớp nhất: {top['data']['file_name']} ({top['sim']:.1f}%)")
                 
-                c1, c2 = st.columns(2)
-                with c1: st.image(target['img'], caption="Bản đang kiểm")
-                with c2: st.image(m['data']['image_url'], caption="Mẫu gốc")
+                col1, col2 = st.columns(2)
+                col1.image(target['img'], caption="File đang kiểm")
+                col2.image(top['data']['image_url'], caption="Mẫu gốc trong kho")
 
-                diff_data = []
-                ref_specs = m['data']['spec_json']
-                ref_map = {clean_text(k): v for k, v in ref_specs.items()}
-
-                for p_name, v_target in target['specs'].items():
-                    v_ref = ref_map.get(clean_text(p_name), 0)
-                    diff = round(v_target - v_ref, 3)
-                    diff_data.append({
-                        "Hạng mục": p_name, "Kiểm tra": v_target, "Gốc": v_ref, 
-                        "Lệch": diff, "Kết quả": "🚩 Lệch" if abs(diff) > 0.01 else "✔️ OK"
+                # So sánh bảng
+                diffs = []
+                ref_map = {clean_txt(k): v for k, v in top['data']['spec_json'].items()}
+                for k, v in target['specs'].items():
+                    v_ref = ref_map.get(clean_txt(k), 0)
+                    d = round(v - v_ref, 3)
+                    diffs.append({
+                        "Hạng mục": k, "Đang kiểm": v, "Gốc": v_ref, 
+                        "Lệch": d, "Kết quả": "🚩 Lệch" if abs(d) > 0.01 else "✔️ OK"
                     })
                 
-                st.table(pd.DataFrame(diff_data))
+                st.table(pd.DataFrame(diffs))
