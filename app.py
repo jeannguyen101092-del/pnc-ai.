@@ -6,15 +6,30 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
-# ================= 1. CONFIG =================
+# ================= 1. CẤU HÌNH HỆ THỐNG =================
+# Thay đổi thông tin kết nối Supabase của bạn tại đây
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V94", page_icon="📏")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V95", page_icon="📏")
 
-# ================= 2. MODEL AI & UTILS =================
+# Khởi tạo trạng thái để reset file uploader
+if 'up_key' not in st.session_state: 
+    st.session_state.up_key = 0
+
+# CSS làm đẹp giao diện
+st.markdown("""
+    <style>
+    .stMetric { background-color: #f0f2f6; padding: 10px; border-radius: 10px; }
+    .status-khop { color: #28a745; font-weight: bold; }
+    .status-lech { color: #dc3545; font-weight: bold; }
+    thead th { background-color: #f0f2f6 !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# ================= 2. MODEL AI & CÔNG CỤ HỖ TRỢ =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -23,9 +38,9 @@ model_ai = load_model()
 
 def detect_category(text, filename=""):
     t = (str(text) + " " + str(filename)).upper()
-    if any(x in t for x in ["PANT", "JEAN", "SHORT", "QUẦN"]): return "QUẦN"
-    if any(x in t for x in ["SHIRT", "TOP", "TEE", "JACKET", "ÁO"]): return "ÁO"
-    if any(x in t for x in ["DRESS", "SKIRT", "GOWN", "VÁY"]): return "VÁY/ĐẦM"
+    if any(x in t for x in ["PANT", "JEAN", "SHORT", "TROUSER", "QUẦN"]): return "QUẦN"
+    if any(x in t for x in ["SHIRT", "TOP", "TEE", "JACKET", "HOODIE", "ÁO"]): return "ÁO"
+    if any(x in t for x in ["DRESS", "SKIRT", "GOWN", "VÁY", "ĐẦM"]): return "VÁY/ĐẦM"
     return "KHÁC"
 
 def parse_val(t):
@@ -43,39 +58,46 @@ def parse_val(t):
 
 def get_image_vector(img_bytes):
     img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-    tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), 
-                             transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
+    tf = transforms.Compose([
+        transforms.Resize((224,224)), 
+        transforms.ToTensor(), 
+        transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
+    ])
     with torch.no_grad():
         vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
     return vec.astype(float).tolist()
 
-# ================= 3. TRÍCH XUẤT THÔNG MINH =================
-def extract_pdf_v94(file):
-    specs, img_bytes, full_text = {}, None, ""
+# ================= 3. TRÍCH XUẤT THÔNG MINH (DÒ CỘT SỐ) =================
+def extract_pdf_v95(file):
+    specs, img_bytes, full_text_list = {}, None, []
     try:
         file.seek(0)
         pdf_content = file.read()
         doc = fitz.open(stream=pdf_content, filetype="pdf")
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
-        for page in doc: full_text += page.get_text()
+        for page in doc: full_text_list.append(str(page.get_text() or ""))
         doc.close()
         
+        full_text = " ".join(full_text_list)
         category = detect_category(full_text, file.name)
+
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
                     flat_text = " ".join(df.astype(str).values.flatten()).upper()
-                    if sum(1 for k in ["WAIST", "CHEST", "HIP", "LENGTH", "SHOULDER"] if k in flat_text) < 2: continue
+                    if sum(1 for k in ["WAIST", "CHEST", "HIP", "LENGTH", "SHOULDER", "THIGH", "RISE"] if k in flat_text) < 2: continue
 
-                    # Dò cột thông minh
                     n_col, v_col = -1, -1
+                    # Tìm cột tên POM
                     for r_idx, row in df.head(10).iterrows():
                         row_up = [str(c).upper().strip() for c in row]
                         for i, v in enumerate(row_up):
                             if any(x in v for x in ["DESCRIPTION", "POM NAME", "POSITION"]): n_col = i; break
+                        if n_col != -1: break
                     
+                    # Tìm cột chứa nhiều số đo nhất
                     if n_col != -1:
                         max_nums = 0
                         for i in range(len(df.columns)):
@@ -87,79 +109,113 @@ def extract_pdf_v94(file):
                         for d_idx in range(len(df)):
                             name = str(df.iloc[d_idx, n_col]).replace('\n', ' ').strip().upper()
                             val = parse_val(df.iloc[d_idx, v_col])
-                            if len(name) > 3 and val > 0 and "POM" not in name: specs[name] = val
+                            if len(name) > 3 and val > 0 and not any(x in name for x in ["DESCRIPTION", "POM"]):
+                                specs[name] = val
                 if specs: break 
         return {"specs": specs, "img": img_bytes, "category": category}
     except: return None
 
-# ================= 4. SIDEBAR =================
+# ================= 4. SIDEBAR (QUẢN LÝ KHO & TỰ XÓA FILE) =================
 with st.sidebar:
-    st.header("📂 KHO THIẾT KẾ")
-    res_db = supabase.table("ai_data").select("file_name", count="exact").execute()
-    st.metric("Tổng số mẫu", f"{res_db.count or 0} file")
+    st.header("📂 KHO THIẾT KẾ MẪU")
+    try:
+        res_db = supabase.table("ai_data").select("file_name", count="exact").execute()
+        st.metric("Tổng số mẫu hiện có", f"{res_db.count or 0} file")
+    except: st.error("Lỗi kết nối database.")
+
+    st.divider()
+    # Sử dụng up_key để reset uploader sau khi nạp xong
+    new_files = st.file_uploader("Nạp Techpack mới vào kho", accept_multiple_files=True, key=f"uploader_{st.session_state.up_key}")
     
-    new_files = st.file_uploader("Nạp mẫu mới", accept_multiple_files=True)
-    if new_files and st.button("🚀 XÁC NHẬN NẠP"):
+    if new_files and st.button("🚀 XÁC NHẬN NẠP", use_container_width=True):
         for f in new_files:
-            data = extract_pdf_v94(f)
-            if data and data['specs']:
-                vec = get_image_vector(data['img'])
-                path = f"lib_{f.name.replace(' ','_')}.png"
-                supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
-                url = supabase.storage.from_(BUCKET).get_public_url(path)
-                supabase.table("ai_data").insert({"file_name": f.name, "vector": vec, "spec_json": data['specs'], "image_url": url, "category": data['category']}).execute()
+            with st.spinner(f"Đang nạp {f.name}..."):
+                data = extract_pdf_v95(f)
+                if data and data['specs']:
+                    vec = get_image_vector(data['img'])
+                    # Làm sạch tên file để lưu trữ
+                    clean_name = re.sub(r'[^a-zA-Z0-9]', '_', f.name.replace('.pdf',''))
+                    path = f"lib_{clean_name}.png"
+                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
+                    url = supabase.storage.from_(BUCKET).get_public_url(path)
+                    supabase.table("ai_data").insert({
+                        "file_name": f.name, "vector": vec, "spec_json": data['specs'], 
+                        "image_url": url, "category": data['category']
+                    }).execute()
+        
+        st.success("Nạp thành công!")
+        st.session_state.up_key += 1 # Thay đổi key để xóa danh sách file đã chọn
         st.rerun()
 
-# ================= 5. MAIN FLOW =================
-st.title("🔍 AI SMART AUDITOR V94")
-file_audit = st.file_uploader("📤 Upload file cần kiểm tra", type="pdf")
+# ================= 5. LUỒNG ĐỐI SOÁT CHÍNH =================
+st.title("🔍 AI SMART AUDITOR - V95")
+
+file_audit = st.file_uploader("📤 Upload file PDF cần kiểm tra (Audit)", type="pdf")
 
 if file_audit:
-    target = extract_pdf_v94(file_audit)
+    with st.spinner("Đang trích xuất và đối chiếu..."):
+        target = extract_pdf_v95(file_audit)
+    
     if target and target["specs"]:
-        st.success(f"Phân loại: {target['category']} | {len(target['specs'])} vị trí đo.")
+        st.info(f"✨ Phát hiện: **{target['category']}** | {len(target['specs'])} vị trí đo.")
         
         res = supabase.table("ai_data").select("*").eq("category", target['category']).execute()
         if res.data:
-            # So sánh tìm TOP 3
+            # Tìm kiếm độ tương đồng ảnh
             target_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
-            all_matches = []
+            matches = []
             for item in res.data:
                 sim = cosine_similarity(target_vec, np.array(item['vector']).reshape(1, -1))[0][0]
-                all_matches.append({**item, "sim": sim})
+                matches.append({**item, "sim": sim})
             
-            # Lấy 3 mã cao nhất
-            top_3 = sorted(all_matches, key=lambda x: x['sim'], reverse=True)[:3]
+            # Lấy Top 3 mã tương đồng nhất
+            top_3 = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
             
-            # Hiển thị Top 3 mẫu tương đồng
-            st.subheader("🖼️ TOP 3 MẪU TƯƠNG ĐỒNG NHẤT")
+            st.subheader("🖼️ TOP 3 MẪU TƯƠNG ĐỒNG TRONG KHO")
             cols = st.columns(3)
-            for i, match in enumerate(top_3):
+            for i, m in enumerate(top_3):
                 with cols[i]:
-                    st.image(match['image_url'], caption=f"Top {i+1}: {match['file_name']} ({match['sim']:.1%})")
+                    st.image(m['image_url'], caption=f"Top {i+1}: {m['file_name']} ({m['sim']:.1%})")
 
-            # Chọn 1 mẫu để so sánh chi tiết bảng (Mặc định là mẫu số 1)
-            selected_master = st.selectbox("Chọn mẫu gốc để đối soát chi tiết:", [m['file_name'] for m in top_3])
-            master_data = next(m for m in top_3 if m['file_name'] == selected_master)
+            # Người dùng chọn 1 trong 3 mẫu để xem bảng chi tiết
+            selected_name = st.selectbox("Chọn mẫu gốc để so sánh thông số chi tiết:", [m['file_name'] for m in top_3])
+            best_match = next(m for m in top_3 if m['file_name'] == selected_name)
 
-            # Bảng đối soát
-            st.subheader(f"📊 Bảng so sánh với: {selected_master}")
-            audit_list = []
+            # --- BẢNG ĐỐI SOÁT ---
+            st.subheader(f"📊 BẢNG SO SÁNH: {selected_name}")
+            audit_rows = []
             for pom, val in target['specs'].items():
-                m_val = master_data['spec_json'].get(pom, 0)
-                diff = round(val - m_val, 3) if m_val else 0
-                status = "✅ Khớp" if abs(diff) < 0.126 else f"❌ Lệch ({diff})"
-                audit_list.append({"POM": pom, "File Mới": val, "Mẫu Gốc": m_val, "Kết quả": status})
+                master_val = best_match['spec_json'].get(pom, 0)
+                diff = round(val - master_val, 3) if master_val else 0
+                
+                status = "✅ Khớp"
+                if master_val == 0: status = "❓ Không tìm thấy"
+                elif abs(diff) > 0.125: status = f"❌ Lệch ({diff})"
+                
+                audit_rows.append({"Vị trí đo (POM)": pom, "File Mới": val, "Mẫu Gốc": master_val, "Kết quả": status})
             
-            df_audit = pd.DataFrame(audit_list)
+            df_audit = pd.DataFrame(audit_rows)
             st.table(df_audit)
 
             # --- XUẤT EXCEL ---
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 df_audit.to_excel(writer, index=False, sheet_name='Audit_Report')
-            st.download_button(label="📥 Tải Báo Cáo Excel", data=output.getvalue(), file_name=f"Audit_{selected_master}.xlsx")
+                # Tự động căn chỉnh độ rộng cột Excel
+                worksheet = writer.sheets['Audit_Report']
+                for idx, col in enumerate(df_audit.columns):
+                    worksheet.set_column(idx, idx, 20)
+            
+            st.download_button(
+                label="📥 TẢI BÁO CÁO EXCEL",
+                data=output.getvalue(),
+                file_name=f"Audit_Report_{selected_name}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
         else:
-            st.warning("Chưa có mẫu cùng chủng loại trong kho.")
+            st.warning(f"Chưa có mẫu nào thuộc loại **{target['category']}** trong kho để đối chiếu.")
+    else:
+        st.error("Không thể đọc được bảng thông số. Vui lòng kiểm tra lại định dạng PDF.")
 
-st.caption("AI Fashion Auditor V94 - Support Top 3 Similarity & Excel Export")
+st.divider()
+st.caption("AI Smart Auditor V95 - Chuyên nghiệp cho ngành may mặc.")
