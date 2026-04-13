@@ -64,17 +64,17 @@ def get_vector(img_bytes):
         return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
 
 # ================= 3. TRÍCH XUẤT THÔNG MINH =================
-def extract_pdf_v97(file):
+def extract_pdf_v98(file):
     specs, img_bytes, full_text = {}, None, ""
     try:
         file.seek(0)
         pdf_content = file.read()
+        # 1. Lấy ảnh và Text tổng quát
         doc = fitz.open(stream=pdf_content, filetype="pdf")
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         for page in doc: full_text += (page.get_text() or "")
         doc.close()
         
-        # AI tự quét Loại hàng và Khách hàng
         category = detect_category(full_text, file.name)
         customer = detect_customer(full_text)
 
@@ -83,29 +83,42 @@ def extract_pdf_v97(file):
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
-                    if not any(x in str(tb).upper() for x in ["WAIST", "CHEST", "LENGTH"]): continue
+                    if df.empty or len(df.columns) < 2: continue
+                    
+                    # Kiểm tra bảng POM: Chỉ cần chứa 1 trong các từ khóa đo đạc là quét luôn
+                    flat_text = " ".join(df.astype(str).values.flatten()).upper()
+                    if not any(x in flat_text for x in ["WAIST", "CHEST", "HIP", "LENGTH", "SHOULDER", "THIGH"]): continue
                     
                     n_col, v_col = -1, -1
-                    for r_idx, row in df.head(10).iterrows():
-                        row_up = [str(c).upper() for c in row]
+                    # Dò tìm cột Tên (POM Name)
+                    for r_idx, row in df.head(15).iterrows():
+                        row_up = [str(c).upper().strip() for c in row]
                         for i, v in enumerate(row_up):
-                            if any(x in v for x in ["DESC", "POM", "POSITION"]): n_col = i; break
+                            if any(x in v for x in ["DESCRIPTION", "POM NAME", "POSITION", "ITEM"]):
+                                n_col = i; break
+                        if n_col != -1: break
                     
+                    # Dò tìm cột Giá trị (Cột có mật độ số cao nhất)
                     if n_col != -1:
                         max_n = 0
                         for i in range(len(df.columns)):
                             if i == n_col: continue
-                            cnt = sum(1 for val in df.iloc[:12, i] if parse_val(val) > 0)
+                            cnt = sum(1 for val in df.iloc[:15, i] if parse_val(val) > 0)
                             if cnt > max_n: max_n = cnt; v_col = i
                             
+                    # Nếu tìm thấy cột, tiến hành hốt dữ liệu
                     if n_col != -1 and v_col != -1:
-                        for d_idx in range(len(df)):
+                        for d_idx in range(0, len(df)):
                             name = str(df.iloc[d_idx, n_col]).replace('\n',' ').strip().upper()
                             val = parse_val(df.iloc[d_idx, v_col])
-                            if len(name) > 3 and val > 0: specs[name] = val
-                if specs: break
+                            # Lọc rác: Tên POM phải dài và giá trị phải hợp lệ
+                            if len(name) > 3 and val > 0 and not any(x in name for x in ["POM", "DESCRIPTION", "NAME"]):
+                                specs[name] = val
+                if specs: break # Đã lấy được thì dừng quét trang tiếp theo
         return {"specs": specs, "img": img_bytes, "category": category, "customer": customer}
-    except: return None
+    except Exception as e:
+        st.error(f"Lỗi trích xuất: {e}")
+        return None
 
 # ================= 4. SIDEBAR (KHÔI PHỤC BỘ ĐẾM KHO) =================
 with st.sidebar:
