@@ -34,16 +34,15 @@ model_ai = load_model()
 
 def get_image_vector(img_bytes):
     img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-    preprocess = transforms.Compose([
+    tf = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
     with torch.no_grad():
-        # Chuyển đổi tensor sang numpy array rồi ép kiểu sang list float
-        vector_tensor = model_ai(preprocess(img).unsqueeze(0)).flatten()
-        vector_list = vector_tensor.cpu().detach().numpy().astype(float).tolist()
-    return vector_list
+        # Chuyển tensor sang numpy array rồi mới chuyển sang list float
+        vector = model_ai(tf(img).unsqueeze(0)).flatten().cpu().detach().numpy()
+    return vector.astype(float).tolist() 
 
 
 # ================= 3. TRÍCH XUẤT DỮ LIỆU PDF =================
@@ -179,7 +178,7 @@ if file_audit:
             res = supabase.table("ai_data").select("*").eq("category", target['category']).execute()
             
             if res.data:
-                target_vec = get_image_vector(target['img']).reshape(1, -1)
+                target_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
                 matches = []
                 for item in res.data:
                     sim = cosine_similarity(target_vec, np.array(item['vector']).reshape(1, -1))[0][0]
