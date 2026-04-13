@@ -6,7 +6,7 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
-# ================= 1. CẤU HÌNH (THAY THÔNG TIN CỦA BẠN) =================
+# ================= 1. CẤU HÌNH =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
@@ -16,9 +16,12 @@ try:
 except:
     st.error("Kết nối Supabase thất bại!")
 
-st.set_page_config(layout="wide", page_title="AI Smart Auditor V109", page_icon="📏")
+st.set_page_config(layout="wide", page_title="AI Smart Auditor V110", page_icon="📏")
 
-if 'up_id' not in st.session_state: st.session_state.up_id = 0
+# --- KHẮC PHỤC LỖI TRONG ẢNH ---
+# Đảm bảo tên biến 'upload_id' đồng nhất ở mọi nơi
+if 'upload_id' not in st.session_state: 
+    st.session_state.upload_id = 0
 
 # ================= 2. MODEL AI =================
 @st.cache_resource
@@ -37,18 +40,16 @@ def get_vector(img_bytes):
         vec = model_ai(tf(img).unsqueeze(0)).flatten().numpy()
     return vec.tolist()
 
-# ================= 3. TRÍCH XUẤT THÔNG MINH =================
+# ================= 3. UTILS =================
 def auto_detect_customer(text, filename=""):
     t = (str(text) + " " + str(filename)).upper()
-    if "REITMANS" in t or "PENNINGTONS" in t: return "Reitmans"
+    if any(x in t for x in ["REITMANS", "PENNINGTONS", "RW&CO"]): return "Reitmans"
     if "VINEYARD VINES" in t or "WHALE" in t: return "Vineyard Vines"
-    if "NIKE" in t: return "Nike"
     return "Khác"
 
 def parse_val(t):
     try:
         txt = str(t).replace(',', '.').strip().lower()
-        # Xử lý phân số
         if '/' in txt:
             p = re.findall(r'\d+', txt)
             if len(p) == 2: return float(p[0])/float(p[1])
@@ -57,7 +58,7 @@ def parse_val(t):
         return float(nums[0]) if nums else 0
     except: return 0
 
-def extract_pdf_v109(file):
+def extract_pdf_v110(file):
     specs, img_bytes, category, customer = {}, None, "KHÁC", "Khác"
     try:
         file.seek(0)
@@ -76,7 +77,7 @@ def extract_pdf_v109(file):
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
                     txt_tb = " ".join(df.astype(str).values.flatten()).upper()
-                    if sum(1 for k in ["CHEST", "WAIST", "POM NAME", "SPEC"] if k in txt_tb) < 2: continue
+                    if sum(1 for k in ["WAIST", "CHEST", "POM NAME", "SPEC"] if k in txt_tb) < 2: continue
                     
                     n_col, v_col = -1, -1
                     for r_idx, row in df.head(15).iterrows():
@@ -104,28 +105,30 @@ def extract_pdf_v109(file):
 # ================= 4. SIDEBAR - NẠP KHO =================
 with st.sidebar:
     st.header("📂 KHO MASTER AI")
-    # Hiển thị số lượng mẫu hiện tại
     try:
-        res_count = supabase.table("ai_data").select("id", count="exact").execute()
-        st.success(f"📊 Trong kho: **{res_count.count if res_count.count is not None else 0}** mẫu")
-    except: st.info("Chưa có mẫu")
+        res_c = supabase.table("ai_data").select("id", count="exact").execute()
+        st.success(f"📊 Trong kho: **{res_c.count if res_c.count is not None else 0}** mẫu")
+    except: st.info("Kho đang trống")
 
-    new_files = st.file_uploader("Nạp Techpack Master", type="pdf", accept_multiple_files=True, key=f"up_{st.session_state.upload_id}")
+    st.divider()
+    # Widget file_uploader sử dụng 'upload_id' chuẩn
+    new_files = st.file_uploader("Nạp Techpack Master", type="pdf", 
+                                 accept_multiple_files=True, 
+                                 key=f"up_{st.session_state.upload_id}")
     
     if new_files and st.button("🚀 NẠP VÀO KHO"):
         p_bar = st.progress(0); p_text = st.empty()
         success_count = 0
         for i, f in enumerate(new_files):
-            data = extract_pdf_v109(f)
+            data = extract_pdf_v110(f)
             if data and data['specs']:
                 try:
-                    # 1. Upload ảnh
                     path = f"m_{re.sub(r'[^a-zA-Z0-9]', '_', f.name)}.png"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
                     url = supabase.storage.from_(BUCKET).get_public_url(path)
                     
-                    # 2. Insert DB (Fix lỗi đứng bằng cách ép kiểu chuẩn)
-                    s_code = str(f.name.split('.')[0]) # Lấy mã Style sạch
+                    # Lấy mã Style sạch (Ví dụ: 'Style_01' thay vì "['Style_01', 'pdf']")
+                    s_code = f.name.split('.')[0]
                     
                     supabase.table("ai_data").insert({
                         "file_name": f.name, "customer": data['customer'], "prod_id": s_code,
@@ -136,15 +139,14 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"Lỗi {f.name}: {str(e)}")
             p_bar.progress((i + 1) / len(new_files))
-            p_text.text(f"Đang xử lý {i+1}/{len(new_files)}")
         
         if success_count > 0:
             st.success(f"Đã nạp {success_count} mẫu!")
-            st.session_state.upload_id += 1
+            st.session_state.upload_id += 1 # Cập nhật id để reset uploader
             st.rerun()
 
 # ================= 5. MAIN - ĐỐI SOÁT =================
-st.title("🔍 AI SMART AUDITOR - V109")
+st.title("🔍 AI SMART AUDITOR - V110")
 
 c1, c2 = st.columns(2)
 with c1: sel_cust = st.selectbox("🎯 Lọc Khách hàng:", ["Tất cả", "Reitmans", "Vineyard Vines", "Nike"])
@@ -153,10 +155,9 @@ with c2: sel_prod = st.text_input("🆔 Mã Style:").strip().upper()
 file_audit = st.file_uploader("📤 Upload PDF Audit", type="pdf")
 
 if file_audit:
-    target = extract_pdf_v109(file_audit)
+    target = extract_pdf_v110(file_audit)
     if target:
         st.info(f"✨ Phát hiện: {target['customer']} | Loại: {target['category']}")
-        
         query = supabase.table("ai_data").select("*").eq("category", target['category'])
         if sel_cust != "Tất cả": query = query.eq("customer", sel_cust)
         if sel_prod: query = query.ilike("prod_id", f"%{sel_prod}%")
@@ -178,12 +179,7 @@ if file_audit:
                 with col_a: st.image(target['img'], caption="BẢN AUDIT", use_container_width=True)
                 with col_b: st.image(best_match['image_url'], caption=f"MASTER: {best_match['file_name']}", use_container_width=True)
                 
-                # Bảng thông số
                 m_s, t_s = best_match['spec_json'], target['specs']
                 all_poms = sorted(set(list(t_s.keys()) + list(m_s.keys())))
-                rows = []
-                for p in all_poms:
-                    v_m, v_t = m_s.get(p, 0), t_s.get(p, 0)
-                    diff = round(v_t - v_m, 3)
-                    rows.append({"Vị trí đo": p, "Master": v_m, "Audit": v_t, "Chênh lệch": diff})
+                rows = [{"Vị trí đo": p, "Master": m_s.get(p,0), "Audit": t_s.get(p,0), "Lệch": round(t_s.get(p,0)-m_s.get(p,0), 3)} for p in all_poms]
                 st.table(pd.DataFrame(rows))
