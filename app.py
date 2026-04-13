@@ -12,7 +12,7 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V5.4")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V5.5")
 
 @st.cache_resource
 def load_model():
@@ -27,7 +27,7 @@ def parse_val(t):
         if not txt or txt in ['nan', '-', 'none', 'null', '0']: return 0
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0] # Lấy phần tử đầu tiên của list match
+        v = match[0]
         if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
@@ -42,7 +42,7 @@ def extract_pdf(pdf_file):
         content = pdf_file.read()
         doc = fitz.open(stream=content, filetype="pdf")
         if len(doc) > 0:
-            img_b = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2)).tobytes("png")
+            img_b = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         doc.close()
         with pdfplumber.open(io.BytesIO(content)) as pdf:
             for page in pdf.pages:
@@ -68,7 +68,7 @@ def extract_pdf(pdf_file):
     except: return None
 
 # --- 3. MAIN ---
-st.title("🔍 AI Fashion Auditor V5.4")
+st.title("🔍 AI Fashion Auditor V5.5")
 
 with st.sidebar:
     st.header("📂 THƯ VIỆN MẪU")
@@ -82,7 +82,6 @@ with st.sidebar:
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
                 with torch.no_grad():
                     vec = model_ai(tf(img).unsqueeze(0)).flatten().detach().cpu().numpy().tolist()
-                
                 f_name = f.name.replace(".", "_")
                 path = f"lib_{f_name}.png"
                 supabase.storage.from_(BUCKET).upload(path=path, file=data['img'], file_options={"x-upsert":"true", "content-type":"image/png"})
@@ -94,42 +93,39 @@ audit_file = st.file_uploader("Tải file CẦN KIỂM TRA", type="pdf")
 if audit_file:
     target = extract_pdf(audit_file)
     if target and target['specs']:
-        st.success(f"✅ Đã đọc được {len(target['specs'])} thông số.")
+        st.success(f"✅ Đã đọc được {len(target['specs'])} hạng mục.")
         res = supabase.table("ai_data").select("*").execute()
         
         if res.data:
             img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
             tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
             with torch.no_grad():
-                # ÉP KIỂU 2D MẠNH BẰNG NP.ATLEAST_2D
-                v_test = model_ai(tf(img_t).unsqueeze(0)).flatten().detach().cpu().numpy()
-                v_test = np.atleast_2d(v_test)
+                # FIX: Ép 2D ngay từ đầu cho v_test
+                v_test = model_ai(tf(img_t).unsqueeze(0)).flatten().detach().cpu().numpy().reshape(1, -1)
 
             matches = []
             for item in res.data:
-                if item.get('vector'):
-                    v_ref = np.array(item['vector'])
-                    v_ref = np.atleast_2d(v_ref)
+                if item.get('vector') and len(item['vector']) > 0:
+                    # FIX: Ép 2D cho v_ref bằng reshape
+                    v_ref = np.array(item['vector']).reshape(1, -1)
                     
-                    # Tính toán an toàn, lấy giá trị scalar [0][0]
-                    sim_matrix = cosine_similarity(v_test, v_ref)
-                    score = float(sim_matrix[0][0]) * 100
-                    matches.append({"data": item, "sim": score})
+                    # Tính Similarity
+                    sim_val = cosine_similarity(v_test, v_ref)[0][0]
+                    matches.append({"data": item, "sim": float(sim_val) * 100})
             
             if matches:
-                top_matches = sorted(matches, key=lambda x: x['sim'], reverse=True)
-                top = top_matches[0] # Lấy mẫu cao điểm nhất
+                top_m = sorted(matches, key=lambda x: x['sim'], reverse=True)[0]
+                st.subheader(f"✨ Khớp nhất: {top_m['data']['file_name']} ({top_m['sim']:.1f}%)")
                 
-                st.subheader(f"✨ Khớp nhất: {top['data']['file_name']} ({top['sim']:.1f}%)")
-                
-                col1, col2 = st.columns(2)
-                col1.image(target['img'], caption="File đang kiểm")
-                col2.image(top['data']['image_url'], caption="Mẫu gốc")
+                c1, c2 = st.columns(2)
+                c1.image(target['img'], caption="Bản đang kiểm")
+                c2.image(top_m['data']['image_url'], caption="Mẫu gốc")
 
+                # So sánh bảng
                 diffs = []
-                ref_map = {clean_txt(k): v for k, v in top['data']['spec_json'].items()}
+                ref_map = {clean_txt(k): v for k, v in top_m['data']['spec_json'].items()}
                 for k, v in target['specs'].items():
                     v_ref = ref_map.get(clean_txt(k), 0)
                     d = round(v - v_ref, 3)
-                    diffs.append({"Hạng mục": k, "Đang kiểm": v, "Gốc": v_ref, "Lệch": d, "Kết quả": "🚩 Lệch" if abs(d) > 0.01 else "✔️ OK"})
+                    diffs.append({"Hạng mục": k, "Kiểm tra": v, "Gốc": v_ref, "Lệch": d, "Kết quả": "🚩 Lệch" if abs(d) > 0.01 else "✔️ OK"})
                 st.table(pd.DataFrame(diffs))
