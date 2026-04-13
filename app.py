@@ -141,40 +141,56 @@ with st.sidebar:
         st.rerun()
 
 # ================= 5. LUỒNG ĐỐI SOÁT CHÍNH =================
-st.title("🔍 AI SMART AUDITOR - V100")
+# ================= 5. LUỒNG ĐỐI SOÁT CHÍNH =================
+st.title("🔍 AI SMART AUDITOR - V101")
 
-file_audit = st.file_uploader("📤 Upload file PDF cần kiểm tra đối soát", type="pdf")
+# Thêm thanh chọn khách hàng để chủ động tìm kiếm
+res_all_cust = supabase.table("ai_data").select("customer").execute()
+unique_custs = sorted(list(set([item['customer'] for item in res_all_cust.data if item['customer']])))
+unique_custs.insert(0, "TẤT CẢ (Tự động)") # Thêm tùy chọn mặc định
+
+col_sel1, col_sel2 = st.columns([1, 2])
+with col_sel1:
+    selected_filter_cust = st.selectbox("🎯 Lọc theo khách hàng:", unique_custs)
+with col_sel2:
+    file_audit = st.file_uploader("📤 Upload file PDF cần kiểm tra", type="pdf")
 
 if file_audit:
-    with st.spinner("Đang AI quét dữ liệu PDF..."):
-        target = extract_pdf_v100(file_audit)
+    with st.spinner("Đang AI quét dữ liệu..."):
+        target = extract_pdf_v101(file_audit) # Dùng hàm extract đã sửa ở bước trước
     
     if target and target["specs"]:
-        st.success(f"✨ Phát hiện: **{target['category']}** | Khách hàng: **{target['customer']}**")
+        st.success(f"✨ Nhận diện: **{target['category']}** | Khách hàng gốc: **{target['customer']}**")
         
-        res = supabase.table("ai_data").select("*").eq("category", target['category']).execute()
+        # 1. Truy vấn dữ liệu
+        query = supabase.table("ai_data").select("*").eq("category", target['category'])
+        
+        # Nếu người dùng chọn một khách hàng cụ thể thì mới lọc theo khách hàng đó
+        if selected_filter_cust != "TẤT CẢ (Tự động)":
+            query = query.eq("customer", selected_filter_cust)
+            
+        res = query.execute()
         
         if res.data:
             target_vec = np.array(get_vector(target['img'])).reshape(1, -1)
             matches = []
             for item in res.data:
                 sim = cosine_similarity(target_vec, np.array(item['vector']).reshape(1, -1))
-                # Chuyển sim từ mảng sang số float đơn thuần
-                matches.append({**item, "sim": float(sim[0][0])})
+                matches.append({**item, "sim": float(sim)})
             
-            # Ưu tiên cùng khách hàng + tương đồng nhất
-            sorted_matches = sorted(matches, key=lambda x: (x['customer'] == target['customer'], x['sim']), reverse=True)
-            top_3 = sorted_matches[:3]
+            # Sắp xếp theo độ giống nhau
+            top_3 = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
 
-            # HIỂN THỊ TOP 3 ẢNH
-            st.subheader("🖼️ MẪU TƯƠNG ĐỒNG TRONG KHO")
+            # 2. Hiển thị mẫu tương đồng
+            st.subheader(f"🖼️ KẾT QUẢ TƯƠNG ĐỒNG ({selected_filter_cust})")
             cols = st.columns(len(top_3))
             for i, m in enumerate(top_3):
                 with cols[i]:
-                    label = "💎 CÙNG KHÁCH" if m['customer'] == target['customer'] else "🌐 KHÁC KHÁCH"
-                    st.image(m['image_url'], caption=f"{label}\n{m['file_name']}\nGiống: {m['sim']:.1%}")
+                    # Nếu đang ở chế độ TẤT CẢ, hiển thị tag để biết mẫu đó của ai
+                    tag = f"🏢 {m['customer']}" 
+                    st.image(m['image_url'], caption=f"{tag}\n{m['file_name']}\nGiống: {m['sim']:.1%}")
 
-            # TỰ ĐỘNG CHỌN MẪU TỐT NHẤT (Vị trí 0) ĐỂ SO SÁNH
+            # 3. TỰ ĐỘNG CHỌN MẪU ĐẦU TIÊN ĐỂ ĐỐI SOÁT
             best = top_3[0]
             st.subheader(f"📊 ĐỐI SOÁT CHI TIẾT VỚI: {best['file_name']}")
             
@@ -183,21 +199,16 @@ if file_audit:
                 m_val = best['spec_json'].get(pom, 0)
                 diff = round(val - m_val, 3) if m_val else 0
                 status = "✅ Khớp" if abs(diff) < 0.126 else f"❌ Lệch ({diff:+})"
-                if m_val == 0: status = "❓ Không có mẫu gốc"
-                audit_list.append({"Vị trí đo (POM)": pom, "File Mới": val, "Mẫu Gốc": m_val, "Kết quả": status})
+                if m_val == 0: status = "❓ Không có mẫu"
+                audit_list.append({"POM": pom, "Mới": val, "Gốc": m_val, "Kết quả": status})
             
             df_audit = pd.DataFrame(audit_list)
             st.table(df_audit)
             
-            # Nút Excel
+            # Xuất Excel
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 df_audit.to_excel(writer, index=False, sheet_name='Audit')
-            st.download_button("📥 TẢI BÁO CÁO EXCEL", output.getvalue(), f"Report_{target['customer']}.xlsx")
+            st.download_button("📥 TẢI EXCEL", output.getvalue(), f"Report_{selected_filter_cust}.xlsx")
         else:
-            st.warning("Trong kho chưa có mẫu cùng chủng loại để đối soát.")
-    else:
-        st.error("⚠️ Không tìm thấy bảng thông số trong PDF này. Hãy kiểm tra lại file!")
-
-st.divider()
-st.caption("AI Smart Auditor V100 - Final Version")
+            st.warning(f"Không tìm thấy mẫu nào thuộc khách hàng **{selected_filter_cust}** trong kho.")
