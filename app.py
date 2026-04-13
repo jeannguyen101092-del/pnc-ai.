@@ -6,31 +6,30 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
-# ================= 1. Cấu hình (Thay thông tin thật của bạn) =================
+# ================= 1. CẤU HÌNH (Thay thông tin thật của bạn) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI V20.0 - PRO V70", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="AI V20.0 - PRO V71", page_icon="🛡️")
 
 # CSS làm đẹp giao diện
 st.markdown("""
     <style>
     .stTable { font-size: 11px !important; }
-    .status-ok { color: #28a745; font-weight: bold; }
-    .status-fail { color: #dc3545; font-weight: bold; }
+    thead th { background-color: #f0f2f6 !important; color: #31333F !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# ================= 2. Model AI =================
+# ================= 2. MODEL AI =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_model()
 
-# ================= 3. Hàm Xử lý dữ liệu =================
+# ================= 3. HÀM XỬ LÝ DỮ LIỆU =================
 def parse_val(t):
     try:
         txt = str(t).replace(',', '.').strip().lower()
@@ -79,9 +78,9 @@ def extract_pdf(file):
         return {"specs": specs, "img": img_bytes}
     except: return None
 
-# ================= 4. Sidebar =================
+# ================= 4. SIDEBAR =================
 with st.sidebar:
-    st.header("🛡️ AI V20.0 - PRO V70")
+    st.header("🛡️ AI V20.0 - PRO V71")
     res = supabase.table("ai_data").select("id", count="exact").execute()
     st.info(f"📁 Kho mẫu: {res.count if res.count else 0} file")
     
@@ -106,7 +105,7 @@ with st.sidebar:
         supabase.table("ai_data").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
         st.rerun()
 
-# ================= 5. Main (Fix lỗi Line 144) =================
+# ================= 5. MAIN (SO SÁNH VÀ XUẤT EXCEL) =================
 st.subheader("📊 PRODUCT SUMMARY COMPARISON")
 file_audit = st.file_uploader("Upload file đối soát", type="pdf", label_visibility="collapsed")
 
@@ -125,16 +124,13 @@ if file_audit:
             for item in db_all.data:
                 if item.get("vector") and len(item["vector"]) == 512:
                     v_ref = np.array(item["vector"]).reshape(1, -1).astype(np.float32)
-                    
-                    # 🔥 FIX CHÍNH TẠI ĐÂY: Lấy giá trị đầu tiên của ma trận similarity
-                    sim_matrix = cosine_similarity(v_test, v_ref)
-                    score = float(sim_matrix[0][0]) 
+                    score = float(cosine_similarity(v_test, v_ref)[0][0]) 
                     matches.append({"item": item, "score": score})
             
             if matches:
-                best_match = sorted(matches, key=lambda x: x['score'], reverse=True)[0]
-                best = best_match['item']
-                score_pct = best_match['score'] * 100
+                top_results = sorted(matches, key=lambda x: x['score'], reverse=True)
+                best = top_results[0]['item']
+                score_pct = top_results[0]['score'] * 100
 
                 col1, col2 = st.columns(2)
                 with col1:
@@ -153,9 +149,17 @@ if file_audit:
                         k_c = re.sub(r'[^A-Z0-9]', '', k.upper())
                         v_ref = clean_ref.get(k_c, 0)
                         diff = round(v - v_ref, 3)
-                        rows.append({"Thông số": k, "Mới": v, "Kho mẫu": v_ref, "Kết quả": "Khớp" if abs(diff) < 0.125 else "Lệch"})
+                        rows.append({"Thông số": k, "Mới": v, "Kho mẫu": v_ref, "Kết quả": "Khớp" if abs(diff) < 0.1 else "Lệch"})
                     
                     df_res = pd.DataFrame(rows)
-                    st.table(df_res.style.applymap(lambda x: 'color: green; font-weight: bold' if x == 'Khớp' else 'color: red; font-weight: bold', subset=['Kết quả']))
+                    # 🔥 FIX CHÍNH: Thay applymap bằng map cho phiên bản Pandas mới
+                    st.table(df_res.style.map(lambda x: 'color: green; font-weight: bold' if x == 'Khớp' else 'color: red; font-weight: bold', subset=['Kết quả']))
+
+                # Nút tải báo cáo Excel
+                st.divider()
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    df_res.to_excel(writer, index=False, sheet_name='Audit_Report')
+                st.download_button("📥 Tải báo cáo Excel", output.getvalue(), f"Audit_{best['file_name']}.xlsx", "application/vnd.ms-excel")
             else:
-                st.warning("⚠️ Kho chưa có dữ liệu vector chuẩn.")
+                st.warning("⚠️ Không tìm thấy mẫu phù hợp trong kho.")
