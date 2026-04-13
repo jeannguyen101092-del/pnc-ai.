@@ -11,7 +11,7 @@ URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V48.5", page_icon="🔍")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V48.6", page_icon="🔍")
 
 @st.cache_resource
 def init_supabase():
@@ -24,7 +24,7 @@ def load_model():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_model()
 
-# ================= HÀM XỬ LÝ VECTOR (FIX LỖI SHAPE) =================
+# ================= VECTOR =================
 def get_vector(img_bytes):
     if not img_bytes: return None
     try:
@@ -35,13 +35,12 @@ def get_vector(img_bytes):
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
         with torch.no_grad():
-            # Đảm bảo output luôn là 1D array 512 phần tử
             vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
         return vec.tolist()
     except:
         return None
 
-# ================= HÀM TRÍCH XUẤT (GIỮ NGUYÊN VÌ ĐÃ CHẠY TỐT) =================
+# ================= UTILS =================
 def parse_val(t):
     try:
         txt = str(t).replace(',', '.').strip().lower()
@@ -54,34 +53,50 @@ def parse_val(t):
         return eval(v) if '/' in v else float(v)
     except: return 0
 
+# ================= EXTRACT PDF (FIX NAME ERROR) =================
 def extract_pdf(file):
     specs, img_bytes = {}, None
     file.seek(0)
     pdf_content = file.read()
+    
+    # 1. Chụp ảnh trang 1
     doc = fitz.open(stream=pdf_content, filetype="pdf")
     if len(doc) > 0:
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
     doc.close()
+
+    # 2. Quét bảng thông số
     with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
         for page in pdf.pages:
             tables = page.extract_tables()
             for tb in tables:
                 df = pd.DataFrame(tb)
                 if df.empty or len(df.columns) < 2: continue
+                
                 name_col, val_col = -1, -1
                 for r_idx, row in df.iterrows():
-                    row_str = [str(c).upper() for c in row if c]
+                    # ĐỒNG BỘ TÊN BIẾN: Sử dụng row_str xuyên suốt
+                    row_str = [str(c).upper().strip() for c in row if c is not None]
+                    
                     if any(x in " ".join(row_str) for x in ["POM", "DESCRIPTION"]):
-                        name_col = next((i for i, v in enumerate(row_up) if any(x in v for x in ["POM", "DESC"])), 0)
+                        # FIX LỖI NEXT(): Tìm cột chứa tên POM
                         for i, v in enumerate(row_str):
-                            if any(target in v for target in ["NEW", "SAMPLE", "SPEC", "32"]):
-                                val_col = i; break
+                            if "POM" in v or "DESC" in v:
+                                name_col = i
+                                break
+                        # Tìm cột chứa giá trị mẫu (32, NEW, SAMPLE...)
+                        for i, v in enumerate(row_str):
+                            if any(target in v for target in ["NEW", "SAMPLE", "SPEC", "32", "34", "36"]):
+                                val_col = i
+                                break
+                        
                         if name_col != -1 and val_col != -1:
                             for d_idx in range(r_idx + 1, len(df)):
                                 d_row = df.iloc[d_idx]
                                 p_name = str(d_row[name_col]).strip().upper()
+                                if len(p_name) < 3: continue
                                 val = parse_val(d_row[val_col])
-                                if len(p_name) > 3 and val > 0: specs[p_name] = val
+                                if val > 0: specs[p_name] = val
                             break
     return {"specs": specs, "img": img_bytes}
 
@@ -89,12 +104,11 @@ def extract_pdf(file):
 with st.sidebar:
     st.header("⚙️ CÀI ĐẶT")
     if st.button("🧹 Dọn dẹp mẫu lỗi"):
-        # Xóa các bản ghi không có vector chuẩn để tránh lỗi so sánh
         db_all = supabase.table("ai_data").select("id, vector").execute()
         for item in db_all.data:
             if not item.get("vector") or len(item["vector"]) != 512:
                 supabase.table("ai_data").delete().eq("id", item["id"]).execute()
-        st.success("Đã dọn dẹp kho!")
+        st.success("Đã dọn dẹp xong!")
         st.rerun()
 
     files = st.file_uploader("Upload Techpack Mẫu", accept_multiple_files=True)
@@ -113,9 +127,8 @@ with st.sidebar:
         st.rerun()
 
 # ================= PHẦN CHÍNH =================
-st.title("🔍 AI Fashion Auditor V48.5")
+st.title("🔍 AI Fashion Auditor V48.6")
 
-# Lấy Database và ép kiểu Vector về Numpy Array
 db_res = supabase.table("ai_data").select("*").execute()
 data_lib = db_res.data if db_res.data else []
 
@@ -127,30 +140,23 @@ if audit_file:
         
         v_test = get_vector(target["img"])
         if v_test and data_lib:
-            # FIX: Chuyển v_test sang 2D array [1, 512]
             v_test_np = np.array(v_test).reshape(1, -1)
-            
             matches = []
             for item in data_lib:
-                # Kiểm tra vector từ DB có hợp lệ không
                 if item.get("vector") and len(item["vector"]) == 512:
                     v_ref = np.array(item["vector"]).reshape(1, -1)
-                    # Tính độ tương đồng
-                    score = float(cosine_similarity(v_test_np, v_ref)[0][0])
+                    score = float(cosine_similarity(v_test_np, v_ref))
                     matches.append({"item": item, "score": score})
             
             if matches:
-                # Sắp xếp lấy mẫu giống nhất
                 best = sorted(matches, key=lambda x: x['score'], reverse=True)[0]
-                
                 st.subheader(f"✨ Khớp nhất: {best['item']['file_name']} ({best['score']*100:.1f}%)")
                 
                 c1, c2 = st.columns(2)
                 c1.image(target["img"], caption="Bản đang kiểm")
                 c2.image(best['item']['image_url'], caption="Mẫu gốc trong kho")
 
-                # So sánh bảng thông số
-                ref_specs = best["item"]["spec_json"]
+                ref_specs = best['item']['spec_json']
                 diff_rows = []
                 for k, v in target["specs"].items():
                     k_clean = re.sub(r'[^A-Z0-9]', '', k.upper())
@@ -158,12 +164,8 @@ if audit_file:
                     for r_k, r_v in ref_specs.items():
                         if re.sub(r'[^A-Z0-9]', '', r_k.upper()) == k_clean:
                             v_ref = r_v; break
-                    
                     diff = round(v - v_ref, 3)
-                    diff_rows.append({
-                        "Hạng mục": k, "Đang kiểm": v, "Gốc": v_ref, 
-                        "Lệch": diff, "Kết quả": "✅ OK" if abs(diff) < 0.1 else "❌ FAIL"
-                    })
+                    diff_rows.append({"Hạng mục": k, "Đang kiểm": v, "Gốc": v_ref, "Lệch": diff, "Kết quả": "✅ OK" if abs(diff) < 0.1 else "❌ FAIL"})
                 st.table(pd.DataFrame(diff_rows))
             else:
-                st.warning("⚠️ Không tìm thấy dữ liệu vector hợp lệ trong kho. Hãy nhấn 'Dọn dẹp mẫu lỗi' và nạp lại Techpack mẫu.")
+                st.warning("⚠️ Không tìm thấy mẫu phù hợp. Hãy nạp thêm mẫu vào kho.")
