@@ -24,12 +24,25 @@ def load_model():
 model_ai = load_model()
 
 # Danh sách khách hàng để AI tự nhận diện (Hãy thêm khách hàng của bạn vào đây)
-CUSTOMERS_DB = ["REITMANS", "WALMART", "ADIDAS", "TARGET", "GAP", "LEVIS", "H&M", "GUESS", "ZARA"]
+CUSTOMERS_DB = [
+    "REITMANS", "EXPRESS", "VINEYARD VINES", "WALMART", "ADIDAS", 
+    "TARGET", "GAP", "LEVIS", "H&M", "GUESS", "ZARA", "KOHLS"
+]
 
 def detect_customer(text):
-    t = str(text).upper()
+    """AI quét khách hàng thông minh hơn"""
+    if not text: return "KHÁC"
+    
+    # 1. Làm sạch văn bản (loại bỏ khoảng trắng thừa, đưa về chữ IN HOA)
+    t = " ".join(str(text).split()).upper()
+    
+    # 2. Quét chính xác theo danh sách
     for cust in CUSTOMERS_DB:
-        if cust in t: return cust
+        # Sử dụng Regex để tìm từ độc lập (tránh nhầm "Express" trong "Expression")
+        if re.search(rf'\b{cust}\b', t):
+            return cust
+            
+    # 3. Quét thêm theo tên file nếu nội dung PDF khó đọc
     return "KHÁC"
 
 def detect_category(text, filename=""):
