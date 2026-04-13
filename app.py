@@ -38,9 +38,18 @@ model_ai = load_model()
 
 def detect_category(text, filename=""):
     t = (str(text) + " " + str(filename)).upper()
-    if any(x in t for x in ["PANT", "JEAN", "SHORT", "TROUSER", "QUẦN"]): return "QUẦN"
-    if any(x in t for x in ["SHIRT", "TOP", "TEE", "JACKET", "HOODIE", "ÁO"]): return "ÁO"
-    if any(x in t for x in ["DRESS", "SKIRT", "GOWN", "VÁY", "ĐẦM"]): return "VÁY/ĐẦM"
+    
+    # Ưu tiên các từ khóa ÁO trước để tránh nhầm "Jean Jacket" thành "Quần Jean"
+    if any(x in t for x in ["JACKET", "SHIRT", "HOODIE", "TOP", "TEE", "COAT", "ÁO"]): 
+        return "ÁO"
+    
+    # Sau đó mới đến Quần
+    if any(x in t for x in ["PANT", "JEAN", "SHORT", "TROUSER", "BOTTOM", "QUẦN"]): 
+        return "QUẦN"
+    
+    if any(x in t for x in ["DRESS", "SKIRT", "GOWN", "VÁY", "ĐẦM"]): 
+        return "VÁY/ĐẦM"
+        
     return "KHÁC"
 
 def parse_val(t):
