@@ -1,5 +1,5 @@
 import streamlit as st
-import io, fitz, pdfplumber, re, pandas as pd, numpy as np, requests
+import io, fitz, pdfplumber, re, pandas as pd, numpy as np
 import torch
 from PIL import Image
 from torchvision import models, transforms
@@ -11,7 +11,7 @@ URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V48", page_icon="🔥")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V48 FINAL", page_icon="🔥")
 
 supabase = create_client(URL, KEY)
 
@@ -85,8 +85,6 @@ def extract_pdf(file):
 with st.sidebar:
     st.header("⚙️ SETTINGS")
 
-    tol = st.selectbox("Tolerance", [0.1,0.2,0.5,1.0], index=1)
-
     # COUNT
     try:
         count = supabase.table("ai_data").select("id", count="exact").execute()
@@ -128,7 +126,7 @@ with st.sidebar:
             st.success(f"✔ {f.name}")
 
 # ================= MAIN =================
-st.title("🔍 AI Fashion Auditor V48")
+st.title("🔍 AI Fashion Auditor V48 FINAL")
 
 # ===== DATA LIBRARY =====
 st.subheader("📦 DATA LIBRARY")
@@ -180,25 +178,35 @@ if file:
     data = extract_pdf(file)
     vec_test = get_vector(data["img"])
 
-    if not vec_test:
-        st.error("Vector lỗi")
+    # FIX VECTOR TEST
+    if not vec_test or len(vec_test) != 512:
+        st.error("❌ Vector test lỗi")
         st.stop()
 
     vec_test = np.array(vec_test).reshape(1,-1)
 
     matches=[]
     for item in db.data:
-        vec_db = item.get("vector")
-        if not vec_db or len(vec_db)<100:
+        try:
+            vec_db = item.get("vector")
+
+            if not vec_db or len(vec_db) != 512:
+                continue
+
+            v_ref = np.array(vec_db).reshape(1,-1)
+
+            if vec_test.shape[1] != v_ref.shape[1]:
+                continue
+
+            score = cosine_similarity(vec_test, v_ref)[0][0]
+
+            matches.append({"item":item,"score":score})
+
+        except:
             continue
 
-        v_ref = np.array(vec_db).reshape(1,-1)
-        score = cosine_similarity(vec_test, v_ref)[0][0]
-
-        matches.append({"item":item,"score":score})
-
     if not matches:
-        st.error("Không có dữ liệu")
+        st.error("❌ Không có dữ liệu hợp lệ để so sánh")
         st.stop()
 
     matches = sorted(matches, key=lambda x:x["score"], reverse=True)[:5]
@@ -221,7 +229,7 @@ if file:
             "Target":v,
             "Ref":ref,
             "Diff":round(diff,3),
-            "Result":"OK" if abs(diff)<=tol else "FAIL"
+            "Result":"OK" if abs(diff)<0.001 else "FAIL"
         })
 
     df = pd.DataFrame(rows)
