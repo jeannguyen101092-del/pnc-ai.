@@ -11,7 +11,7 @@ URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 
-st.set_page_config(layout="wide", page_title="AI Fashion Pro V44", page_icon="🔥")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V45", page_icon="🔥")
 
 # ================= INIT =================
 @st.cache_resource
@@ -21,10 +21,10 @@ def init_supabase():
 try:
     supabase: Client = init_supabase()
 except:
-    st.error("❌ Supabase chưa cấu hình!")
+    st.error("❌ Chưa cấu hình Supabase")
     st.stop()
 
-# ================= LOAD AI =================
+# ================= MODEL =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -37,10 +37,8 @@ def parse_val(t):
     try:
         txt = str(t).replace(',', '.').strip().lower()
         if txt in ['', 'nan', '-', 'none']: return 0
-
         match = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-
         v = match[0]
         if ' ' in v:
             a, b = v.split()
@@ -60,23 +58,22 @@ def extract_pdf(file):
         file.seek(0)
         pdf_bytes = file.read()
 
-        # ===== IMAGE =====
+        # IMAGE
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         if len(doc) > 0:
             pix = doc[0].get_pixmap()
             img_bytes = pix.tobytes("png")
 
-        # ===== TEXT =====
-        full_text = ""
+        text_all = ""
         for p in doc:
-            full_text += (p.get_text() or "").upper()
+            text_all += (p.get_text() or "").upper()
 
-        if "REITMANS" in full_text:
+        if "REITMANS" in text_all:
             brand = "REITMANS"
 
         doc.close()
 
-        # ===== TABLE =====
+        # TABLE
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
@@ -93,7 +90,6 @@ def extract_pdf(file):
                         if len(name) < 3:
                             continue
 
-                        # ❗ tìm cột số tự động
                         val = 0
                         for c in row[1:]:
                             v = parse_val(c)
@@ -109,37 +105,25 @@ def extract_pdf(file):
     except Exception as e:
         st.error(f"Lỗi extract: {e}")
         return None
+
 # ================= VECTOR =================
-matches = []
-
-for item in db.data:
+def get_vector(img_bytes):
     try:
-        vec_db = item.get("vector", None)
+        img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
 
-        # ❌ bỏ nếu vector lỗi
-        if not vec_db or len(vec_db) < 10:
-            continue
+        tf = transforms.Compose([
+            transforms.Resize(224),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
+        ])
 
-        v_ref = np.array(vec_db)
+        with torch.no_grad():
+            vec = model_ai(tf(img).unsqueeze(0)).flatten().numpy()
 
-        # ❌ check shape
-        if v_ref.ndim == 1:
-            v_ref = v_ref.reshape(1, -1)
-
-        if vec_test.shape[1] != v_ref.shape[1]:
-            st.warning(f"⚠️ Sai dimension: {item['file_name']}")
-            continue
-
-        score = cosine_similarity(vec_test, v_ref)[0][0]
-
-        matches.append({
-            "data": item,
-            "score": score
-        })
-
-    except Exception as e:
-        st.warning(f"Lỗi vector: {item.get('file_name')}")
-        continue
+        return vec.tolist()
+    except:
+        return None
 
 # ================= SIDEBAR =================
 with st.sidebar:
@@ -156,6 +140,7 @@ with st.sidebar:
     if files and st.button("🚀 Nạp kho"):
         for f in files:
             try:
+                # check trùng
                 check = supabase.table("ai_data").select("id").eq("file_name", f.name).execute()
                 if check.data:
                     st.warning(f"Trùng: {f.name}")
@@ -163,10 +148,13 @@ with st.sidebar:
 
                 data = extract_pdf(f)
                 if not data or not data["specs"]:
-                    st.warning(f"Lỗi file: {f.name}")
+                    st.error(f"Lỗi đọc: {f.name}")
                     continue
 
                 vec = get_vector(data["img"])
+                if not vec or len(vec) != 512:
+                    st.error(f"Vector lỗi: {f.name}")
+                    continue
 
                 path = f"{f.name}.png"
 
@@ -192,7 +180,7 @@ with st.sidebar:
                 st.error(f"Lỗi {f.name}: {e}")
 
 # ================= MAIN =================
-st.title("🔍 AI Fashion Auditor V44")
+st.title("🔍 AI Fashion Auditor V45")
 
 file = st.file_uploader("Upload file kiểm tra", type="pdf")
 
@@ -203,7 +191,7 @@ if file:
         st.error("❌ Không đọc được file")
         st.stop()
 
-    st.info(f"📊 Tìm thấy {len(data['specs'])} thông số")
+    st.success(f"✔ Tìm thấy {len(data['specs'])} thông số")
 
     db = supabase.table("ai_data").select("*").execute()
 
@@ -211,49 +199,65 @@ if file:
         st.warning("Kho rỗng")
         st.stop()
 
-    vec_test = np.array(get_vector(data["img"])).reshape(1,-1)
+    vec_test = np.array(get_vector(data["img"])).reshape(1, -1)
 
-    best = None
-    best_score = 0
+    matches = []
 
     for item in db.data:
-        if not item["vector"]: continue
+        try:
+            vec_db = item.get("vector", None)
 
-        v_ref = np.array(item["vector"]).reshape(1,-1)
-        score = cosine_similarity(vec_test, v_ref)[0][0]
+            if not vec_db or len(vec_db) != 512:
+                continue
 
-        if score > best_score:
-            best_score = score
-            best = item
+            v_ref = np.array(vec_db).reshape(1, -1)
 
-    if best:
-        st.subheader(f"🎯 Match: {best['file_name']} ({best_score*100:.2f}%)")
+            if vec_test.shape[1] != v_ref.shape[1]:
+                continue
 
-        c1, c2 = st.columns(2)
-        c1.image(data["img"], caption="File kiểm")
-        c2.image(best["image_url"], caption="File gốc")
+            score = cosine_similarity(vec_test, v_ref)[0][0]
 
-        # ===== COMPARE =====
-        ref_map = {clean_key(k): v for k,v in best["spec_json"].items()}
-
-        rows = []
-        for k, v in data["specs"].items():
-            ref = ref_map.get(clean_key(k), 0)
-            diff = round(v - ref, 3)
-
-            rows.append({
-                "POM": k,
-                "Target": v,
-                "Ref": ref,
-                "Diff": diff,
-                "Result": "OK" if abs(diff) < 0.001 else "LECH"
+            matches.append({
+                "data": item,
+                "score": score
             })
 
-        df = pd.DataFrame(rows)
-        st.dataframe(df)
+        except:
+            continue
 
-        # EXPORT
-        out = io.BytesIO()
-        df.to_excel(out, index=False)
+    if not matches:
+        st.error("❌ Không có dữ liệu hợp lệ để so sánh")
+        st.stop()
 
-        st.download_button("📥 Export Excel", out.getvalue(), "audit.xlsx")
+    best = sorted(matches, key=lambda x: x["score"], reverse=True)[0]
+
+    st.subheader(f"🎯 Match: {best['data']['file_name']} ({best['score']*100:.2f}%)")
+
+    col1, col2 = st.columns(2)
+    col1.image(data["img"], caption="File kiểm")
+    col2.image(best["data"]["image_url"], caption="File gốc")
+
+    # ===== COMPARE =====
+    ref_map = {clean_key(k): v for k, v in best["data"]["spec_json"].items()}
+
+    rows = []
+    for k, v in data["specs"].items():
+        ref = ref_map.get(clean_key(k), 0)
+        diff = round(v - ref, 3)
+
+        rows.append({
+            "POM": k,
+            "Target": v,
+            "Ref": ref,
+            "Diff": diff,
+            "Result": "OK" if abs(diff) < 0.001 else "LECH"
+        })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True)
+
+    # EXPORT
+    out = io.BytesIO()
+    df.to_excel(out, index=False)
+
+    st.download_button("📥 Export Excel", out.getvalue(), "audit.xlsx")
