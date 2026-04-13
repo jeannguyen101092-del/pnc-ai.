@@ -16,9 +16,9 @@ def get_supabase():
     return create_client(URL, KEY)
 supabase = get_supabase()
 
-st.set_page_config(layout="wide", page_title="AI Smart Auditor V113", page_icon="📏")
+st.set_page_config(layout="wide", page_title="AI Smart Auditor V114", page_icon="📏")
 
-# --- FIX LỖI KEYERROR TRONG ẢNH ---
+# Khởi tạo biến Session an toàn
 if 'up_id' not in st.session_state:
     st.session_state['up_id'] = 0
 
@@ -40,7 +40,7 @@ def get_vector(img_bytes):
     return [float(x) for x in vec]
 
 # ================= 3. TRÍCH XUẤT ĐẶC TRỊ REITMANS =================
-def extract_pdf_v113(file):
+def extract_pdf_v114(file):
     specs, img_bytes, category, customer = {}, None, "KHÁC", "Khác"
     try:
         file.seek(0)
@@ -69,25 +69,23 @@ def extract_pdf_v113(file):
                     for r_idx, row in enumerate(row_data[:20]):
                         row_up = [str(c).upper().strip() for c in row if c]
                         
-                        # LOGIC RIÊNG CHO REITMANS (Ưu tiên tuyệt đối)
+                        # LOGIC REITMANS: Tìm cột "POM NAME" và cột "NEW" hoặc "SAMPLE"
                         if "POM NAME" in row_up:
                             n_col = row_up.index("POM NAME")
-                            # Tìm cột NEW hoặc SAMPLE hoặc SPEC
                             v_col = next((i for i, v in enumerate(row_up) if any(x in v for x in ["NEW", "SAMPLE", "SPEC"])), -1)
                         
-                        # LOGIC CHO HÃNG KHÁC
+                        # LOGIC HÃNG KHÁC: Tìm cột Description/POM và cột Spec/Size
                         elif any(x in row_up for x in ["DESCRIPTION", "DESC", "POM"]):
                             for i, v in enumerate(row_up):
                                 if any(x in v for x in ["DESC", "POM", "POSITION"]): n_col = i
                                 if any(x in v for x in ["NEW", "SPEC", "M", "32"]): v_col = i
                         
                         if n_col != -1 and v_col != -1:
-                            # Bắt đầu lấy dữ liệu từ hàng sau Header
+                            # Lấy dữ liệu từ hàng sau Header
                             for d_idx in range(r_idx + 1, len(df)):
                                 name = str(df.iloc[d_idx, n_col]).replace('\n', ' ').strip().upper()
                                 if len(name) < 3 or any(x in name for x in ["TOL", "REF", "REMARK"]): continue
                                 
-                                # Parse giá trị số
                                 val_str = str(df.iloc[d_idx, v_col])
                                 nums = re.findall(r"[-+]?\d*\.\d+|\d+", val_str)
                                 val = float(nums[0]) if nums else 0
@@ -105,41 +103,43 @@ with st.sidebar:
     try:
         res_c = supabase.table("ai_data").select("id", count="exact").execute()
         st.success(f"📊 Trong kho: **{res_c.count if res_c.count is not None else 0}** mẫu")
-    except: st.info("Kết nối kho...")
+    except: st.info("Đang kết nối kho...")
 
     st.divider()
     new_files = st.file_uploader("Nạp Techpack Master", type="pdf", 
                                  accept_multiple_files=True, 
-                                 key=f"up_{st.session_state['up_id']}")
+                                 key=f"up_v114_{st.session_state['up_id']}")
     
     if new_files and st.button("🚀 XÁC NHẬN NẠP"):
         with st.status("Đang xử lý...", expanded=True) as status:
             success_count = 0
             for f in new_files:
-                data = extract_pdf_v113(f)
+                data = extract_pdf_v114(f)
                 if data and data['specs']:
                     try:
                         path = f"m_{re.sub(r'[^a-zA-Z0-9]', '_', f.name)}.png"
                         supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
                         url = supabase.storage.from_(BUCKET).get_public_url(path)
                         
+                        # Lấy mã Style sạch
+                        style_code = f.name.split('.')[0]
+                        
                         supabase.table("ai_data").insert({
                             "file_name": f.name, "customer": data['customer'],
-                            "prod_id": f.name.split('.')[0], # Lấy tên file chuẩn
-                            "vector": get_vector(data['img']),
+                            "prod_id": style_code, "vector": get_vector(data['img']),
                             "spec_json": data['specs'], "image_url": url, "category": data['category']
                         }).execute()
                         success_count += 1
                     except Exception as e:
-                        st.error(f"Lỗi nạp {f.name}: {e}")
+                        st.error(f"Lỗi DB {f.name}: {e}")
                 else:
                     st.warning(f"Không tìm thấy bảng thông số trong {f.name}")
             
             if success_count > 0:
-                status.update(label="✅ Thành công!", state="complete")
+                status.update(label="✅ Đã nạp thành công!", state="complete")
                 st.session_state['up_id'] += 1
                 st.rerun()
 
-# ================= 5. MAIN =================
-st.title("🔍 AI SMART AUDITOR - V113")
-# ... Phần Đối soát giữ nguyên ...
+# ================= 5. MAIN - ĐỐI SOÁT =================
+st.title("🔍 AI SMART AUDITOR - V114")
+# ... Phần Đối soát tiếp nối bên dưới ...
