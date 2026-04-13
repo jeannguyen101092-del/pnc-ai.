@@ -33,7 +33,6 @@ def load_model():
 model_ai = load_model()
 
 def get_image_vector(img_bytes):
-    """Chuyển ảnh từ PDF thành vector 512 chiều"""
     img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
     preprocess = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -41,8 +40,11 @@ def get_image_vector(img_bytes):
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
     with torch.no_grad():
-        vector = model_ai(preprocess(img).unsqueeze(0)).flatten().numpy()
-    return vector
+        # Chuyển đổi tensor sang numpy array rồi ép kiểu sang list float
+        vector_tensor = model_ai(preprocess(img).unsqueeze(0)).flatten()
+        vector_list = vector_tensor.cpu().detach().numpy().astype(float).tolist()
+    return vector_list
+
 
 # ================= 3. TRÍCH XUẤT DỮ LIỆU PDF =================
 def parse_val(t):
