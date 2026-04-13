@@ -62,18 +62,24 @@ def parse_val(t):
     except: return 0
 
 def extract_pdf_v93(file, customer="Auto"):
-    specs, img_bytes, full_text = {}, None, ""
+    specs, img_bytes, full_text_list = {}, None, [] # Sử dụng list để gom text
     try:
         file.seek(0)
         pdf_content = file.read()
         doc = fitz.open(stream=pdf_content, filetype="pdf")
-        # Lấy ảnh trang 1 làm mẫu nhận diện
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
-        for page in doc: full_text += page.get_text()
+        
+        for page in doc:
+            text = page.get_text()
+            if text: full_text_list.append(str(text)) # Ép kiểu str ở đây
         doc.close()
         
+        # Gộp text an toàn
+        full_text = " ".join(full_text_list)
+        
         category = "KHÁC"
-        t = (full_text + " " + file.name).upper()
+        # Đảm bảo tên file cũng là string
+        t = (full_text + " " + str(file.name)).upper()
         if any(x in t for x in ["PANT", "JEAN", "QUẦN"]): category = "QUẦN"
         elif any(x in t for x in ["SHIRT", "TOP", "ÁO"]): category = "ÁO"
         elif any(x in t for x in ["DRESS", "VÁY"]): category = "VÁY/ĐẦM"
@@ -82,22 +88,22 @@ def extract_pdf_v93(file, customer="Auto"):
             for page in pdf.pages:
                 tables = page.extract_tables()
                 for tb in tables:
-                    df = pd.DataFrame(tb).dropna(how='all', axis=1)
-                    # Kiểm tra xem có phải bảng thông số không (Dựa vào từ khóa đo đạc)
-                    flat_text = " ".join(df.astype(str).values.flatten()).upper()
+                    # Chuyển bảng sang DataFrame và ép kiểu chuỗi toàn bộ bảng để tránh lỗi float/NaN
+                    df = pd.DataFrame(tb).fillna("").astype(str) 
+                    
+                    flat_text = " ".join(df.values.flatten()).upper()
                     if not any(x in flat_text for x in ["WAIST", "CHEST", "HIP", "LENGTH", "SHOULDER"]): continue
                     
-                    # Tìm cột chứa tên thông số (Description) và cột chứa giá trị (Spec/New/Sample)
                     n_col, v_col = -1, -1
                     for r_idx, row in df.iterrows():
-                        row_up = [str(c).upper() for c in row if c]
+                        row_up = [c.upper() for c in row]
                         for i, v in enumerate(row_up):
                             if any(x in v for x in ["DESC", "POM", "POSITION"]): n_col = i
                             if any(x in v for x in ["NEW", "SPEC", "SAMP", "M", "S", "L"]): v_col = i
                         
                         if n_col != -1 and v_col != -1:
                             for d_idx in range(r_idx + 1, len(df)):
-                                name = str(df.iloc[d_idx, n_col]).strip().upper()
+                                name = df.iloc[d_idx, n_col].strip().upper()
                                 val = parse_val(df.iloc[d_idx, v_col])
                                 if len(name) > 3 and val > 0: specs[name] = val
                             break
@@ -106,6 +112,7 @@ def extract_pdf_v93(file, customer="Auto"):
     except Exception as e:
         st.error(f"Lỗi trích xuất: {e}")
         return None
+
 
 # ================= 4. GIAO DIỆN CHÍNH =================
 st.title("🔍 AI SMART FASHION AUDITOR")
