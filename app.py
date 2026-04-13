@@ -6,23 +6,22 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
-# ================= 1. CONFIG (Thay thông tin thật của bạn) =================
+# ================= CONFIG =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI V20.0 - PRO", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="AI V20.0 - PRO V65", page_icon="🛡️")
 
-# ================= 2. MODEL AI =================
+# ================= MODEL AI =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
-
 model_ai = load_model()
 
-# ================= 3. TRÍCH XUẤT DỮ LIỆU PDF =================
+# ================= HÀM XỬ LÝ =================
 def parse_val(t):
     try:
         txt = str(t).replace(',', '.').strip().lower()
@@ -45,7 +44,7 @@ def extract_pdf(file):
             img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
         doc.close()
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
-            for page in pdf.pages[:2]: 
+            for page in pdf.pages[:3]: 
                 for tb in page.extract_tables():
                     df = pd.DataFrame(tb)
                     for r_idx, row in df.iterrows():
@@ -63,43 +62,39 @@ def extract_pdf(file):
         return {"specs": specs, "img": img_bytes}
     except: return None
 
-# ================= 4. SIDEBAR (GIAO DIỆN) =================
+# ================= SIDEBAR =================
 with st.sidebar:
     st.header("🛡️ AI V20.0 - PRO")
-    try:
-        res = supabase.table("ai_data").select("id", count="exact").execute()
-        st.info(f"📁 Kho mẫu: {res.count if res.count else 0} file")
-    except: st.error("Lỗi kết nối Supabase")
+    res = supabase.table("ai_data").select("id", count="exact").execute()
+    st.info(f"📁 Kho mẫu hiện tại: {res.count if res.count else 0} file")
     
     st.divider()
     st.subheader("🚀 NẠP MẪU MỚI")
-    new_files = st.file_uploader("Upload Techpack gốc (PDF)", type="pdf", accept_multiple_files=True)
-    
+    new_files = st.file_uploader("Upload Techpack gốc", type="pdf", accept_multiple_files=True)
     if new_files and st.button("XÁC NHẬN NẠP KHO"):
         for f in new_files:
             data = extract_pdf(f)
             if data and data['specs'] and data['img']:
                 img = Image.open(io.BytesIO(data['img'])).convert('RGB')
                 tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
-                # FIX: Chuyển đổi vector sang danh sách số thực chuẩn
+                # Ép kiểu numpy float64 để Supabase nhận diện đúng mảng số
                 vec = model_ai(tf(img).unsqueeze(0)).flatten().detach().cpu().numpy().astype(float).tolist()
                 
                 safe_name = re.sub(r'[^a-zA-Z0-9]', '_', f.name.replace(".pdf", ""))
                 path = f"lib_{safe_name}.png"
-                
                 supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true", "content-type": "image/png"})
                 url = supabase.storage.from_(BUCKET).get_public_url(path)
-                supabase.table("ai_data").insert({"file_name": f.name, "vector": vec, "spec_json": data['specs'], "image_url": url}).execute()
-        st.success("Nạp thành công!")
+                
+                # Lưu vào bảng chuẩn
+                supabase.table("ai_data").insert({
+                    "file_name": f.name, "vector": vec, "spec_json": data['specs'], "image_url": url
+                }).execute()
+        st.success("Đã nạp thành công!")
         st.rerun()
 
-    if st.button("🗑️ Dọn dẹp kho (Xóa hết)"):
-        supabase.table("ai_data").delete().neq("id", 0).execute()
-        st.rerun()
-
-# ================= 5. MAIN (SO SÁNH) =================
+# ================= MAIN =================
 st.subheader("📊 PRODUCT SUMMARY COMPARISON")
-file_audit = st.file_uploader("Tải file cần kiểm tra", type="pdf", label_visibility="collapsed")
+file_audit = st.file_uploader("Kéo thả file cần kiểm tra", type="pdf", label_visibility="collapsed")
 
 if file_audit:
     target = extract_pdf(file_audit)
@@ -112,7 +107,7 @@ if file_audit:
             
             matches = []
             for item in db_all.data:
-                # Kiểm tra vector chuẩn 512 chiều
+                # Kiểm tra độ dài vector 512
                 if item.get("vector") and len(item["vector"]) == 512:
                     v_ref = np.array(item["vector"]).reshape(1, -1).astype(np.float32)
                     score = float(cosine_similarity(v_test, v_ref))
@@ -120,17 +115,14 @@ if file_audit:
             
             if matches:
                 best = sorted(matches, key=lambda x: x['score'], reverse=True)[0]
-                
                 c1, c2 = st.columns(2)
                 with c1:
                     st.info("📄 BẢN ĐANG KIỂM")
                     st.image(target["img"], use_container_width=True)
-                    st.table(pd.DataFrame([{"Hạng mục": k, "Số đo": v} for k,v in target["specs"].items()]))
-                
+                    st.table(pd.DataFrame([{"POM": k, "Số đo": v} for k,v in target["specs"].items()]))
                 with c2:
                     st.success(f"✨ MẪU GỐC (Khớp {best['score']*100:.1f}%)")
                     st.image(best['item']['image_url'], use_container_width=True)
-                    
                     ref_specs = best['item']['spec_json']
                     rows = []
                     for k, v in target["specs"].items():
@@ -140,8 +132,4 @@ if file_audit:
                             if re.sub(r'[^A-Z0-9]', '', rk.upper()) == k_c: v_ref = rv; break
                         diff = round(v - v_ref, 3)
                         rows.append({"Thông số": k, "Mới": v, "Kho mẫu": v_ref, "Kết quả": "Khớp" if abs(diff) < 0.125 else "Lệch"})
-                    
-                    df_res = pd.DataFrame(rows)
-                    st.table(df_res.style.applymap(lambda x: 'color: green' if x == 'Khớp' else 'color: red', subset=['Kết quả']))
-            else:
-                st.warning("⚠️ Kho chưa có dữ liệu chuẩn. Hãy dọn dẹp và nạp lại Techpack mẫu.")
+                    st.table(pd.DataFrame(rows).style.applymap(lambda x: 'color: green' if x == 'Khớp' else 'color: red' if x == 'Lệch' else '', subset=['Kết quả']))
