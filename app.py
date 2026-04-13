@@ -51,25 +51,40 @@ def extract_pdf(file):
         if len(doc) > 0:
             img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         doc.close()
+        
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb)
                     if df.empty or len(df.columns) < 2: continue
+                    
                     n_col, v_col = -1, -1
                     for r_idx, row in df.head(15).iterrows():
                         row_up = [str(c).upper().strip() for c in row if c]
-                        if any(x in " ".join(row_up) for x in ["POM", "DESCRIPTION", "DIMENSION"]):
+                        
+                        # 🔥 THAY ĐỔI TẠI ĐÂY: Ưu tiên tìm cột DESCRIPTION trước để lấy tên đầy đủ
+                        if any(x in " ".join(row_up) for x in ["DESCRIPTION", "MEASUREMENT", "POM"]):
+                            # Ưu tiên lấy cột chứa Description nếu có
                             for i, v in enumerate(row_up):
-                                if any(x in v for x in ["DESC", "POM", "NAME"]): n_col = i; break
+                                if "DESCRIPTION" in v or "DESC" in v:
+                                    n_col = i; break
+                            
+                            # Nếu không có cột Description mới lấy cột POM
+                            if n_col == -1:
+                                for i, v in enumerate(row_up):
+                                    if "POM" in v: n_idx = i; break
+                                    
+                            # Tìm cột giá trị (NEW hoặc SAMPLE SIZE)
                             for i, v in enumerate(row_up):
-                                if any(target in v for target in ["NEW", "SAMPLE", "SPEC", "32", "34", "36"]):
+                                if any(target in v for target in ["NEW", "SAMPLE", "SPEC", "32", "34"]):
                                     v_col = i; break
+                            
                             if n_col != -1 and v_col != -1:
                                 for d_idx in range(r_idx + 1, len(df)):
                                     d_row = df.iloc[d_idx]
-                                    name = str(d_row[n_col]).strip().upper()
+                                    # Lấy tên hạng mục từ cột Description
+                                    name = str(d_row[n_col]).replace('\n', ' ').strip().upper()
                                     if len(name) < 3 or any(x in name for x in ["TOL", "REF"]): continue
                                     val = parse_val(d_row[v_col])
                                     if val > 0: specs[name] = val
