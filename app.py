@@ -75,37 +75,45 @@ def extract_pdf_v100(file):
         category = detect_category(full_text, file.name)
         customer = detect_customer(full_text)
 
+        # Danh sách từ khóa POM chuẩn để tránh bốc nhầm phụ liệu
+        POM_KEYWORDS = ["WAIST", "CHEST", "HIP", "LENGTH", "SHOULDER", "THIGH", "RISE", "INSEAM", "SLEEVE", "BUST", "NECK", "SWEEP", "OPENING"]
+
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
                     flat_text = str(tb).upper()
-                    if not any(x in flat_text for x in ["WAIST", "CHEST", "LENGTH", "SHOULDER", "HIP"]): continue
+                    
+                    # Bắt buộc bảng phải chứa ít nhất 2 từ khóa đo đạc thực sự
+                    if sum(1 for k in POM_KEYWORDS if k in flat_text) < 2: continue
                     
                     n_col, v_col = -1, -1
                     for r_idx, row in df.head(15).iterrows():
                         row_up = [str(c).upper().strip() for c in row]
                         for i, v in enumerate(row_up):
-                            if any(x in v for x in ["DESC", "POM", "POSITION", "ITEM"]): n_col = i; break
+                            if any(x in v for x in ["DESCRIPTION", "POM NAME", "POSITION"]): n_col = i; break
                         if n_col != -1: break
                     
                     if n_col != -1:
                         max_n = 0
                         for i in range(len(df.columns)):
                             if i == n_col: continue
-                            cnt = sum(1 for val in df.iloc[:15, i] if parse_val(val) > 0)
+                            cnt = sum(1 for val in df.iloc[:15, i] if 0.1 <= parse_val(val) <= 150)
                             if cnt > max_n: max_n = cnt; v_col = i
                             
                     if n_col != -1 and v_col != -1:
                         for d_idx in range(len(df)):
                             name = str(df.iloc[d_idx, n_col]).replace('\n',' ').strip().upper()
                             val = parse_val(df.iloc[d_idx, v_col])
-                            if len(name) > 3 and val > 0 and "POM" not in name: specs[name] = val
+                            
+                            # CHẶN LỖI: Chỉ lấy nếu tên dòng có chứa từ khóa đo đạc
+                            is_measurement = any(k in name for k in POM_KEYWORDS)
+                            if is_measurement and 0.1 <= val <= 180:
+                                specs[name] = val
                 if specs: break
         return {"specs": specs, "img": img_bytes, "category": category, "customer": customer}
     except: return None
-
 # ================= 4. SIDEBAR =================
 with st.sidebar:
     st.header("📂 QUẢN LÝ KHO MẪU")
