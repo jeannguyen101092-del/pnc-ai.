@@ -16,9 +16,8 @@ def get_supabase():
     return create_client(URL, KEY)
 supabase = get_supabase()
 
-st.set_page_config(layout="wide", page_title="AI Smart Auditor V114", page_icon="📏")
+st.set_page_config(layout="wide", page_title="AI Smart Auditor V115", page_icon="📏")
 
-# Khởi tạo biến Session an toàn
 if 'up_id' not in st.session_state:
     st.session_state['up_id'] = 0
 
@@ -39,14 +38,25 @@ def get_vector(img_bytes):
         vec = model_ai(tf(img).unsqueeze(0)).flatten().numpy()
     return [float(x) for x in vec]
 
-# ================= 3. TRÍCH XUẤT ĐẶC TRỊ REITMANS =================
-def extract_pdf_v114(file):
+# ================= 3. LOGIC QUÉT CẠN (DEEP SCAN) =================
+def parse_val(t):
+    try:
+        txt = str(t).replace(',', '.').strip().lower()
+        if '/' in txt: # Xử lý phân số 1/2, 1/4...
+            p = re.findall(r'\d+', txt)
+            if len(p) == 2: return float(p[0])/float(p[1])
+            if len(p) == 3: return float(p[0]) + (float(p[1])/float(p[2]))
+        nums = re.findall(r"[-+]?\d*\.\d+|\d+", txt)
+        return float(nums[0]) if nums else 0
+    except: return 0
+
+def extract_pdf_v115(file):
     specs, img_bytes, category, customer = {}, None, "KHÁC", "Khác"
     try:
         file.seek(0)
         pdf_content = file.read()
         
-        # 1. Nhận diện sơ bộ
+        # 1. Lấy ảnh và Text tổng quát
         with fitz.open(stream=pdf_content, filetype="pdf") as doc:
             if len(doc) > 0:
                 img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.0, 1.0)).tobytes("png")
@@ -56,45 +66,42 @@ def extract_pdf_v114(file):
                 elif "VINEYARD VINES" in t_up: customer = "Vineyard Vines"
                 category = "QUẦN/VÁY" if any(x in t_up for x in ["PANT", "JEAN", "SKIRT", "QUẦN", "VÁY"]) else "ÁO"
 
-        # 2. Quét bảng POM
+        # 2. CHẾ ĐỘ QUÉT CẠN: Thử mọi bảng có trong PDF
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
-                    row_data = df.astype(str).values.tolist()
-                    
+                    if len(df) < 5 or len(df.columns) < 2: continue # Bỏ qua bảng quá nhỏ
+
+                    # Tìm cột tên và cột số liệu dựa trên nội dung (không dựa trên Header)
                     n_col, v_col = -1, -1
-                    # Quét sâu hơn (20 hàng đầu) để tìm Header
-                    for r_idx, row in enumerate(row_data[:20]):
-                        row_up = [str(c).upper().strip() for c in row if c]
+                    
+                    # Thử quét 10 dòng đầu để tìm cột nào chứa chữ, cột nào chứa số
+                    for r_idx in range(min(10, len(df))):
+                        row = [str(x).upper() for x in df.iloc[r_idx]]
+                        # Nếu cột có "POM" hoặc "NAME" hoặc "DESC"
+                        for i, val in enumerate(row):
+                            if any(k in val for k in ["POM", "NAME", "DESC", "POSITION"]): n_col = i
+                            if any(k in val for k in ["NEW", "SPEC", "SAMP", "32", "M", "S"]): v_col = i
+                    
+                    # Fallback: Nếu không tìm thấy header, mặc định cột 0 là tên, cột cuối là số
+                    if n_col == -1: n_col = 0
+                    if v_col == -1: v_col = len(df.columns) - 1
+
+                    # Tiến hành bốc dữ liệu
+                    for i in range(len(df)):
+                        name = str(df.iloc[i, n_col]).strip().upper()
+                        if len(name) < 4 or any(x in name for x in ["TOL", "REF", "REMARK", "COMMENT"]): continue
                         
-                        # LOGIC REITMANS: Tìm cột "POM NAME" và cột "NEW" hoặc "SAMPLE"
-                        if "POM NAME" in row_up:
-                            n_col = row_up.index("POM NAME")
-                            v_col = next((i for i, v in enumerate(row_up) if any(x in v for x in ["NEW", "SAMPLE", "SPEC"])), -1)
-                        
-                        # LOGIC HÃNG KHÁC: Tìm cột Description/POM và cột Spec/Size
-                        elif any(x in row_up for x in ["DESCRIPTION", "DESC", "POM"]):
-                            for i, v in enumerate(row_up):
-                                if any(x in v for x in ["DESC", "POM", "POSITION"]): n_col = i
-                                if any(x in v for x in ["NEW", "SPEC", "M", "32"]): v_col = i
-                        
-                        if n_col != -1 and v_col != -1:
-                            # Lấy dữ liệu từ hàng sau Header
-                            for d_idx in range(r_idx + 1, len(df)):
-                                name = str(df.iloc[d_idx, n_col]).replace('\n', ' ').strip().upper()
-                                if len(name) < 3 or any(x in name for x in ["TOL", "REF", "REMARK"]): continue
-                                
-                                val_str = str(df.iloc[d_idx, v_col])
-                                nums = re.findall(r"[-+]?\d*\.\d+|\d+", val_str)
-                                val = float(nums[0]) if nums else 0
-                                if val > 0: specs[name] = val
-                            break
-                if specs: break
+                        val = parse_val(df.iloc[i, v_col])
+                        if val > 0: specs[name] = val
+                    
+                    if len(specs) > 3: break # Nếu đã lấy được kha khá thông số thì dừng
+                if len(specs) > 3: break
+                
         return {"specs": specs, "img": img_bytes, "category": category, "customer": customer}
     except Exception as e:
-        st.error(f"Lỗi phân tích: {e}")
         return None
 
 # ================= 4. SIDEBAR - NẠP KHO =================
@@ -108,21 +115,20 @@ with st.sidebar:
     st.divider()
     new_files = st.file_uploader("Nạp Techpack Master", type="pdf", 
                                  accept_multiple_files=True, 
-                                 key=f"up_v114_{st.session_state['up_id']}")
+                                 key=f"up_v115_{st.session_state['up_id']}")
     
     if new_files and st.button("🚀 XÁC NHẬN NẠP"):
-        with st.status("Đang xử lý...", expanded=True) as status:
+        with st.status("Đang quét dữ liệu...", expanded=True) as status:
             success_count = 0
             for f in new_files:
-                data = extract_pdf_v114(f)
-                if data and data['specs']:
+                data = extract_pdf_v115(f)
+                if data and len(data['specs']) > 0:
                     try:
                         path = f"m_{re.sub(r'[^a-zA-Z0-9]', '_', f.name)}.png"
                         supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
                         url = supabase.storage.from_(BUCKET).get_public_url(path)
                         
-                        # Lấy mã Style sạch
-                        style_code = f.name.split('.')[0]
+                        style_code = f.name.split('.')[0] # Lấy tên file làm mã Style
                         
                         supabase.table("ai_data").insert({
                             "file_name": f.name, "customer": data['customer'],
@@ -131,15 +137,15 @@ with st.sidebar:
                         }).execute()
                         success_count += 1
                     except Exception as e:
-                        st.error(f"Lỗi DB {f.name}: {e}")
+                        st.error(f"Lỗi lưu trữ {f.name}: {e}")
                 else:
-                    st.warning(f"Không tìm thấy bảng thông số trong {f.name}")
+                    st.warning(f"⚠️ Vẫn không thấy bảng trong {f.name}. Thử kiểm tra lại file PDF.")
             
             if success_count > 0:
-                status.update(label="✅ Đã nạp thành công!", state="complete")
+                status.update(label="✅ Nạp kho thành công!", state="complete")
                 st.session_state['up_id'] += 1
                 st.rerun()
 
-# ================= 5. MAIN - ĐỐI SOÁT =================
-st.title("🔍 AI SMART AUDITOR - V114")
-# ... Phần Đối soát tiếp nối bên dưới ...
+# ================= 5. MAIN =================
+st.title("🔍 AI SMART AUDITOR - V115")
+# ... Phần Đối soát ...
