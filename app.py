@@ -6,126 +6,245 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client, Client
 
-# --- 1. CONFIG ---
+# ================= CONFIG =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
-supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V5.5")
+st.set_page_config(layout="wide", page_title="AI Fashion Pro V44", page_icon="🔥")
 
+# ================= INIT =================
+@st.cache_resource
+def init_supabase():
+    return create_client(URL, KEY)
+
+try:
+    supabase: Client = init_supabase()
+except:
+    st.error("❌ Supabase chưa cấu hình!")
+    st.stop()
+
+# ================= LOAD AI =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
+
 model_ai = load_model()
 
-# --- 2. HELPERS ---
+# ================= UTILS =================
 def parse_val(t):
     try:
         txt = str(t).replace(',', '.').strip().lower()
-        if not txt or txt in ['nan', '-', 'none', 'null', '0']: return 0
-        match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
+        if txt in ['', 'nan', '-', 'none']: return 0
+
+        match = re.findall(r'(\d+\s\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
+
         v = match[0]
         if ' ' in v:
-            p = v.split()
-            return float(p[0]) + eval(p[1])
+            a, b = v.split()
+            return float(a) + eval(b)
         return eval(v) if '/' in v else float(v)
-    except: return 0
+    except:
+        return 0
 
-def clean_txt(t): return re.sub(r'[^A-Z0-9]', '', str(t).upper())
+def clean_key(t):
+    return re.sub(r'[^A-Z0-9]', '', str(t).upper())
 
-def extract_pdf(pdf_file):
-    specs, img_b = {}, None
+# ================= EXTRACT PDF =================
+def extract_pdf(file):
+    specs, img_bytes, brand = {}, None, "OTHER"
+
     try:
-        content = pdf_file.read()
-        doc = fitz.open(stream=content, filetype="pdf")
+        file.seek(0)
+        pdf_bytes = file.read()
+
+        # --- IMAGE ---
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         if len(doc) > 0:
-            img_b = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
+            pix = doc[0].get_pixmap()
+            img_bytes = pix.tobytes("png")
+
+        # --- BRAND ---
+        text_all = ""
+        for p in doc:
+            text_all += (p.get_text() or "").upper()
+
+        if "REITMANS" in text_all:
+            brand = "REITMANS"
+
         doc.close()
-        with pdfplumber.open(io.BytesIO(content)) as pdf:
+
+        # --- TABLE ---
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
+
                 for tb in tables:
                     df = pd.DataFrame(tb)
-                    if df.empty or len(df.columns) < 2: continue
-                    d_col, v_col = -1, -1
-                    for r_idx, row in df.iterrows():
-                        row_up = [str(c).upper().strip() for c in row if c]
-                        if any(x in row_up for x in ["DESCRIPTION", "POM NAME"]):
-                            d_col = next((i for i, v in enumerate(row_up) if "DESCRIPTION" in v or "POM NAME" in v), -1)
-                            for i, v in enumerate(row_up):
-                                if v in ["32", "NEW", "SAMPLE", "SPEC"]: v_col = i; break
-                            if d_col != -1 and v_col != -1:
-                                for d_idx in range(r_idx + 1, len(df)):
-                                    row_data = df.iloc[d_idx]
-                                    name = str(row_data[d_col]).strip().upper()
-                                    val = parse_val(row_data[v_col])
-                                    if len(name) > 3 and val > 0: specs[name] = val
-                                break
-        return {"specs": specs, "img": img_b}
-    except: return None
+                    if df.empty: continue
 
-# --- 3. MAIN ---
-st.title("🔍 AI Fashion Auditor V5.5")
+                    header_row = -1
+                    name_col, val_col = -1, -1
 
+                    for i, row in df.iterrows():
+                        row_up = [str(x).upper() for x in row]
+
+                        if any("POM NAME" in x for x in row_up):
+                            header_row = i
+                            for j, c in enumerate(row_up):
+                                if "POM NAME" in c: name_col = j
+                                if "NEW" in c: val_col = j
+                            break
+
+                    if header_row >= 0:
+                        for i in range(header_row+1, len(df)):
+                            row = df.iloc[i]
+                            name = str(row[name_col]).strip().upper()
+
+                            if len(name) < 3: continue
+                            if any(x in name for x in ["REF", "TOTAL"]): continue
+
+                            val = parse_val(row[val_col])
+                            if val > 0:
+                                specs[name] = val
+
+        return {"specs": specs, "img": img_bytes, "brand": brand}
+
+    except Exception as e:
+        st.error(f"Lỗi đọc PDF: {e}")
+        return None
+
+# ================= VECTOR =================
+def get_vector(img_bytes):
+    img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
+
+    tf = transforms.Compose([
+        transforms.Resize(224),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
+    ])
+
+    with torch.no_grad():
+        vec = model_ai(tf(img).unsqueeze(0)).flatten().numpy()
+
+    return vec.tolist()
+
+# ================= SIDEBAR =================
 with st.sidebar:
-    st.header("📂 THƯ VIỆN MẪU")
-    up_files = st.file_uploader("Nạp Techpack Gốc", accept_multiple_files=True)
-    if up_files and st.button("🚀 LƯU VÀO KHO"):
-        bar = st.progress(0)
-        for i, f in enumerate(up_files):
-            data = extract_pdf(f)
-            if data and data['specs']:
-                img = Image.open(io.BytesIO(data['img'])).convert('RGB')
-                tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-                with torch.no_grad():
-                    vec = model_ai(tf(img).unsqueeze(0)).flatten().detach().cpu().numpy().tolist()
-                f_name = f.name.replace(".", "_")
-                path = f"lib_{f_name}.png"
-                supabase.storage.from_(BUCKET).upload(path=path, file=data['img'], file_options={"x-upsert":"true", "content-type":"image/png"})
-                supabase.table("ai_data").insert({"file_name": f.name, "vector": vec, "spec_json": data['specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)}).execute()
-            bar.progress((i + 1) / len(up_files))
-        st.success("Đã nạp xong!")
+    st.header("📦 KHO DATA")
 
-audit_file = st.file_uploader("Tải file CẦN KIỂM TRA", type="pdf")
-if audit_file:
-    target = extract_pdf(audit_file)
-    if target and target['specs']:
-        st.success(f"✅ Đã đọc được {len(target['specs'])} hạng mục.")
-        res = supabase.table("ai_data").select("*").execute()
-        
-        if res.data:
-            img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
-            tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
-            with torch.no_grad():
-                # FIX: Ép 2D ngay từ đầu cho v_test
-                v_test = model_ai(tf(img_t).unsqueeze(0)).flatten().detach().cpu().numpy().reshape(1, -1)
+    try:
+        count = supabase.table("ai_data").select("id", count="exact").execute()
+        st.metric("Tổng mẫu", count.count)
+    except:
+        st.warning("Chưa có DB")
 
-            matches = []
-            for item in res.data:
-                if item.get('vector') and len(item['vector']) > 0:
-                    # FIX: Ép 2D cho v_ref bằng reshape
-                    v_ref = np.array(item['vector']).reshape(1, -1)
-                    
-                    # Tính Similarity
-                    sim_val = cosine_similarity(v_test, v_ref)[0][0]
-                    matches.append({"data": item, "sim": float(sim_val) * 100})
-            
-            if matches:
-                top_m = sorted(matches, key=lambda x: x['sim'], reverse=True)[0]
-                st.subheader(f"✨ Khớp nhất: {top_m['data']['file_name']} ({top_m['sim']:.1f}%)")
-                
-                c1, c2 = st.columns(2)
-                c1.image(target['img'], caption="Bản đang kiểm")
-                c2.image(top_m['data']['image_url'], caption="Mẫu gốc")
+    files = st.file_uploader("Upload mẫu", type="pdf", accept_multiple_files=True)
 
-                # So sánh bảng
-                diffs = []
-                ref_map = {clean_txt(k): v for k, v in top_m['data']['spec_json'].items()}
-                for k, v in target['specs'].items():
-                    v_ref = ref_map.get(clean_txt(k), 0)
-                    d = round(v - v_ref, 3)
-                    diffs.append({"Hạng mục": k, "Kiểm tra": v, "Gốc": v_ref, "Lệch": d, "Kết quả": "🚩 Lệch" if abs(d) > 0.01 else "✔️ OK"})
-                st.table(pd.DataFrame(diffs))
+    if files and st.button("🚀 Nạp kho"):
+        for f in files:
+            try:
+                check = supabase.table("ai_data").select("id").eq("file_name", f.name).execute()
+                if check.data:
+                    st.warning(f"Trùng: {f.name}")
+                    continue
+
+                data = extract_pdf(f)
+                if not data or not data["specs"]:
+                    st.warning(f"Lỗi file: {f.name}")
+                    continue
+
+                vec = get_vector(data["img"])
+
+                path = f"{f.name}.png"
+
+                supabase.storage.from_(BUCKET).upload(
+                    path=path,
+                    file=data["img"],
+                    file_options={"content-type": "image/png", "upsert": "true"}
+                )
+
+                img_url = supabase.storage.from_(BUCKET).get_public_url(path)
+
+                supabase.table("ai_data").insert({
+                    "file_name": f.name,
+                    "vector": vec,
+                    "spec_json": data["specs"],
+                    "image_url": img_url,
+                    "category": data["brand"]
+                }).execute()
+
+                st.success(f"✔ {f.name}")
+
+            except Exception as e:
+                st.error(f"Lỗi {f.name}: {e}")
+
+# ================= MAIN =================
+st.title("🔍 AI Fashion Auditor V44")
+
+file = st.file_uploader("Upload file kiểm tra", type="pdf")
+
+if file:
+    data = extract_pdf(file)
+
+    if not data or not data["specs"]:
+        st.error("❌ Không đọc được file")
+        st.stop()
+
+    st.info(f"📊 Tìm thấy {len(data['specs'])} thông số")
+
+    db = supabase.table("ai_data").select("*").execute()
+
+    if not db.data:
+        st.warning("Kho rỗng")
+        st.stop()
+
+    vec_test = np.array(get_vector(data["img"])).reshape(1,-1)
+
+    best = None
+    best_score = 0
+
+    for item in db.data:
+        if not item["vector"]: continue
+
+        v_ref = np.array(item["vector"]).reshape(1,-1)
+        score = cosine_similarity(vec_test, v_ref)[0][0]
+
+        if score > best_score:
+            best_score = score
+            best = item
+
+    if best:
+        st.subheader(f"🎯 Match: {best['file_name']} ({best_score*100:.2f}%)")
+
+        c1, c2 = st.columns(2)
+        c1.image(data["img"], caption="File kiểm")
+        c2.image(best["image_url"], caption="File gốc")
+
+        # ===== COMPARE =====
+        ref_map = {clean_key(k): v for k,v in best["spec_json"].items()}
+
+        rows = []
+        for k, v in data["specs"].items():
+            ref = ref_map.get(clean_key(k), 0)
+            diff = round(v - ref, 3)
+
+            rows.append({
+                "POM": k,
+                "Target": v,
+                "Ref": ref,
+                "Diff": diff,
+                "Result": "OK" if abs(diff) < 0.001 else "LECH"
+            })
+
+        df = pd.DataFrame(rows)
+        st.dataframe(df)
+
+        # EXPORT
+        out = io.BytesIO()
+        df.to_excel(out, index=False)
+
+        st.download_button("📥 Export Excel", out.getvalue(), "audit.xlsx")
