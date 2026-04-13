@@ -12,7 +12,7 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V97", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V97.1", page_icon="🛡️")
 
 if 'up_key' not in st.session_state: st.session_state.up_key = 0
 
@@ -26,7 +26,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# ================= 2. MODEL AI & PHÂN LOẠI =================
+# ================= 2. MODEL AI & UTILS =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -56,10 +56,10 @@ def parse_val(t):
         if any(x in txt for x in ["mm", "yd", "gr", "kg", "pcs"]): return 0
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0]
+        v = match
         if ' ' in v:
             p = v.split()
-            return float(p[0]) + eval(p[1])
+            return float(p) + eval(p)
         return eval(v) if '/' in v else float(v)
     except: return 0
 
@@ -89,7 +89,7 @@ def extract_pdf_v97(file):
                         for i, v in enumerate(row_up):
                             if any(x in v for x in ["DESCRIPTION", "DESC", "POM NAME", "POSITION"]): n_col = i; break
                         for i, v in enumerate(row_up):
-                            if any(target in v for target in ["NEW", "SAMPLE", "SPEC", "32", "34", "M", "S", "PRODUCTION"]):
+                            if any(target in v for target in ["NEW", "SAMPLE", "SPEC", "M", "S", "PRODUCTION"]):
                                 if i != n_col: v_col = i; break
                         if n_col != -1 and v_col != -1:
                             for d_idx in range(r_idx + 1, len(df)):
@@ -106,13 +106,13 @@ def extract_pdf_v97(file):
 # ================= 4. SIDEBAR (NẠP KHO) =================
 with st.sidebar:
     st.header("📂 QUẢN LÝ KHO MẪU")
-    # FIX LỖI: Try-Except để chống crash khi thiếu cột database
     try:
+        # Lấy dữ liệu kèm cột stage vừa tạo
         res_db = supabase.table("ai_data").select("file_name", "category", "stage").execute()
         data_lib = res_db.data if res_db.data else []
         st.info(f"Kho hiện tại: {len(data_lib)} file")
     except:
-        st.error("⚠️ Database thiếu cột 'stage'. Hãy chạy SQL ở Bước 1.")
+        st.error("⚠️ Database chưa có cột 'stage'. Hãy thực hiện Bước 1!")
         data_lib = []
 
     st.divider()
@@ -134,11 +134,11 @@ with st.sidebar:
         st.rerun()
 
 # ================= 5. MAIN (ĐỐI SOÁT) =================
-st.title("🔍 AI SMART AUDITOR - V97")
+st.title("🔍 AI SMART AUDITOR - V97.1")
 
 col_sel1, col_sel2 = st.columns(2)
 with col_sel1:
-    audit_mode = st.radio("Chế độ so sánh:", ["🤖 Tự động (Tất cả)", "🏭 Chỉ tìm hàng Production"], horizontal=True)
+    audit_mode = st.radio("Chế độ so sánh:", ["🤖 Tự động", "🏭 Chỉ tìm hàng Production"], horizontal=True)
 
 file_audit = st.file_uploader("📤 Upload file PDF cần kiểm tra", type="pdf", key="audit_main")
 
@@ -158,7 +158,7 @@ if file_audit:
         relevant_data = db_res.data if db_res.data else []
 
         if not relevant_data:
-            st.warning("⚠️ Không tìm thấy mẫu phù hợp tiêu chí trong kho.")
+            st.warning("⚠️ Không tìm thấy mẫu phù hợp trong kho.")
         else:
             img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
             v_test = model_ai(transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])(img_t).unsqueeze(0)).flatten().detach().cpu().numpy().reshape(1, -1).astype(np.float32)
@@ -166,7 +166,7 @@ if file_audit:
             matches = []
             for item in relevant_data:
                 v_ref = np.array(item["vector"]).reshape(1, -1).astype(np.float32)
-                score = float(cosine_similarity(v_test, v_ref)[0][0])
+                score = float(cosine_similarity(v_test, v_ref))
                 matches.append({"item": item, "score": score})
             
             top_matches = sorted(matches, key=lambda x: x['score'], reverse=True)[:5]
@@ -177,23 +177,22 @@ if file_audit:
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown("### 📄 ĐANG KIỂM")
-                st.image(target["img"], use_container_width=True)
+                st.image(target["img"])
                 st.table(pd.DataFrame([{"Hạng mục": k, "Số đo": v} for k,v in target["specs"].items()]))
             with c2:
                 st.markdown(f"### ✨ MẪU GỐC: {selected_sample['file_name']}")
-                st.image(selected_sample['image_url'], use_container_width=True)
+                st.image(selected_sample['image_url'])
                 ref_specs = selected_sample['spec_json']
                 clean_ref_map = {ultra_clean(k): v for k, v in ref_specs.items()}
                 rows = []
                 for k, v in target["specs"].items():
                     v_ref = clean_ref_map.get(ultra_clean(k), 0)
                     diff = round(v - v_ref, 3)
-                    res = "Khớp" if abs(diff) < 0.125 else "Lệch"
-                    rows.append({"Vị trí": k, "Mới": v, "Kho": v_ref, "Chênh lệch": diff, "Kết quả": res})
+                    rows.append({"Thông số": k, "Mới": v, "Kho": v_ref, "Kết quả": "Khớp" if abs(diff) < 0.125 else "Lệch"})
                 st.table(pd.DataFrame(rows).style.map(lambda x: 'color: green; font-weight: bold' if x == 'Khớp' else 'color: red; font-weight: bold', subset=['Kết quả']))
             
             out = io.BytesIO()
             with pd.ExcelWriter(out, engine='xlsxwriter') as writer: pd.DataFrame(rows).to_excel(writer, index=False)
-            st.download_button("📥 TẢI BÁO CÁO EXCEL", out.getvalue(), f"Audit_{selected_sample['file_name']}.xlsx", type="primary")
+            st.download_button("📥 TẢI BÁO CÁO EXCEL", out.getvalue(), f"Audit_{selected_sample['file_name']}.xlsx", type="primary", use_container_width=True)
     else:
-        st.error("❌ PDF không trích xuất được thông số.")
+        st.error("❌ Không trích xuất được thông số.")
