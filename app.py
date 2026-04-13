@@ -61,56 +61,66 @@ def parse_val(t):
     except: return 0
 
 def extract_pdf_v93(file, customer="Auto"):
-    specs, img_bytes, full_text_list = {}, None, [] # Sử dụng list để gom text
+    specs, img_bytes, full_text_list = {}, None, []
     try:
         file.seek(0)
         pdf_content = file.read()
         doc = fitz.open(stream=pdf_content, filetype="pdf")
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
-        
         for page in doc:
             text = page.get_text()
-            if text: full_text_list.append(str(text)) # Ép kiểu str ở đây
+            if text: full_text_list.append(str(text))
         doc.close()
         
-        # Gộp text an toàn
         full_text = " ".join(full_text_list)
-        
-        category = "KHÁC"
-        # Đảm bảo tên file cũng là string
-        t = (full_text + " " + str(file.name)).upper()
-        if any(x in t for x in ["PANT", "JEAN", "QUẦN"]): category = "QUẦN"
-        elif any(x in t for x in ["SHIRT", "TOP", "ÁO"]): category = "ÁO"
-        elif any(x in t for x in ["DRESS", "VÁY"]): category = "VÁY/ĐẦM"
+        category = detect_category(full_text, file.name)
 
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
                 for tb in tables:
-                    # Chuyển bảng sang DataFrame và ép kiểu chuỗi toàn bộ bảng để tránh lỗi float/NaN
-                    df = pd.DataFrame(tb).fillna("").astype(str) 
+                    df = pd.DataFrame(tb).fillna("")
+                    # 1. Kiểm tra bảng POM (Phải có ít nhất 2 từ khóa đo đạc)
+                    flat_text = " ".join(df.astype(str).values.flatten()).upper()
+                    keywords = ["WAIST", "CHEST", "HIP", "SLEEVE", "LENGTH", "SHOULDER", "THIGH", "RISE", "INSEAM"]
+                    if sum(1 for k in keywords if k in flat_text) < 2: continue
                     
-                    flat_text = " ".join(df.values.flatten()).upper()
-                    if not any(x in flat_text for x in ["WAIST", "CHEST", "HIP", "LENGTH", "SHOULDER"]): continue
-                    
+                    # 2. Tìm vị trí cột Description và cột Giá trị
                     n_col, v_col = -1, -1
                     for r_idx, row in df.iterrows():
-                        row_up = [c.upper() for c in row]
-                        for i, v in enumerate(row_up):
-                            if any(x in v for x in ["DESC", "POM", "POSITION"]): n_col = i
-                            if any(x in v for x in ["NEW", "SPEC", "SAMP", "M", "S", "L"]): v_col = i
+                        row_up = [str(c).upper().strip() for c in row]
                         
+                        # Tìm cột tên POM
+                        for i, v in enumerate(row_up):
+                            if any(x in v for x in ["DESCRIPTION", "POM NAME", "POSITION"]): 
+                                n_col = i; break
+                        
+                        # Tìm cột giá trị (Ưu tiên cột có chữ SPEC, NEW, hoặc cột nằm ngay sau n_col)
+                        for i, v in enumerate(row_up):
+                            if i == n_col: continue
+                            if any(x in v for x in ["SPEC", "NEW", "SAMPLE", "TOL"]): 
+                                v_col = i; break
+                        
+                        # Nếu không tìm thấy cột có tiêu đề chuẩn, lấy cột ngay sau n_col nếu nó chứa số
+                        if n_col != -1 and v_col == -1 and n_col + 1 < len(df.columns):
+                            v_col = n_col + 1
+
                         if n_col != -1 and v_col != -1:
+                            # 3. Quét dữ liệu từ dòng tiếp theo
                             for d_idx in range(r_idx + 1, len(df)):
-                                name = df.iloc[d_idx, n_col].strip().upper()
-                                val = parse_val(df.iloc[d_idx, v_col])
-                                if len(name) > 3 and val > 0: specs[name] = val
+                                name = str(df.iloc[d_idx, n_col]).replace('\n', ' ').strip().upper()
+                                val_raw = df.iloc[d_idx, v_col]
+                                val = parse_val(val_raw)
+                                
+                                if len(name) > 3 and val > 0:
+                                    specs[name] = val
                             break
-                if specs: break
+                if specs: break 
         return {"specs": specs, "img": img_bytes, "category": category}
     except Exception as e:
         st.error(f"Lỗi trích xuất: {e}")
         return None
+
 
 
 # ================= 4. GIAO DIỆN CHÍNH =================
