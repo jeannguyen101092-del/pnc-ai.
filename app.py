@@ -11,7 +11,7 @@ URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V49.0", page_icon="🔍")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V50", page_icon="🔍")
 
 @st.cache_resource
 def init_supabase():
@@ -38,7 +38,7 @@ def get_vector(img_bytes):
         ])
         with torch.no_grad():
             vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
-        return vec.tolist() # Luôn trả về List 512 phần tử
+        return vec.tolist() 
     except:
         return None
 
@@ -61,7 +61,7 @@ def extract_pdf(file):
     file.seek(0)
     pdf_content = file.read()
     
-    # 1. Lấy ảnh trang 1 làm Thumbnail đối soát AI
+    # 1. Lấy ảnh trang 1
     doc = fitz.open(stream=pdf_content, filetype="pdf")
     if len(doc) > 0:
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
@@ -78,12 +78,11 @@ def extract_pdf(file):
                 n_col, v_col = -1, -1
                 for r_idx, row in df.iterrows():
                     row_up = [str(c).upper().strip() for c in row if c]
-                    # Tìm cột POM Name/Description và cột Thông số (NEW/32/34...)
-                    if any(x in " ".join(row_up) for x in ["POM", "DESCRIPTION"]):
+                    if any(x in " ".join(row_up) for x in ["POM", "DESCRIPTION", "DIMENSION"]):
                         for i, v in enumerate(row_up):
-                            if any(x in v for x in ["POM", "DESC"]): n_col = i; break
+                            if any(x in v for x in ["POM", "DESC", "DIMENSION"]): n_col = i; break
                         for i, v in enumerate(row_up):
-                            if any(x in v for x in ["NEW", "SAMPLE", "32", "34"]): v_col = i; break
+                            if any(x in v for x in ["NEW", "SAMPLE", "SPEC", "32", "34", "36"]): v_col = i; break
                         
                         if n_col != -1 and v_col != -1:
                             for d_idx in range(r_idx + 1, len(df)):
@@ -99,9 +98,12 @@ with st.sidebar:
     st.header("⚙️ CÀI ĐẶT")
     if st.button("🧹 Dọn dẹp kho dữ liệu"):
         # Xóa sạch bản ghi cũ để nạp mới chuẩn Vector
-        supabase.table("ai_data").delete().neq("id", 0).execute()
-        st.success("Kho đã trống. Hãy nạp lại mẫu chuẩn!")
-        st.rerun()
+        try:
+            supabase.table("ai_data").delete().neq("id", 0).execute()
+            st.success("Kho đã trống. Hãy nạp lại mẫu chuẩn!")
+            st.rerun()
+        except:
+            st.error("Không thể xóa. Kiểm tra lại quyền RLS của Supabase.")
 
     files = st.file_uploader("Upload Techpack Mẫu", accept_multiple_files=True)
     if files and st.button("🚀 Nạp vào kho"):
@@ -121,11 +123,15 @@ with st.sidebar:
         st.rerun()
 
 # ================= MAIN =================
-st.title("🔍 AI Fashion Auditor V49.0")
+st.title("🔍 AI Fashion Auditor V50")
 
 # Lấy dữ liệu từ Database
-db_res = supabase.table("ai_data").select("*").execute()
-data_lib = db_res.data if db_res.data else []
+try:
+    db_res = supabase.table("ai_data").select("*").execute()
+    data_lib = db_res.data if db_res.data else []
+except:
+    data_lib = []
+    st.error("Lỗi kết nối Database.")
 
 if data_lib:
     st.info(f"Kho đang có **{len(data_lib)}** mẫu chuẩn. Sẵn sàng đối soát!")
@@ -141,19 +147,21 @@ if audit_file:
         v_test = get_vector(target["img"])
         
         if v_test and data_lib:
-            v_test_np = np.array(v_test).reshape(1, -1)
+            # FIX: Đảm bảo v_test là 2D array chuẩn
+            v_test_np = np.atleast_2d(v_test)
             matches = []
             
             for item in data_lib:
                 # Kiểm tra chặt chẽ độ dài vector (phải là 512)
                 if item.get("vector") and len(item["vector"]) == 512:
-                    v_ref = np.array(item["vector"]).reshape(1, -1)
-                    score = float(cosine_similarity(v_test_np, v_ref))
+                    v_ref = np.atleast_2d(item["vector"])
+                    score = float(cosine_similarity(v_test_np, v_ref)[0][0])
                     matches.append({"item": item, "score": score})
             
             if matches:
                 # Sắp xếp và lấy mẫu khớp nhất
-                best = sorted(matches, key=lambda x: x['score'], reverse=True)[0]
+                best_list = sorted(matches, key=lambda x: x['score'], reverse=True)
+                best = best_list[0]
                 
                 st.subheader(f"✨ Kết quả khớp nhất: {best['item']['file_name']} ({best['score']*100:.1f}%)")
                 
@@ -164,7 +172,7 @@ if audit_file:
                 # So khớp bảng POM
                 ref_specs = best['item']['spec_json']
                 diff_rows = []
-                # Tạo map chuẩn hóa tên POM để so khớp
+                # Tạo map chuẩn hóa tên POM để so khớp (không phân biệt dấu cách, viết hoa)
                 clean_ref = {re.sub(r'[^A-Z0-9]', '', k.upper()): (k, v) for k, v in ref_specs.items()}
 
                 for k, v in target["specs"].items():
