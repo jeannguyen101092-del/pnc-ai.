@@ -39,18 +39,24 @@ model_ai = load_model()
 def detect_category(text, filename=""):
     t = (str(text) + " " + str(filename)).upper()
     
-    # Ưu tiên các từ khóa ÁO trước để tránh nhầm "Jean Jacket" thành "Quần Jean"
-    if any(x in t for x in ["JACKET", "SHIRT", "HOODIE", "TOP", "TEE", "COAT", "ÁO"]): 
-        return "ÁO"
+    # Danh sách từ khóa đặc trưng
+    keywords = {
+        "VÁY/ĐẦM": ["DRESS", "SKIRT", "VÁY", "ĐẦM", "GOWN"],
+        "QUẦN": ["PANT", "JEAN", "SHORT", "TROUSER", "BOTTOM", "QUẦN"],
+        "ÁO": ["SHIRT", "JACKET", "HOODIE", "TOP", "TEE", "COAT", "ÁO", "SWEATER"]
+    }
     
-    # Sau đó mới đến Quần
-    if any(x in t for x in ["PANT", "JEAN", "SHORT", "TROUSER", "BOTTOM", "QUẦN"]): 
-        return "QUẦN"
+    # Đếm số lần xuất hiện của từng loại
+    scores = {"VÁY/ĐẦM": 0, "QUẦN": 0, "ÁO": 0}
+    for cat, keys in keywords.items():
+        for k in keys:
+            scores[cat] += t.count(k)
     
-    if any(x in t for x in ["DRESS", "SKIRT", "GOWN", "VÁY", "ĐẦM"]): 
-        return "VÁY/ĐẦM"
-        
-    return "KHÁC"
+    # Lấy loại có điểm cao nhất
+    detected = max(scores, key=scores.get)
+    
+    # Nếu không có từ khóa nào, mặc định là KHÁC
+    return detected if scores[detected] > 0 else "KHÁC"
 
 def parse_val(t):
     try:
