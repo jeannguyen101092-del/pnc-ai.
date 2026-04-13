@@ -6,24 +6,24 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
-# ================= 1. CẤU HÌNH & STYLE =================
-st.set_page_config(layout="wide", page_title="AI V20.0 - Fashion Auditor", page_icon="🛡️")
-
-st.markdown("""
-    <style>
-    .stTable { font-size: 12px !important; }
-    .css-1offfwp { background-color: #f0f2f6 !important; }
-    .stButton>button { width: 100%; border-radius: 5px; }
-    </style>
-    """, unsafe_allow_html=True)
-
-# Kết nối Supabase (Thay bằng thông tin của bạn)
+# ================= 1. CẤU HÌNH (THAY THÔNG TIN THẬT) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-# ================= 2. MODEL & UTILS =================
+st.set_page_config(layout="wide", page_title="AI V20.0 - PRO", page_icon="🛡️")
+
+# CSS Style
+st.markdown("""
+    <style>
+    .stTable { font-size: 12px !important; }
+    .css-1offfwp { background-color: #f0f2f6 !important; }
+    .stButton>button { width: 100%; border-radius: 5px; background-color: #1f77b4; color: white; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# ================= 2. MODEL AI =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -31,6 +31,7 @@ def load_model():
 
 model_ai = load_model()
 
+# ================= 3. HÀM XỬ LÝ DỮ LIỆU =================
 def parse_val(t):
     try:
         txt = str(t).replace(',', '.').strip().lower()
@@ -47,12 +48,14 @@ def extract_pdf(file):
     specs, img_bytes = {}, None
     try:
         pdf_content = file.read()
+        # Lấy ảnh preview trang 1
         doc = fitz.open(stream=pdf_content, filetype="pdf")
         if len(doc) > 0:
-            img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
+            img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
         doc.close()
+        # Trích xuất bảng
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
-            for page in pdf.pages:
+            for page in pdf.pages[:2]: # Chỉ quét 2 trang đầu để tránh treo
                 for tb in page.extract_tables():
                     df = pd.DataFrame(tb)
                     for r_idx, row in df.iterrows():
@@ -70,94 +73,86 @@ def extract_pdf(file):
         return {"specs": specs, "img": img_bytes}
     except: return None
 
-# ================= 3. SIDEBAR (BỔ SUNG NÚT NẠP KHO) =================
+# ================= 4. SIDEBAR =================
 with st.sidebar:
-    st.title("🛡️ AI V20.0")
-    
-    # Hiển thị số lượng mẫu hiện có
-    db_res = supabase.table("ai_data").select("id", count="exact").execute()
-    st.button(f"📁 Kho mẫu: {db_res.count if db_res.count else 0} file")
+    st.title("🛡️ AI V20.0 - PRO")
+    res = supabase.table("ai_data").select("id", count="exact").execute()
+    st.info(f"📁 Kho mẫu: {res.count if res.count else 0} file")
     
     st.divider()
-    st.subheader("🚀 NẠP FILE VÀO KHO")
-    new_files = st.file_uploader("Chọn PDF mẫu để nạp", type="pdf", accept_multiple_files=True, key="upload_kho")
+    st.subheader("🚀 NẠP MẪU MỚI")
+    new_files = st.file_uploader("Upload Techpack gốc", type="pdf", accept_multiple_files=True)
     
     if new_files and st.button("XÁC NHẬN NẠP KHO"):
         for f in new_files:
             data = extract_pdf(f)
-            if data and data['specs']:
-                # Tạo vector
+            if data and data['specs'] and data['img']:
                 img = Image.open(io.BytesIO(data['img'])).convert('RGB')
                 tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
                 vec = model_ai(tf(img).unsqueeze(0)).flatten().detach().cpu().numpy().tolist()
                 
-                # Upload
-                path = f"lib_{f.name.replace(' ', '_')}.png"
-                supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
+                # FIX TÊN FILE: Đảm bảo đuôi .png chuẩn
+                safe_name = f.name.replace(".pdf", "").replace(" ", "_")
+                path = f"lib_{safe_name}.png"
+                
+                supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true", "content-type": "image/png"})
                 url = supabase.storage.from_(BUCKET).get_public_url(path)
+                
                 supabase.table("ai_data").insert({"file_name": f.name, "vector": vec, "spec_json": data['specs'], "image_url": url}).execute()
         st.success("Đã nạp kho thành công!")
         st.rerun()
 
-    st.divider()
-    st.write("**Size cần so sánh**")
-    size = st.selectbox("Size", ["XS", "S", "M", "L", "XL"], index=2)
-    st.write("**CHẾ ĐỘ TÌM KIẾM**")
-    mode = st.selectbox("Mode", ["Tự động tìm", "Chọn thủ công"])
+    if st.button("🗑️ Dọn dẹp kho (Xóa hết)"):
+        supabase.table("ai_data").delete().neq("id", 0).execute()
+        st.rerun()
 
-# ================= 4. MAIN (HIỂN THỊ SO SÁNH) =================
+# ================= 5. MAIN =================
 st.subheader("📊 PRODUCT SUMMARY COMPARISON")
-file_audit = st.file_uploader("Upload file đối soát", type="pdf", label_visibility="collapsed", key="audit_main")
+file_audit = st.file_uploader("Kéo thả file cần kiểm tra vào đây", type="pdf", label_visibility="collapsed")
 
 if file_audit:
-    with st.spinner("Đang trích xuất và đối soát..."):
-        target = extract_pdf(file_audit)
-        
+    target = extract_pdf(file_audit)
     if target and target["specs"]:
         db_all = supabase.table("ai_data").select("*").execute()
         if db_all.data:
-            # Logic AI Matching
+            # AI Matching
             img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
             tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
-            v_test = model_ai(tf(img_t).unsqueeze(0)).flatten().detach().cpu().numpy().reshape(1, -1)
+            v_test = model_ai(tf(img_t).unsqueeze(0)).flatten().detach().cpu().numpy().reshape(1, -1).astype(np.float32)
             
             matches = []
             for item in db_all.data:
-                v_ref = np.atleast_2d(item["vector"]).astype(np.float32)
-                score = float(cosine_similarity(v_test, v_ref))
-                matches.append({"item": item, "score": score})
+                if item.get("vector") and len(item["vector"]) == 512:
+                    v_ref = np.array(item["vector"]).reshape(1, -1).astype(np.float32)
+                    score = float(cosine_similarity(v_test, v_ref))
+                    matches.append({"item": item, "score": score})
             
-            best = sorted(matches, key=lambda x: x['score'], reverse=True)[0]
-
-            # HIỂN THỊ SONG SONG
-            c1, c2 = st.columns(2)
-            with c1:
-                st.info("📄 BẢN ĐANG KIỂM")
-                st.image(target["img"], use_container_width=True)
-                st.table(pd.DataFrame([{"Hạng mục": k, "Số đo": v} for k,v in target["specs"].items()]))
-
-            with c2:
-                st.success(f"✨ MẪU GỐC (Khớp {best['score']*100:.1f}%)")
-                st.image(best['item']['image_url'], use_container_width=True)
+            if matches:
+                best = sorted(matches, key=lambda x: x['score'], reverse=True)[0]
                 
-                ref_specs = best['item']['spec_json']
-                rows = []
-                for k, v in target["specs"].items():
-                    k_c = re.sub(r'[^A-Z0-9]', '', k)
-                    v_ref = 0
-                    for rk, rv in ref_specs.items():
-                        if re.sub(r'[^A-Z0-9]', '', rk) == k_c: v_ref = rv; break
-                    diff = round(v - v_ref, 3)
-                    rows.append({"Thông số": k, "Mới": v, "Kho mẫu": v_ref, "Kết quả": "Khớp" if abs(diff) < 0.125 else "Lệch"})
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.info("📄 BẢN ĐANG KIỂM")
+                    st.image(target["img"], use_container_width=True)
+                    st.table(pd.DataFrame([{"Hạng mục": k, "Số đo": v} for k,v in target["specs"].items()]))
                 
-                df_res = pd.DataFrame(rows)
-                st.table(df_res.style.applymap(lambda x: 'color: green' if x == 'Khớp' else 'color: red', subset=['Kết quả']))
-
-            # NÚT XUẤT EXCEL
-            st.divider()
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df_res.to_excel(writer, index=False)
-            st.download_button("📥 TẢI BÁO CÁO EXCEL", output.getvalue(), "Audit_Report.xlsx", type="primary")
-    else:
-        st.error("Không trích xuất được bảng thông số từ PDF này.")
+                with c2:
+                    st.success(f"✨ MẪU GỐC (Khớp {best['score']*100:.1f}%)")
+                    # Hiển thị ảnh mẫu từ URL công khai
+                    st.image(best['item']['image_url'], use_container_width=True)
+                    
+                    # So sánh bảng
+                    ref_specs = best['item']['spec_json']
+                    rows = []
+                    for k, v in target["specs"].items():
+                        k_c = re.sub(r'[^A-Z0-9]', '', k.upper())
+                        v_ref = 0
+                        for rk, rv in ref_specs.items():
+                            if re.sub(r'[^A-Z0-9]', '', rk.upper()) == k_c: v_ref = rv; break
+                        diff = round(v - v_ref, 3)
+                        rows.append({"Thông số": k, "Mới": v, "Kho mẫu": v_ref, "Kết quả": "Khớp" if abs(diff) < 0.125 else "Lệch"})
+                    
+                    df_res = pd.DataFrame(rows)
+                    st.table(df_res.style.applymap(lambda x: 'color: green' if x == 'Khớp' else 'color: red', subset=['Kết quả']))
+            else:
+                st.warning("⚠️ Kho chưa có dữ liệu vector chuẩn. Hãy dọn dẹp và nạp lại.")
