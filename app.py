@@ -6,31 +6,31 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
-# ================= 1. CẤU HÌNH GIAO DIỆN =================
+# ================= 1. CONFIG & STYLE =================
 st.set_page_config(layout="wide", page_title="AI V20.0 - Fashion Auditor", page_icon="🛡️")
 
-# CSS giả lập giao diện chuyên nghiệp
 st.markdown("""
     <style>
-    .main { background-color: #f5f7f9; }
-    .stTable { font-size: 11px !important; }
-    thead th { background-color: #f0f2f6 !important; }
-    .css-1offfwp { background-color: #262730 !important; } /* Sidebar dark */
+    .stTable { font-size: 12px !important; }
+    [data-testid="stMetricValue"] { font-size: 22px; }
+    .css-1offfwp { background-color: #262730 !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# Kết nối Supabase (Thay thông tin của bạn)
+# Kết nối Supabase
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase = create_client(URL, KEY)
 
+# ================= 2. MODEL (FIX LỖI NAMEERROR) =================
 @st.cache_resource
-def load_ai():
+def load_model(): # Định nghĩa tên hàm là load_model để khớp với dòng gọi hàm bên dưới
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
-model_ai = load_model()
 
-# ================= 2. HÀM XỬ LÝ DỮ LIỆU =================
+model_ai = load_model() # Gọi hàm chính xác
+
+# ================= 3. UTILS =================
 def parse_val(t):
     try:
         txt = str(t).replace(',', '.').strip().lower()
@@ -60,7 +60,7 @@ def extract_pdf(file):
                         if any(x in " ".join(row_up) for x in ["POM", "DESCRIPTION"]):
                             n_idx, v_idx = 0, 1
                             for i, v in enumerate(row_up):
-                                if "DESC" in v or "POM" in v: n_idx = i
+                                if any(x in v for x in ["DESC", "POM"]): n_idx = i
                                 if any(x in v for x in ["NEW", "SAMPLE", "M", "32"]): v_idx = i
                             for d_idx in range(r_idx + 1, len(df)):
                                 name = str(df.iloc[d_idx, n_idx]).upper()
@@ -70,29 +70,29 @@ def extract_pdf(file):
         return {"specs": specs, "img": img_bytes}
     except: return None
 
-# ================= 3. SIDEBAR GIAO DIỆN MẪU =================
+# ================= 4. SIDEBAR =================
 with st.sidebar:
-    st.markdown("### 🛡️ AI V20.0")
+    st.title("🛡️ AI V20.0")
     st.button("📁 Kho mẫu: 6 file", use_container_width=True)
     st.button("🧩 CẬP NHẬT KHO MẪU", use_container_width=True)
     st.divider()
     st.write("**Size cần so sánh**")
-    size = st.selectbox("Chọn size", ["XS", "S", "M", "L", "XL"], index=2)
+    size = st.selectbox("Size", ["XS", "S", "M", "L", "XL"], index=2, label_visibility="collapsed")
     st.write("**CHỌN MẪU THỦ CÔNG**")
-    mode = st.selectbox("Chế độ", ["Tự động tìm", "Chọn từ danh sách"])
+    mode = st.selectbox("Chế độ", ["Tự động tìm", "Chọn từ kho"], label_visibility="collapsed")
 
-# ================= 4. HIỂN THỊ CHI TIẾT & XUẤT EXCEL =================
-st.subheader("🔍 ĐỐI SOÁT THÔNG SỐ SẢN PHẨM")
-uploaded_file = st.file_uploader("Upload Techpack", type="pdf", label_visibility="collapsed")
+# ================= 5. MAIN =================
+st.subheader("📊 PRODUCT SUMMARY COMPARISON")
+file = st.file_uploader("Upload Techpack", type="pdf", label_visibility="collapsed")
 
-if uploaded_file:
-    target = extract_pdf(uploaded_file)
+if file:
+    target = extract_pdf(file)
     if target and target["specs"]:
         db_res = supabase.table("ai_data").select("*").execute()
         if db_res.data:
-            # So khớp AI
+            # AI Matching
             img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
-            tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+            tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
             v_test = model_ai(tf(img_t).unsqueeze(0)).flatten().detach().cpu().numpy().reshape(1, -1)
             
             matches = []
@@ -102,80 +102,39 @@ if uploaded_file:
                 matches.append({"item": item, "score": score})
             
             best = sorted(matches, key=lambda x: x['score'], reverse=True)[0]
-            
-            # CHIA 2 CỘT SONG SONG
+
+            # DISPLAY SIDE-BY-SIDE
             col1, col2 = st.columns(2)
-            
             with col1:
-                st.caption("📄 BẢN ĐANG KIỂM")
-                st.image(target["img"])
+                st.info("📄 BẢN ĐANG KIỂM TRA")
+                st.image(target["img"], use_container_width=True)
                 df_l = pd.DataFrame([{"STT": i+1, "Hạng mục": k, "Số đo": v} for i, (k,v) in enumerate(target["specs"].items())])
                 st.table(df_l)
 
             with col2:
-                st.caption(f"✨ MẪU GỐC (Khớp {best['score']*100:.1f}%)")
-                st.image(best['item']['image_url'])
+                st.success(f"✨ MẪU GỐC (Khớp {best['score']*100:.1f}%)")
+                st.image(best['item']['image_url'], use_container_width=True)
                 
-                # Tính toán bảng so sánh
+                # So sánh logic
                 ref_specs = best['item']['spec_json']
-                data_right = []
+                data_r = []
                 for k, v in target["specs"].items():
                     k_clean = re.sub(r'[^A-Z0-9]', '', k)
                     v_ref = 0
                     for rk, rv in ref_specs.items():
                         if re.sub(r'[^A-Z0-9]', '', rk) == k_clean:
                             v_ref = rv; break
-                    
                     diff = round(v - v_ref, 3)
-                    status = "Khớp" if abs(diff) < 0.125 else "Lệch"
-                    data_right.append({"Thông số": k, "Mới": v, "Kho mẫu": v_ref, "Chênh lệch": status})
+                    res = "Khớp" if abs(diff) < 0.125 else "Lệch"
+                    data_r.append({"Thông số": k, "Mới": v, "Kho mẫu": v_ref, "Kết quả": res})
                 
-                df_r = pd.DataFrame(data_right)
-                
-                # Hàm tô màu kết quả
-                def color_status(val):
-                    color = 'green' if val == 'Khớp' else 'red'
-                    return f'color: {color}; font-weight: bold'
-                
-                st.table(df_r.style.applymap(color_status, subset=['Chênh lệch']))
+                df_r = pd.DataFrame(data_r)
+                st.table(df_r.style.applymap(lambda x: 'color: green' if x == 'Khớp' else 'color: red', subset=['Kết quả']))
 
-            # ================= 5. LOGIC XUẤT EXCEL =================
+            # XUẤT EXCEL
             st.divider()
-            
-            # Tạo buffer để lưu file Excel
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df_r.to_excel(writer, index=False, sheet_name='Audit_Report')
-                
-                workbook  = writer.book
-                worksheet = writer.sheets['Audit_Report']
-                
-                # Định dạng Header
-                header_format = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
-                for col_num, value in enumerate(df_r.columns.values):
-                    worksheet.write(0, col_num, value, header_format)
-                
-                # Định dạng màu xanh/đỏ cho cột Chênh lệch
-                format_green = workbook.add_format({'font_color': 'green', 'bold': True})
-                format_red = workbook.add_format({'font_color': 'red', 'bold': True})
-                
-                worksheet.conditional_format('D2:D100', {
-                    'type':     'cell',
-                    'criteria': '==',
-                    'value':    '"Khớp"',
-                    'format':   format_green
-                })
-                worksheet.conditional_format('D2:D100', {
-                    'type':     'cell',
-                    'criteria': '==',
-                    'value':    '"Lệch"',
-                    'format':   format_red
-                })
-
-            st.download_button(
-                label="📥 TẢI BÁO CÁO EXCEL",
-                data=output.getvalue(),
-                file_name=f"Audit_{best['item']['file_name']}.xlsx",
-                mime="application/vnd.ms-excel",
-                type="primary"
-            )
+                df_r.to_excel(writer, index=False, sheet_name='Audit')
+            
+            st.download_button("📥 TẢI BÁO CÁO EXCEL", output.getvalue(), "Audit_Report.xlsx", "application/vnd.ms-excel", type="primary")
