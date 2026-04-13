@@ -12,15 +12,13 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI V20.0 - PRO V74", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="AI V20.0 - PRO V75", page_icon="🛡️")
 
-# CSS làm đẹp giao diện
+# CSS làm đẹp bảng
 st.markdown("""
     <style>
     .stTable { font-size: 11px !important; }
     thead th { background-color: #f0f2f6 !important; }
-    .status-khop { color: green; font-weight: bold; }
-    .status-lech { color: red; font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -31,7 +29,7 @@ def load_model():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_model()
 
-# ================= 3. HÀM XỬ LÝ DỮ LIỆU =================
+# ================= 3. HÀM TRÍCH XUẤT (FIX CỘT DESCRIPTION) =================
 def parse_val(t):
     try:
         txt = str(t).replace(',', '.').strip().lower()
@@ -60,18 +58,26 @@ def extract_pdf(file):
                 for tb in tables:
                     df = pd.DataFrame(tb)
                     if df.empty or len(df.columns) < 2: continue
+                    
                     n_col, v_col = -1, -1
                     for r_idx, row in df.head(15).iterrows():
                         row_up = [str(c).upper().strip() for c in row if c]
-                        if any(x in " ".join(row_up) for x in ["DESCRIPTION", "POM", "MEASUREMENT"]):
+                        
+                        # CHỈNH SỬA: Tìm cột DESCRIPTION trước
+                        if any(x in " ".join(row_up) for x in ["DESCRIPTION", "DESC"]):
                             for i, v in enumerate(row_up):
-                                if any(x in v for x in ["DESC", "POM", "NAME"]): n_col = i; break
+                                if "DESCRIPTION" in v or "DESC" in v:
+                                    n_col = i; break
+                                    
+                            # Tìm cột giá trị (NEW hoặc SAMPLE)
                             for i, v in enumerate(row_up):
                                 if any(target in v for target in ["NEW", "SAMPLE", "SPEC", "32", "34"]):
                                     v_col = i; break
+                            
                             if n_col != -1 and v_col != -1:
                                 for d_idx in range(r_idx + 1, len(df)):
                                     d_row = df.iloc[d_idx]
+                                    # Lấy text dài từ cột Description
                                     name = str(d_row[n_col]).replace('\n', ' ').strip().upper()
                                     if len(name) < 3 or any(x in name for x in ["TOL", "REF"]): continue
                                     val = parse_val(d_row[v_col])
@@ -83,7 +89,7 @@ def extract_pdf(file):
 
 # ================= 4. SIDEBAR =================
 with st.sidebar:
-    st.header("🛡️ AI V20.0 - PRO V74")
+    st.header("🛡️ AI V20.0 - PRO V75")
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
     st.info(f"📁 Kho mẫu: {res_count.count if res_count.count else 0} file")
     
@@ -108,7 +114,7 @@ with st.sidebar:
         supabase.table("ai_data").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
         st.rerun()
 
-# ================= 5. MAIN (SO SÁNH) =================
+# ================= 5. MAIN (SO SÁNH & XUẤT EXCEL) =================
 st.subheader("📊 PRODUCT SUMMARY COMPARISON")
 file_audit = st.file_uploader("Upload file đối soát", type="pdf", label_visibility="collapsed")
 
@@ -117,9 +123,7 @@ if file_audit:
         target = extract_pdf(file_audit)
     
     if target and target["specs"]:
-        st.success(f"✨ Tìm thấy {len(target['specs'])} hạng mục thông số.")
         db_all = supabase.table("ai_data").select("*").execute()
-        
         if db_all.data:
             img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
             tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
@@ -129,14 +133,12 @@ if file_audit:
             for item in db_all.data:
                 if item.get("vector") and len(item["vector"]) == 512:
                     v_ref = np.array(item["vector"]).reshape(1, -1).astype(np.float32)
-                    
-                    # 🔥 FIX LỖI 155: Lấy giá trị vô hướng từ ma trận [0][0]
                     score = float(cosine_similarity(v_test, v_ref)[0][0]) 
                     matches.append({"item": item, "score": score})
             
             if matches:
-                top = sorted(matches, key=lambda x: x['score'], reverse=True)
-                best = top[0]['item']
+                top_results = sorted(matches, key=lambda x: x['score'], reverse=True)
+                best = top_results[0]['item']
                 
                 c1, c2 = st.columns(2)
                 with c1:
@@ -145,8 +147,10 @@ if file_audit:
                     st.table(pd.DataFrame([{"Hạng mục": k, "Số đo": v} for k,v in target["specs"].items()]))
                 
                 with c2:
-                    st.success(f"✨ MẪU GỐC TRONG KHO (Khớp {top[0]['score']*100:.1f}%)")
+                    st.success(f"✨ MẪU GỐC TRONG KHO (Khớp {top_results[0]['score']*100:.1f}%)")
                     st.image(best['image_url'], use_container_width=True)
+                    
+                    # Bảng so sánh chi tiết
                     ref_specs = best['spec_json']
                     rows = []
                     clean_ref = {re.sub(r'[^A-Z0-9]', '', k.upper()): v for k, v in ref_specs.items()}
@@ -154,9 +158,16 @@ if file_audit:
                         k_c = re.sub(r'[^A-Z0-9]', '', k.upper())
                         v_ref = clean_ref.get(k_c, 0)
                         diff = round(v - v_ref, 3)
-                        rows.append({"Thông số": k, "Mới": v, "Kho mẫu": v_ref, "Kết quả": "Khớp" if abs(diff) < 0.125 else "Lệch"})
+                        rows.append({"Vị trí so sánh": k, "Mới": v, "Kho mẫu": v_ref, "Kết quả": "Khớp" if abs(diff) < 0.1 else "Lệch"})
                     
                     df_res = pd.DataFrame(rows)
-                    st.table(df_res.style.map(lambda x: 'color: green; font-weight: bold' if x == 'Khớp' else 'color: red; font-weight: bold' if x == 'Lệch' else '', subset=['Kết quả']))
+                    st.table(df_res.style.map(lambda x: 'color: green; font-weight: bold' if x == 'Khớp' else 'color: red; font-weight: bold', subset=['Kết quả']))
+
+                # NÚT XUẤT EXCEL
+                st.divider()
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    df_res.to_excel(writer, index=False, sheet_name='Audit_Report')
+                st.download_button(label="📥 TẢI BÁO CÁO EXCEL", data=output.getvalue(), file_name=f"Audit_{best['file_name']}.xlsx", mime="application/vnd.ms-excel")
             else:
-                st.warning("⚠️ Kho chưa có dữ liệu chuẩn. Hãy dọn dẹp và nạp lại.")
+                st.warning("⚠️ Không tìm thấy mẫu phù hợp.")
