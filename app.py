@@ -12,7 +12,11 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V88", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V90", page_icon="🛡️")
+
+# Khởi tạo key để reset uploader
+if 'up_key' not in st.session_state:
+    st.session_state.up_key = 0
 
 # CSS làm đẹp giao diện
 st.markdown("""
@@ -39,7 +43,6 @@ def detect_category(text):
     return "KHÁC"
 
 def ultra_clean(t):
-    """Làm sạch tên hạng mục: Xóa sạch dấu cách, xuống dòng, ký tự đặc biệt"""
     if not t: return ""
     return re.sub(r'[^A-Z0-9]', '', str(t).upper().strip())
 
@@ -97,21 +100,19 @@ def extract_pdf(file):
         return {"specs": specs, "img": img_bytes, "category": cat}
     except: return None
 
-# ================= 4. SIDEBAR (NẠP KHO) =================
+# ================= 4. SIDEBAR (NẠP XONG TỰ XÓA) =================
 with st.sidebar:
     st.header("📂 QUẢN LÝ KHO MẪU")
-    try:
-        res_db = supabase.table("ai_data").select("file_name", "category").execute()
-        data_lib = res_db.data if res_db.data else []
-        st.info(f"Kho hiện tại: {len(data_lib)} file")
-    except:
-        st.error("Chưa kết nối Supabase!")
-        data_lib = []
+    res_db = supabase.table("ai_data").select("file_name", "category").execute()
+    data_lib = res_db.data if res_db.data else []
+    st.info(f"Kho hiện tại: {len(data_lib)} file")
 
     st.divider()
-    st.subheader("🚀 NẠP TECHPACK MỚI")
-    new_files = st.file_uploader("Upload PDF mẫu chuẩn", type="pdf", accept_multiple_files=True, key="up_kho")
+    # Sử dụng up_key để reset khung upload
+    new_files = st.file_uploader("Nạp Techpack mới", type="pdf", accept_multiple_files=True, key=f"up_{st.session_state.up_key}")
+    
     if new_files and st.button("🚀 XÁC NHẬN NẠP", use_container_width=True):
+        count_success = 0
         for f in new_files:
             if any(d['file_name'] == f.name for d in data_lib):
                 st.warning(f"⏩ Đã có: {f.name}"); continue
@@ -125,16 +126,21 @@ with st.sidebar:
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true", "content-type": "image/png"})
                     url = supabase.storage.from_(BUCKET).get_public_url(path)
                     supabase.table("ai_data").insert({"file_name": f.name, "vector": vec, "spec_json": data['specs'], "image_url": url, "category": data['category']}).execute()
-                    st.toast(f"✅ Đã nạp {f.name}")
-        st.rerun()
+                    count_success += 1
+        
+        if count_success > 0:
+            st.success(f"✅ Đã nạp thành công {count_success} file!")
+            # TĂNG KEY ĐỂ TỰ XÓA KHUNG UPLOAD
+            st.session_state.up_key += 1
+            st.rerun()
 
 # ================= 5. MAIN (ĐỐI SOÁT) =================
-st.title("🔍 AI SMART AUDITOR - V20.0")
+st.title("🔍 AI SMART AUDITOR - V90")
 
 file_audit = st.file_uploader("📤 Upload file PDF cần đối soát", type="pdf", key="audit_main")
 
 if file_audit:
-    with st.spinner("Đang trích xuất dữ liệu đối soát..."):
+    with st.spinner("Đang phân tích dữ liệu đối soát..."):
         target = extract_pdf(file_audit)
     
     if target:
@@ -143,51 +149,50 @@ if file_audit:
         same_cat_data = db_all.data if db_all.data else []
 
         if not same_cat_data:
-            st.warning(f"⚠️ Chưa có mẫu cùng loại **{target['category']}** trong kho để đối chiếu.")
+            st.warning(f"⚠️ Chưa có mẫu cùng chủng loại trong kho.")
         else:
-            # --- DUAL MODE ---
             st.divider()
-            mode = st.radio("Chế độ so sánh:", ["🤖 Tự động (AI)", "👆 Chọn mẫu thủ công"], horizontal=True)
+            # LOGIC TÌM KIẾM TƯƠNG ĐỒNG TOP 5
+            img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
+            tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
+            v_test = model_ai(tf(img_t).unsqueeze(0)).flatten().detach().cpu().numpy().reshape(1, -1).astype(np.float32)
             
-            sel_sample = None
-            if mode == "🤖 Tự động (AI)":
-                img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
-                v_test = model_ai(transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])(img_t).unsqueeze(0)).flatten().detach().cpu().numpy().reshape(1, -1).astype(np.float32)
-                matches = []
-                for item in same_cat_data:
-                    v_ref = np.array(item["vector"]).reshape(1, -1).astype(np.float32)
-                    score = float(cosine_similarity(v_test, v_ref)[0][0])
-                    matches.append({"item": item, "score": score})
-                best_match = sorted(matches, key=lambda x: x['score'], reverse=True)[0]
-                sel_sample = best_match['item']
-                st.write(f"✅ AI khớp nhất với: **{sel_sample['file_name']}** ({best_match['score']*100:.1f}%)")
-            else:
-                choice = st.selectbox("Chọn mẫu gốc trong kho:", [d['file_name'] for d in same_cat_data])
-                sel_sample = next(d for d in same_cat_data if d['file_name'] == choice)
+            matches = []
+            for item in same_cat_data:
+                v_ref = np.array(item["vector"]).reshape(1, -1).astype(np.float32)
+                score = float(cosine_similarity(v_test, v_ref)[0][0])
+                matches.append({"item": item, "score": score})
+            
+            top_matches = sorted(matches, key=lambda x: x['score'], reverse=True)[:5]
+            
+            st.write("### 🤖 Kết quả tương đồng (AI gợi ý Top 5)")
+            selected_match = st.selectbox(
+                "Chọn mẫu gốc bạn muốn dùng để đối soát:",
+                top_matches,
+                format_func=lambda x: f"{x['item']['file_name']} (Độ khớp: {x['score']*100:.1f}%)"
+            )
+            selected_sample = selected_match['item']
 
-            # --- HIỂN THỊ SONG SONG ---
+            # HIỂN THỊ SONG SONG
             c1, c2 = st.columns(2)
             with c1:
-                st.markdown("### 📄 ĐANG KIỂM TRA")
+                st.markdown("### 📄 ĐANG KIỂM")
                 st.image(target["img"], use_container_width=True)
                 st.table(pd.DataFrame([{"Hạng mục": k, "Số đo": v} for k,v in target["specs"].items()]))
             
             with c2:
-                st.markdown(f"### ✨ MẪU GỐC: {sel_sample['file_name']}")
-                st.image(sel_sample['image_url'], use_container_width=True)
+                st.markdown(f"### ✨ MẪU GỐC: {selected_sample['file_name']}")
+                st.image(selected_sample['image_url'], use_container_width=True)
                 
-                # --- FIX LỖI MẪU GỐC = 0 TẠI ĐÂY ---
-                ref_specs = sel_sample['spec_json']
-                # Tạo bản đồ so khớp đã làm sạch
+                ref_specs = selected_sample['spec_json']
                 clean_ref_map = {ultra_clean(k): v for k, v in ref_specs.items()}
                 
                 rows = []
                 for k, v in target["specs"].items():
-                    # So khớp bằng tên đã làm sạch
                     v_ref = clean_ref_map.get(ultra_clean(k), 0)
                     diff = round(v - v_ref, 3)
                     res = "Khớp" if abs(diff) < 0.125 else "Lệch"
-                    rows.append({"Vị trí so sánh": k, "Mới": v, "Kho mẫu": v_ref, "Chênh lệch": diff, "Kết quả": res})
+                    rows.append({"Vị trí": k, "Mới": v, "Kho mẫu": v_ref, "Chênh lệch": diff, "Kết quả": res})
                 
                 df_res = pd.DataFrame(rows)
                 st.table(df_res.style.map(lambda x: 'color: green; font-weight: bold' if x == 'Khớp' else 'color: red; font-weight: bold', subset=['Kết quả']))
@@ -196,6 +201,6 @@ if file_audit:
             out = io.BytesIO()
             with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
                 df_res.to_excel(writer, index=False)
-            st.download_button("📥 TẢI BÁO CÁO EXCEL", out.getvalue(), f"Audit_{sel_sample['file_name']}.xlsx", type="primary")
+            st.download_button("📥 TẢI BÁO CÁO EXCEL", out.getvalue(), f"Audit_{selected_sample['file_name']}.xlsx", type="primary")
     else:
-        st.error("❌ PDF không đủ điều kiện (Thiếu bảng thông số).")
+        st.error("❌ PDF không đủ điều kiện đối soát.")
