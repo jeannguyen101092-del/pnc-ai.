@@ -7,9 +7,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
 # ================= 1. CONFIG =================
+URL = "https://supabase.co"
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
-BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
 st.set_page_config(layout="wide", page_title="AI Fashion Auditor V93", page_icon="📏")
