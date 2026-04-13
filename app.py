@@ -45,15 +45,26 @@ def detect_category(text, filename=""):
 
 def parse_val(t):
     try:
+        # Nếu là chuỗi quá dài hoặc chứa ký tự đặc biệt của ID thì bỏ qua
         txt = str(t).replace(',', '.').strip().lower()
-        if not txt or any(x in txt for x in ["mm", "yd", "gr", "kg", "pcs"]): return 0
+        if len(txt) > 10 or not txt or any(x in txt for x in ["mm", "yd", "gr", "kg", "pcs", "date", "2024", "2025"]): 
+            return 0
+            
+        # Regex tìm số đo (bao gồm cả phân số)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0]
-        if ' ' in v:
-            p = v.split()
-            return float(p[0]) + eval(p[1])
-        return eval(v) if '/' in v else float(v)
+        
+        v_str = match[0]
+        if ' ' in v_str:
+            parts = v_str.split()
+            val = float(parts[0]) + eval(parts[1])
+        else:
+            val = eval(v_str) if '/' in v_str else float(v_str)
+            
+        # LỌC NHIỄU: Thông số may mặc thực tế thường nằm trong khoảng 0.1 đến 150. 
+        # Nếu con số trích xuất ra là 10001337 hay 313.000 (do lỗi đọc text dính chùm) thì bỏ qua.
+        if val > 200: return 0 
+        return val
     except: return 0
 
 def get_image_vector(img_bytes):
