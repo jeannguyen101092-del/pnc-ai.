@@ -165,24 +165,33 @@ if file_audit:
             sorted_matches = sorted(matches, key=lambda x: (x['customer'] == target['customer'], x['sim']), reverse=True)
             top_3 = sorted_matches[:3]
 
-            st.subheader("🖼️ MẪU TƯƠNG ĐỒNG TRONG KHO")
-            cols = st.columns(len(top_3))
-            for i, m in enumerate(top_3):
-                with cols[i]:
-                    st.image(m['image_url'], caption=f"{m['customer']} - {m['sim']:.1%}")
+            # --- HIỂN THỊ TOP 3 MẪU TƯƠNG ĐỒNG ---
+st.subheader("🖼️ MẪU TƯƠNG ĐỒNG TRONG KHO")
+if top_3:
+    cols = st.columns(len(top_3))
+    for i, m in enumerate(top_3):
+        with cols[i]:
+            # Đảm bảo m là dictionary trước khi truy cập
+            img_url = m.get('image_url', '')
+            cust_name = m.get('customer', 'KHÁC')
+            sim_score = m.get('sim', 0)
+            
+            st.image(img_url, caption=f"{cust_name} - {sim_score:.1%}")
 
-            # Lấy mẫu tốt nhất để so sánh
-            best = top_3[0] 
-            st.subheader(f"📊 ĐỐI SOÁT VỚI: {best['file_name']}")
-            
-            audit_list = []
-            for pom, val in target['specs'].items():
-                m_val = best['spec_json'].get(pom, 0)
-                diff = round(val - m_val, 3) if m_val else 0
-                status = "✅ Khớp" if abs(diff) < 0.126 else f"❌ Lệch ({diff:+})"
-                audit_list.append({"Vị trí đo (POM)": pom, "Mới": val, "Gốc": m_val, "Kết quả": status})
-            
-            st.table(pd.DataFrame(audit_list))
+    # --- TỰ ĐỘNG LẤY MẪU TỐT NHẤT ĐỂ SO SÁNH ---
+    best = top_3[0] # Lấy mẫu đầu tiên trong danh sách đã sắp xếp
+    st.subheader(f"📊 ĐỐI SOÁT VỚI: {best['file_name']}")
+    
+    audit_data = []
+    for pom, val in target['specs'].items():
+        m_val = best['spec_json'].get(pom, 0)
+        diff = round(val - m_val, 3) if m_val else 0
+        status = "✅ Khớp" if abs(diff) < 0.126 else f"❌ Lệch ({diff:+})"
+        audit_data.append({"POM": pom, "Mới": val, "Gốc": m_val, "Kết quả": status})
+    
+    st.table(pd.DataFrame(audit_data))
+else:
+    st.warning("Không tìm thấy mẫu tương đồng để đối soát.")
             
             # Excel
             output = io.BytesIO()
