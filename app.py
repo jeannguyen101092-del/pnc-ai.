@@ -110,20 +110,36 @@ def extract_pdf(file):
         st.error(f"Lỗi extract: {e}")
         return None
 # ================= VECTOR =================
-def get_vector(img_bytes):
-    img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
+matches = []
 
-    tf = transforms.Compose([
-        transforms.Resize(224),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
-    ])
+for item in db.data:
+    try:
+        vec_db = item.get("vector", None)
 
-    with torch.no_grad():
-        vec = model_ai(tf(img).unsqueeze(0)).flatten().numpy()
+        # ❌ bỏ nếu vector lỗi
+        if not vec_db or len(vec_db) < 10:
+            continue
 
-    return vec.tolist()
+        v_ref = np.array(vec_db)
+
+        # ❌ check shape
+        if v_ref.ndim == 1:
+            v_ref = v_ref.reshape(1, -1)
+
+        if vec_test.shape[1] != v_ref.shape[1]:
+            st.warning(f"⚠️ Sai dimension: {item['file_name']}")
+            continue
+
+        score = cosine_similarity(vec_test, v_ref)[0][0]
+
+        matches.append({
+            "data": item,
+            "score": score
+        })
+
+    except Exception as e:
+        st.warning(f"Lỗi vector: {item.get('file_name')}")
+        continue
 
 # ================= SIDEBAR =================
 with st.sidebar:
