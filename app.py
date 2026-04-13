@@ -12,7 +12,7 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase: Client = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V5.3")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V5.4")
 
 @st.cache_resource
 def load_model():
@@ -27,7 +27,7 @@ def parse_val(t):
         if not txt or txt in ['nan', '-', 'none', 'null', '0']: return 0
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0]
+        v = match[0] # Lấy phần tử đầu tiên của list match
         if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
@@ -68,7 +68,7 @@ def extract_pdf(pdf_file):
     except: return None
 
 # --- 3. MAIN ---
-st.title("🔍 AI Fashion Auditor V5.3")
+st.title("🔍 AI Fashion Auditor V5.4")
 
 with st.sidebar:
     st.header("📂 THƯ VIỆN MẪU")
@@ -81,8 +81,8 @@ with st.sidebar:
                 img = Image.open(io.BytesIO(data['img'])).convert('RGB')
                 tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
                 with torch.no_grad():
-                    # Thêm .detach().cpu() để an toàn
                     vec = model_ai(tf(img).unsqueeze(0)).flatten().detach().cpu().numpy().tolist()
+                
                 f_name = f.name.replace(".", "_")
                 path = f"lib_{f_name}.png"
                 supabase.storage.from_(BUCKET).upload(path=path, file=data['img'], file_options={"x-upsert":"true", "content-type":"image/png"})
@@ -94,31 +94,37 @@ audit_file = st.file_uploader("Tải file CẦN KIỂM TRA", type="pdf")
 if audit_file:
     target = extract_pdf(audit_file)
     if target and target['specs']:
-        st.write(f"✅ Đọc được {len(target['specs'])} thông số.")
+        st.success(f"✅ Đã đọc được {len(target['specs'])} thông số.")
         res = supabase.table("ai_data").select("*").execute()
+        
         if res.data:
             img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
             tf = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
             with torch.no_grad():
-                # Ép kiểu chuẩn 2D array cho v_test
-                v_test = model_ai(tf(img_t).unsqueeze(0)).flatten().detach().cpu().numpy().reshape(1, -1)
+                # ÉP KIỂU 2D MẠNH BẰNG NP.ATLEAST_2D
+                v_test = model_ai(tf(img_t).unsqueeze(0)).flatten().detach().cpu().numpy()
+                v_test = np.atleast_2d(v_test)
 
             matches = []
             for item in res.data:
                 if item.get('vector'):
-                    # Ép kiểu chuẩn 2D array cho v_ref
-                    v_ref = np.array(item['vector']).reshape(1, -1)
-                    score = float(cosine_similarity(v_test, v_ref)[0][0]) * 100
+                    v_ref = np.array(item['vector'])
+                    v_ref = np.atleast_2d(v_ref)
+                    
+                    # Tính toán an toàn, lấy giá trị scalar [0][0]
+                    sim_matrix = cosine_similarity(v_test, v_ref)
+                    score = float(sim_matrix[0][0]) * 100
                     matches.append({"data": item, "sim": score})
             
             if matches:
-                # Sắp xếp và lấy phần tử đầu tiên [0]
-                top = sorted(matches, key=lambda x: x['sim'], reverse=True)[0]
+                top_matches = sorted(matches, key=lambda x: x['sim'], reverse=True)
+                top = top_matches[0] # Lấy mẫu cao điểm nhất
+                
                 st.subheader(f"✨ Khớp nhất: {top['data']['file_name']} ({top['sim']:.1f}%)")
                 
-                c1, c2 = st.columns(2)
-                c1.image(target['img'], caption="File đang kiểm")
-                c2.image(top['data']['image_url'], caption="Mẫu gốc")
+                col1, col2 = st.columns(2)
+                col1.image(target['img'], caption="File đang kiểm")
+                col2.image(top['data']['image_url'], caption="Mẫu gốc")
 
                 diffs = []
                 ref_map = {clean_txt(k): v for k, v in top['data']['spec_json'].items()}
