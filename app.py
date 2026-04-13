@@ -74,10 +74,8 @@ def extract_pdf_v93(file):
         file.seek(0)
         pdf_content = file.read()
         doc = fitz.open(stream=pdf_content, filetype="pdf")
-        if len(doc) > 0:
-            img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
-            for page in doc: 
-                full_text_list.append(str(page.get_text() or ""))
+        img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
+        for page in doc: full_text_list.append(str(page.get_text() or ""))
         doc.close()
         
         full_text = " ".join(full_text_list)
@@ -88,34 +86,50 @@ def extract_pdf_v93(file):
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
-                    # Kiểm tra bảng có phải bảng thông số (POM) không
+                    # Kiểm tra bảng POM bằng từ khóa đo đạc
                     flat_text = " ".join(df.astype(str).values.flatten()).upper()
-                    if sum(1 for k in ["WAIST", "CHEST", "HIP", "LENGTH", "SHOULDER"] if k in flat_text) < 2: 
-                        continue
+                    keywords = ["WAIST", "CHEST", "HIP", "LENGTH", "SHOULDER", "THIGH", "RISE", "INSEAM"]
+                    if sum(1 for k in keywords if k in flat_text) < 2: continue
 
-                    n_col, v_col = -1, -1
-                    for r_idx, row in df.iterrows():
+                    # --- THUẬT TOÁN DÒ CỘT THÔNG MINH ---
+                    n_col = -1 # Cột tên POM
+                    v_col = -1 # Cột giá trị thông số
+
+                    # 1. Tìm cột Tên (Description)
+                    for r_idx, row in df.head(10).iterrows():
                         row_up = [str(c).upper().strip() for c in row]
-                        # Tìm cột tên thông số
                         for i, v in enumerate(row_up):
-                            if any(x in v for x in ["DESCRIPTION", "POM NAME", "POSITION"]): n_col = i; break
-                        # Tìm cột giá trị (Size M, New, Spec...)
-                        for i, v in enumerate(row_up):
-                            if i != n_col and any(x in v for x in ["NEW", "SAMPLE", "SPEC", "M", "S", "L", "32", "34"]): 
-                                v_col = i; break
-                        
-                        if n_col != -1 and v_col != -1:
-                            for d_idx in range(r_idx + 1, len(df)):
-                                name = str(df.iloc[d_idx, n_col]).replace('\n', ' ').strip().upper()
-                                val = parse_val(df.iloc[d_idx, v_col])
-                                if len(name) > 3 and val > 0: specs[name] = val
-                            break
+                            if any(x in v for x in ["DESCRIPTION", "POM NAME", "POSITION", "ITEM"]):
+                                n_col = i; break
+                        if n_col != -1: break
+
+                    # 2. Tìm cột Giá trị (Cột nào có nhiều số nhất trong 10 dòng đầu)
+                    if n_col != -1:
+                        max_numeric_count = 0
+                        for i in range(len(df.columns)):
+                            if i == n_col: continue
+                            # Đếm xem trong cột này có bao nhiêu ô là số
+                            numeric_count = 0
+                            for val_in_cell in df.iloc[:12, i]: # Kiểm tra 12 dòng đầu
+                                if parse_val(val_in_cell) > 0: numeric_count += 1
+                            
+                            if numeric_count > max_numeric_count:
+                                max_numeric_count = numeric_count
+                                v_col = i
+
+                    # 3. Trích xuất dữ liệu nếu tìm thấy cả 2 cột
+                    if n_col != -1 and v_col != -1:
+                        for d_idx in range(0, len(df)):
+                            name = str(df.iloc[d_idx, n_col]).replace('\n', ' ').strip().upper()
+                            val = parse_val(df.iloc[d_idx, v_col])
+                            # Chỉ lấy nếu tên đủ dài và có số đo, loại bỏ tiêu đề bảng
+                            if len(name) > 3 and val > 0 and not any(x in name for x in ["DESCRIPTION", "NAME", "POM"]):
+                                specs[name] = val
                 if specs: break 
         return {"specs": specs, "img": img_bytes, "category": category}
     except Exception as e:
         st.error(f"Lỗi trích xuất: {e}")
         return None
-
 # ================= 4. SIDEBAR =================
 with st.sidebar:
     st.header("📂 KHO THIẾT KẾ MẪU")
