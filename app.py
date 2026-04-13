@@ -60,62 +60,55 @@ def extract_pdf(file):
         file.seek(0)
         pdf_bytes = file.read()
 
-        # --- IMAGE ---
+        # ===== IMAGE =====
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         if len(doc) > 0:
             pix = doc[0].get_pixmap()
             img_bytes = pix.tobytes("png")
 
-        # --- BRAND ---
-        text_all = ""
+        # ===== TEXT =====
+        full_text = ""
         for p in doc:
-            text_all += (p.get_text() or "").upper()
+            full_text += (p.get_text() or "").upper()
 
-        if "REITMANS" in text_all:
+        if "REITMANS" in full_text:
             brand = "REITMANS"
 
         doc.close()
 
-        # --- TABLE ---
+        # ===== TABLE =====
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
 
                 for tb in tables:
                     df = pd.DataFrame(tb)
-                    if df.empty: continue
+                    if df.empty or len(df.columns) < 2:
+                        continue
 
-                    header_row = -1
-                    name_col, val_col = -1, -1
+                    for i in range(len(df)):
+                        row = df.iloc[i]
 
-                    for i, row in df.iterrows():
-                        row_up = [str(x).upper() for x in row]
+                        name = str(row[0]).strip().upper()
+                        if len(name) < 3:
+                            continue
 
-                        if any("POM NAME" in x for x in row_up):
-                            header_row = i
-                            for j, c in enumerate(row_up):
-                                if "POM NAME" in c: name_col = j
-                                if "NEW" in c: val_col = j
-                            break
+                        # ❗ tìm cột số tự động
+                        val = 0
+                        for c in row[1:]:
+                            v = parse_val(c)
+                            if v > 0:
+                                val = v
+                                break
 
-                    if header_row >= 0:
-                        for i in range(header_row+1, len(df)):
-                            row = df.iloc[i]
-                            name = str(row[name_col]).strip().upper()
-
-                            if len(name) < 3: continue
-                            if any(x in name for x in ["REF", "TOTAL"]): continue
-
-                            val = parse_val(row[val_col])
-                            if val > 0:
-                                specs[name] = val
+                        if val > 0:
+                            specs[name] = val
 
         return {"specs": specs, "img": img_bytes, "brand": brand}
 
     except Exception as e:
-        st.error(f"Lỗi đọc PDF: {e}")
+        st.error(f"Lỗi extract: {e}")
         return None
-
 # ================= VECTOR =================
 def get_vector(img_bytes):
     img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
