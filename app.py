@@ -113,20 +113,48 @@ st.title("🔍 AI SMART FASHION AUDITOR")
 # Sidebar: Quản lý kho dữ liệu
 with st.sidebar:
     st.header("📂 KHO THIẾT KẾ MẪU")
-    uploaded_files = st.file_uploader("Nạp Techpack vào kho", accept_multiple_files=True)
+    
+    # --- PHẦN HIỂN THỊ SỐ MẪU ---
+    try:
+        # Truy vấn lấy tất cả file trong kho
+        res_count = supabase.table("ai_data").select("file_name", count="exact").execute()
+        count_in_db = res_count.count if res_count.count is not None else 0
+        st.metric(label="Số mẫu hiện có", value=f"{count_in_db} file")
+        
+        if count_in_db > 0:
+            with st.expander("Xem danh sách file"):
+                for item in res_count.data:
+                    st.caption(f"📄 {item['file_name']}")
+    except Exception as e:
+        st.error(f"Không thể kết nối kho: {e}")
+    
+    st.divider()
+    
+    # --- PHẦN NẠP MỚI ---
+    uploaded_files = st.file_uploader("Nạp Techpack vào kho", accept_multiple_files=True, key="sidebar_uploader")
     if uploaded_files and st.button("🚀 Nạp vào hệ thống"):
         for f in uploaded_files:
-            data = extract_pdf_v93(f)
-            if data:
-                vec = get_image_vector(data['img']).tolist()
-                path = f"lib_{f.name}.png"
-                supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
-                img_url = supabase.storage.from_(BUCKET).get_public_url(path)
-                supabase.table("ai_data").insert({
-                    "file_name": f.name, "vector": vec, "spec_json": data['specs'], 
-                    "image_url": img_url, "category": data['category']
-                }).execute()
+            with st.spinner(f"Đang xử lý {f.name}..."):
+                data = extract_pdf_v93(f)
+                if data:
+                    vec = get_image_vector(data['img'])
+                    # Đảm bảo tên file là chuỗi (string) để tránh lỗi "float found"
+                    safe_filename = str(f.name).replace(" ", "_")
+                    path = f"lib_{safe_filename}.png"
+                    
+                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
+                    img_url = supabase.storage.from_(BUCKET).get_public_url(path)
+                    
+                    supabase.table("ai_data").insert({
+                        "file_name": str(f.name), 
+                        "vector": vec, 
+                        "spec_json": data['specs'], 
+                        "image_url": img_url, 
+                        "category": data['category']
+                    }).execute()
         st.success("Đã cập nhật kho!")
+        st.rerun() # Làm mới trang để cập nhật số lượng mẫu ngay lập tức
+
 
 # Main Flow: Đối soát
 file_audit = st.file_uploader("📤 Upload file PDF cần kiểm tra (Audit)", type="pdf")
