@@ -6,21 +6,20 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
-# ================= 1. Cấu hình (Điền thông tin thật của bạn) =================
+# ================= 1. Cấu hình (Thay thông tin thật của bạn) =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI V20.0 - PRO V67", page_icon="🛡️")
+st.set_page_config(layout="wide", page_title="AI V20.0 - PRO V68", page_icon="🛡️")
 
-# CSS làm đẹp giao diện và bảng
+# CSS làm đẹp giao diện
 st.markdown("""
     <style>
     .stTable { font-size: 11px !important; }
     .status-ok { color: #28a745; font-weight: bold; }
     .status-fail { color: #dc3545; font-weight: bold; }
-    thead th { background-color: #f8f9fa !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -54,7 +53,8 @@ def extract_pdf(file):
             img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         doc.close()
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
-            for page in pdf.pages[:3]:
+            # Quét 2 trang đầu để đảm bảo tìm thấy bảng
+            for page in pdf.pages[:2]:
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb)
@@ -70,20 +70,19 @@ def extract_pdf(file):
                                 val = parse_val(df.iloc[d_idx, v_idx])
                                 if len(name) > 3 and val > 0: specs[name] = val
                             break
+                if specs: break
         return {"specs": specs, "img": img_bytes}
     except: return None
 
 # ================= 4. Sidebar =================
 with st.sidebar:
     st.header("🛡️ AI V20.0 - PRO")
-    try:
-        res = supabase.table("ai_data").select("id", count="exact").execute()
-        st.info(f"📁 Kho mẫu: {res.count if res.count else 0} file")
-    except: st.error("Chưa kết nối Database")
+    res = supabase.table("ai_data").select("id", count="exact").execute()
+    st.info(f"📁 Kho mẫu: {res.count if res.count else 0} file")
     
     st.divider()
     st.subheader("🚀 Nạp Techpack Mới")
-    new_files = st.file_uploader("Chọn PDF gốc", type="pdf", accept_multiple_files=True)
+    new_files = st.file_uploader("Upload PDF gốc vào kho", type="pdf", accept_multiple_files=True)
     if new_files and st.button("XÁC NHẬN NẠP KHO"):
         for f in new_files:
             data = extract_pdf(f)
@@ -96,7 +95,7 @@ with st.sidebar:
                 supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true", "content-type": "image/png"})
                 url = supabase.storage.from_(BUCKET).get_public_url(path)
                 supabase.table("ai_data").insert({"file_name": f.name, "vector": vec, "spec_json": data['specs'], "image_url": url}).execute()
-        st.success("Nạp thành công!")
+        st.success("Đã nạp thành công!")
         st.rerun()
 
     if st.button("🗑️ Dọn dẹp kho"):
@@ -105,14 +104,18 @@ with st.sidebar:
 
 # ================= 5. Main =================
 st.subheader("📊 PRODUCT SUMMARY COMPARISON")
-file_audit = st.file_uploader("Tải file cần đối soát", type="pdf", label_visibility="collapsed")
+file_audit = st.file_uploader("Kéo thả file cần kiểm tra vào đây", type="pdf", label_visibility="collapsed")
 
 if file_audit:
-    target = extract_pdf(file_audit)
+    with st.spinner("Đang trích xuất dữ liệu..."):
+        target = extract_pdf(file_audit)
+    
     if target and target["specs"]:
+        st.success(f"✅ Đã trích xuất {len(target['specs'])} hạng mục thông số.")
         db_all = supabase.table("ai_data").select("*").execute()
+        
         if db_all.data:
-            # AI Matching
+            # Tạo vector cho file đang kiểm
             img_t = Image.open(io.BytesIO(target['img'])).convert('RGB')
             tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
             v_test = model_ai(tf(img_t).unsqueeze(0)).flatten().detach().cpu().numpy().reshape(1, -1).astype(np.float32)
@@ -121,13 +124,16 @@ if file_audit:
             for item in db_all.data:
                 if item.get("vector") and len(item["vector"]) == 512:
                     v_ref = np.array(item["vector"]).reshape(1, -1).astype(np.float32)
+                    # FIX: Lấy score scalar từ matrix cosine
                     score = float(cosine_similarity(v_test, v_ref)[0][0])
                     matches.append({"item": item, "score": score})
             
             if matches:
-                best_item = sorted(matches, key=lambda x: x['score'], reverse=True)[0]
-                best = best_item['item']
-                score_pct = best_item['score'] * 100
+                # FIX: Sửa lỗi truy cập danh sách sorted
+                sorted_matches = sorted(matches, key=lambda x: x['score'], reverse=True)
+                best_match = sorted_matches[0] # Lấy mẫu cao nhất
+                best = best_match['item']
+                score_pct = best_match['score'] * 100
 
                 col1, col2 = st.columns(2)
                 with col1:
@@ -141,6 +147,7 @@ if file_audit:
                     
                     ref_specs = best['spec_json']
                     rows = []
+                    # Tạo map để so khớp POM không phân biệt ký tự đặc biệt
                     clean_ref = {re.sub(r'[^A-Z0-9]', '', k.upper()): v for k, v in ref_specs.items()}
                     
                     for k, v in target["specs"].items():
@@ -152,4 +159,6 @@ if file_audit:
                     df_res = pd.DataFrame(rows)
                     st.table(df_res.style.applymap(lambda x: 'color: green; font-weight: bold' if x == 'Khớp' else 'color: red; font-weight: bold', subset=['Kết quả']))
             else:
-                st.warning("⚠️ Không tìm thấy vector hợp lệ. Hãy nhấn 'Dọn dẹp' và nạp lại Techpack mẫu.")
+                st.warning("⚠️ Không tìm thấy vector hợp lệ trong kho mẫu.")
+    else:
+        st.error("❌ Không trích xuất được bảng thông số từ PDF này.")
