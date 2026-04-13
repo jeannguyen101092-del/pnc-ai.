@@ -162,10 +162,11 @@ if file_audit:
                     v_ref = np.array(item["vector"]).reshape(1, -1).astype(np.float32)
                     score = float(cosine_similarity(v_test, v_ref)[0][0]) # Lấy giá trị chính xác
                     matches.append({"item": item, "score": score})
-            
-            if matches:
-                top = sorted(matches, key=lambda x: x['score'], reverse=True)[0]
-                best = top['item']
+                        if matches:
+                # Sắp xếp lấy mẫu khớp nhất
+                sorted_matches = sorted(matches, key=lambda x: x['score'], reverse=True)
+                best_match = sorted_matches[0]
+                best = best_match['item']
                 
                 c1, c2 = st.columns(2)
                 with c1:
@@ -174,19 +175,45 @@ if file_audit:
                     st.table(pd.DataFrame([{"Hạng mục": k, "Số đo": v} for k,v in target["specs"].items()]))
                 
                 with c2:
-                    st.success(f"✨ MẪU GỐC (Khớp {top['score']*100:.1f}%)")
+                    st.success(f"✨ MẪU GỐC TRONG KHO (Khớp {best_match['score']*100:.1f}%)")
                     st.image(best['image_url'], use_container_width=True)
+                    
+                    # --- LOGIC SO KHỚP THÔNG SỐ (FIX TẠI ĐÂY) ---
                     ref_specs = best['spec_json']
+                    
+                    # 1. Tạo bản đồ chuẩn hóa của mẫu gốc (Xóa sạch ký tự lạ, khoảng trắng)
+                    def ultra_clean(t):
+                        return re.sub(r'[^A-Z0-9]', '', str(t).upper().strip())
+
+                    clean_ref_map = {ultra_clean(k): v for k, v in ref_specs.items()}
+                    
                     rows = []
-                    clean_ref = {re.sub(r'[^A-Z0-9]', '', k.upper()): v for k, v in ref_specs.items()}
                     for k, v in target["specs"].items():
-                        k_c = re.sub(r'[^A-Z0-9]', '', k.upper())
-                        v_ref = clean_ref.get(k_c, 0)
+                        # 2. Chuẩn hóa tên hạng mục đang kiểm
+                        k_clean = ultra_clean(k)
+                        
+                        # 3. Truy xuất giá trị từ mẫu gốc (Nếu không có thì mặc định 0)
+                        v_ref = clean_ref_map.get(k_clean, 0)
+                        
                         diff = round(v - v_ref, 3)
-                        rows.append({"Thông số": k, "Mới": v, "Mẫu Gốc": v_ref, "Kết quả": "Khớp" if abs(diff) < 0.1 else "Lệch"})
+                        # Ngành may thường chấp nhận sai số 0.125 (1/8 inch)
+                        result = "Khớp" if abs(diff) < 0.125 else "Lệch"
+                        
+                        rows.append({
+                            "Thông số": k,
+                            "Mới": v,
+                            "Mẫu Gốc": v_ref,
+                            "Chênh lệch": diff,
+                            "Kết quả": result
+                        })
                     
                     df_res = pd.DataFrame(rows)
-                    st.table(df_res.style.map(lambda x: 'color: green; font-weight: bold' if x == 'Khớp' else 'color: red; font-weight: bold', subset=['Kết quả']))
+                    # Hiển thị bảng có màu sắc
+                    st.table(df_res.style.map(
+                        lambda x: 'color: green; font-weight: bold' if x == 'Khớp' else 'color: red; font-weight: bold' if x == 'Lệch' else '', 
+                        subset=['Kết quả']
+                    ))
+
                 
                 # Xuất Excel
                 st.divider()
