@@ -96,42 +96,55 @@ def extract_pdf_v105(file):
 # ================= 4. GIAO DIỆN CHÍNH =================
 st.title("🔍 AI SMART AUDITOR - V105")
 
+# ================= 4. SIDEBAR - NẠP KHO (BẢN V106) =================
 with st.sidebar:
     st.header("📂 KHO MASTER")
+    # Hiển thị số lượng thực tế từ DB
     try:
         res_count = supabase.table("ai_data").select("id", count="exact").execute()
         st.success(f"📊 Trong kho: **{res_count.count if res_count.count is not None else 0}** mẫu")
-    except: st.info("Kho trống")
-    
+    except Exception as e:
+        st.error(f"Lỗi kết nối DB: {e}")
+
+    st.divider()
     new_files = st.file_uploader("Nạp Master PDF", type="pdf", accept_multiple_files=True, key=f"up_{st.session_state.up_id}")
+    
     if new_files and st.button("🚀 NẠP VÀO KHO"):
         p_bar = st.progress(0)
+        success_count = 0
+        
         for i, f in enumerate(new_files):
-            data = extract_pdf_v105(f)
+            data = extract_pdf_v105(f) # Sử dụng hàm trích xuất v105 của bạn
             if data and data['specs']:
-                # 1. Upload ảnh lên Storage
+                # 1. Upload ảnh
                 path = f"m_{re.sub(r'[^a-zA-Z0-9]', '_', f.name)}.png"
                 supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true", "content-type": "image/png"})
                 url = supabase.storage.from_(BUCKET).get_public_url(path)
                 
-                # 2. Lưu vào Database (Sửa lỗi APIError)
+                # 2. Insert vào DB với bẫy lỗi chi tiết
                 try:
-                    supabase.table("ai_data").insert({
-                        "file_name": f.name, 
-                        "customer": data['customer'], 
-                        "prod_id": f.name.split('.')[0], # Lấy mã trước dấu chấm
-                        "vector": get_vector(data['img']), 
-                        "spec_json": data['specs'], 
-                        "image_url": url, 
+                    insert_data = {
+                        "file_name": f.name,
+                        "customer": data['customer'],
+                        "prod_id": str(f.name.split('.')[0]), # Lấy mã trước dấu chấm
+                        "vector": get_vector(data['img']),
+                        "spec_json": data['specs'],
+                        "image_url": url,
                         "category": data['category']
-                    }).execute()
+                    }
+                    res = supabase.table("ai_data").insert(insert_data).execute()
+                    if res.data:
+                        success_count += 1
                 except Exception as e:
-                    st.error(f"Lỗi DB với file {f.name}: {e}")
+                    st.error(f"❌ Lỗi nạp file {f.name}: {e}")
+            
             p_bar.progress((i + 1) / len(new_files))
         
-        st.success("Đã nạp kho xong!")
-        st.session_state.up_id += 1
-        st.rerun()
+        if success_count > 0:
+            st.success(f"🎉 Đã nạp thành công {success_count} mẫu!")
+            st.session_state.up_id += 1 # Reset file uploader
+            st.rerun() # Làm mới trang để cập nhật số lượng mẫu
+
 
 # KHU VỰC ĐỐI SOÁT
 c1, c2 = st.columns(2)
