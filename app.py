@@ -104,20 +104,30 @@ with st.sidebar:
     except: st.info("Kho trống")
     
     new_files = st.file_uploader("Nạp Master PDF", type="pdf", accept_multiple_files=True, key=f"up_{st.session_state.up_id}")
-    if new_files and st.button("🚀 NẠP VÀO KHO"):
+       if new_files and st.button("🚀 NẠP VÀO KHO"):
         for f in new_files:
             data = extract_pdf_v104(f)
             if data and data['specs']:
                 path = f"m_{re.sub(r'[^a-zA-Z0-9]', '_', f.name)}.png"
                 supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
                 url = supabase.storage.from_(BUCKET).get_public_url(path)
-                supabase.table("ai_data").insert({
-                    "file_name": f.name, "customer": data['customer'], "prod_id": f.name.split('.')[0],
-                    "vector": data['specs'], "spec_json": data['specs'], "image_url": url, "category": data['category'],
-                    "vector": get_vector(data['img'])
-                }).execute()
+                
+                # CHỈNH SỬA DÒNG NÀY ĐỂ TRÁNH LỖI API:
+                try:
+                    supabase.table("ai_data").insert({
+                        "file_name": f.name, 
+                        "customer": data['customer'], 
+                        "prod_id": str(f.name.split('.')[0]), # Đảm bảo là chuỗi
+                        "vector": get_vector(data['img']), 
+                        "spec_json": data['specs'], 
+                        "image_url": url, 
+                        "category": data['category']
+                    }).execute()
+                except Exception as e:
+                    st.error(f"Lỗi Supabase: {e}")
         st.session_state.up_id += 1
         st.rerun()
+
 
 # ĐỐI SOÁT
 c1, c2 = st.columns(2)
