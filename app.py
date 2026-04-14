@@ -140,10 +140,26 @@ if file_audit:
         
         if res.data:
             target_vec = np.array(get_vector(target['img'])).reshape(1, -1)
-            matches = []
+                       matches = []
             for item in res.data:
-                sim = float(cosine_similarity(target_vec, np.array(item['vector']).reshape(1, -1)))
-                matches.append({**item, "sim": sim})
+                try:
+                    # Đảm bảo vector từ DB được chuyển về mảng numpy float chuẩn
+                    db_vector = np.array(item['vector'], dtype=np.float32).reshape(1, -1)
+                    
+                    # Tính toán độ tương đồng
+                    sim_value = cosine_similarity(target_vec, db_vector)
+                    
+                    # Trích xuất giá trị số thực từ mảng kết quả
+                    sim_score = float(sim_value[0][0])
+                    
+                    matches.append({**item, "sim": sim_score})
+                except Exception as e:
+                    # Bỏ qua nếu dòng dữ liệu đó bị lỗi định dạng vector
+                    continue
+            
+            # Sắp xếp và lấy Top 3
+            top_3 = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
+
             
             top_3 = sorted(matches, key=lambda x: x['sim'], reverse=True)[:3]
             cols = st.columns(len(top_3))
