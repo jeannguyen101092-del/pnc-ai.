@@ -97,27 +97,70 @@ def extract_pdf_v105(file):
     except: return None
 
 # ================= 4. SIDEBAR =================
+# ================= 4. SIDEBAR (SỬA LỖI NẠP KHO) =================
 with st.sidebar:
     st.header("📂 QUẢN LÝ KHO")
+    # Hiển thị số mẫu hiện có để kiểm tra kết nối DB
     try:
-        res_c = supabase.table("ai_data").select("customer", count="exact").execute()
-        st.metric("Tổng số mẫu", f"{res_c.count or 0} file")
-        unique_custs = sorted(list(set([item['customer'] for item in res_c.data if item['customer']])))
-    except: unique_custs = []
+        res_c = supabase.table("ai_data").select("id", count="exact").execute()
+        st.metric("Tổng số mẫu trong kho", f"{res_c.count or 0} file")
+    except Exception as e:
+        st.error(f"Lỗi kết nối DB: {e}")
 
     st.divider()
-    new_files = st.file_uploader("Nạp mẫu mới", accept_multiple_files=True, key=f"up_{st.session_state.up_key}")
-    if new_files and st.button("🚀 XÁC NHẬN NẠP", use_container_width=True):
-        for f in new_files:
-            data = extract_pdf_v105(f)
-            if data and data['specs']:
-                vec = get_vector(data['img'])
-                path = f"lib_{re.sub(r'[^A-Z]', '', f.name.upper())}.png"
-                supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
-                url = supabase.storage.from_(BUCKET).get_public_url(path)
-                supabase.table("ai_data").insert({"file_name": f.name, "vector": vec, "spec_json": data['specs'], "image_url": url, "category": data['category'], "customer": data['customer']}).execute()
-        st.session_state.up_key += 1
-        st.rerun()
+    st.subheader("Nạp mẫu mới")
+    
+    # Widget nạp file
+    new_files = st.file_uploader(
+        "Chọn các file Techpack PDF", 
+        type="pdf", 
+        accept_multiple_files=True, 
+        key=f"uploader_{st.session_state.up_key}"
+    )
+    
+    # Nút xác nhận nạp
+    if new_files:
+        if st.button("🚀 XÁC NHẬN NẠP", use_container_width=True):
+            success_count = 0
+            for f in new_files:
+                with st.spinner(f"Đang xử lý {f.name}..."):
+                    # 1. Trích xuất dữ liệu
+                    data = extract_pdf_v105(f)
+                    if data and data['specs']:
+                        try:
+                            # 2. Xử lý Vector và Image
+                            vec = get_vector(data['img'])
+                            # Tạo tên file an toàn để tránh lỗi đường dẫn
+                            safe_name = re.sub(r'[^a-zA-Z0-9]', '_', f.name.replace('.pdf',''))
+                            path = f"lib_{safe_name}.png"
+                            
+                            # 3. Upload lên Storage (Thêm Content-Type để tránh lỗi)
+                            supabase.storage.from_(BUCKET).upload(
+                                path, 
+                                data['img'], 
+                                {"upsert": "true", "content-type": "image/png"}
+                            )
+                            url = supabase.storage.from_(BUCKET).get_public_url(path)
+                            
+                            # 4. Insert vào Database
+                            supabase.table("ai_data").insert({
+                                "file_name": f.name, 
+                                "vector": vec, 
+                                "spec_json": data['specs'], 
+                                "image_url": url, 
+                                "category": data['category'], 
+                                "customer": data['customer']
+                            }).execute()
+                            success_count += 1
+                        except Exception as e:
+                            st.error(f"Lỗi khi lưu {f.name}: {e}")
+            
+            if success_count > 0:
+                st.success(f"Đã nạp thành công {success_count} file!")
+                # Chỉ tăng key để reset uploader khi nạp thành công
+                st.session_state.up_key += 1
+                st.rerun()
+
 
 # ================= 5. LUỒNG ĐỐI SOÁT (FIX LỖI CHIA CỘT) =================
 st.title("🔍 AI SMART AUDITOR - V105")
