@@ -55,7 +55,7 @@ def get_vector(img_bytes):
         vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
     return vec.astype(float).tolist()
 
-# ================= 3. TRÍCH XUẤT =================
+# ================= 3. TRÍCH XUẤT THÔNG MINH =================
 def extract_pdf_v108(file):
     specs, img_bytes, full_text = {}, None, ""
     try:
@@ -133,7 +133,7 @@ if file_audit:
     if target and target["specs"]:
         st.success(f"Phát hiện: **{target['category']}** | Khách hàng: **{target['customer']}**")
         
-        # 1. Lấy tất cả dữ liệu (Không lọc category cứng để tránh bị 0 kết quả)
+        # 1. Lấy toàn bộ kho (Bỏ lọc category cứng để tránh lỗi không tìm thấy)
         res = supabase.table("ai_data").select("*").execute()
         
         if res.data:
@@ -143,35 +143,35 @@ if file_audit:
                 try:
                     db_vec = np.array(item['vector'], dtype=np.float32).reshape(1, -1)
                     sim = float(cosine_similarity(target_vec, db_vec))
-                    # Điểm cộng ưu tiên: Cùng loại +0.3, Cùng khách hàng +0.5
+                    # Điểm ưu tiên: Cùng khách hàng +0.5, Cùng loại +0.3
                     score = sim + (0.5 if item['customer'] == target['customer'] else 0) + (0.3 if item['category'] == target['category'] else 0)
                     matches.append({**item, "sim": sim, "score": score})
                 except: continue
             
-            # Lọc theo khách hàng nếu chọn thủ công
+            # Lọc theo khách hàng nếu bạn chọn thủ công ở selectbox
             if filter_cust != "TẤT CẢ (Tự động)":
                 matches = [m for m in matches if m['customer'] == filter_cust]
             
             top_3 = sorted(matches, key=lambda x: x['score'], reverse=True)[:3]
             
             if top_3:
-                # HIỂN THỊ TOP MẪU
+                # 2. Hiển thị mẫu tương đồng
                 cols = st.columns(len(top_3))
                 for i, m in enumerate(top_3):
                     with cols[i]:
                         tag = "💎 CÙNG KHÁCH" if m['customer'] == target['customer'] else "🌐 KHÁC"
                         st.image(m['image_url'], caption=f"{tag}\n{m['file_name']}\nGiống: {m['sim']:.1%}")
                 
-                # TỰ ĐỘNG CHỌN MẪU KHỚP NHẤT
-                best = top_3[0]
-                st.subheader(f"📊 ĐỐI SOÁT VỚI: {best['file_name']}")
+                # 3. Tự động lấy mẫu đứng đầu danh sách để đổ bảng
+                best = top_3[0] 
+                st.subheader(f"📊 ĐANG SO SÁNH VỚI: {best['file_name']}")
                 
                 audit_list = []
                 for pom, val in target['specs'].items():
                     m_val = best['spec_json'].get(pom, 0)
                     diff = round(val - m_val, 3) if m_val else 0
                     status = "✅ Khớp" if abs(diff) < 0.126 else f"❌ Lệch ({diff:+})"
-                    audit_list.append({"POM": pom, "Mới": val, "Gốc": m_val, "Kết quả": status})
+                    audit_list.append({"POM": pom, "File Mới": val, "Mẫu Gốc": m_val, "Kết quả": status})
                 
                 st.table(pd.DataFrame(audit_list))
                 
@@ -179,10 +179,10 @@ if file_audit:
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     pd.DataFrame(audit_list).to_excel(writer, index=False)
-                st.download_button("📥 TẢI EXCEL", output.getvalue(), f"Report_{target['customer']}.xlsx")
+                st.download_button("📥 TẢI BÁO CÁO EXCEL", output.getvalue(), f"Report_{target['customer']}.xlsx")
             else:
-                st.warning("Không tìm thấy mẫu tương đồng để đối soát.")
+                st.warning("Không tìm thấy mẫu tương đồng trong kho.")
         else:
-            st.warning("Kho mẫu hiện chưa có dữ liệu.")
+            st.warning("Kho mẫu hiện tại đang trống.")
     else:
         st.error("Không tìm thấy bảng thông số kỹ thuật trong file này.")
