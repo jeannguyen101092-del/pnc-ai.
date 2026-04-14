@@ -12,7 +12,7 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Smart Auditor V107", page_icon="📏")
+st.set_page_config(layout="wide", page_title="AI Smart Auditor V108", page_icon="🔍")
 
 if 'up_key' not in st.session_state: st.session_state.up_key = 0
 
@@ -33,7 +33,7 @@ def detect_customer(text, filename=""):
 
 def detect_category(text, filename=""):
     t = (str(text) + " " + str(filename)).upper()
-    keywords = {"VÁY/ĐẦM": ["DRESS", "SKIRT", "VÁY"], "QUẦN": ["PANT", "JEAN", "SHORT"], "ÁO": ["SHIRT", "JACKET", "TOP"]}
+    keywords = {"VÁY/ĐẦM": ["DRESS", "SKIRT", "VÁY"], "QUẦN": ["PANT", "JEAN", "SHORT", "TROUSER"], "ÁO": ["SHIRT", "JACKET", "TOP"]}
     scores = {k: sum(t.count(word) for word in v) for k, v in keywords.items()}
     detected = max(scores, key=scores.get)
     return detected if scores[detected] > 0 else "KHÁC"
@@ -55,8 +55,8 @@ def get_vector(img_bytes):
         vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
     return vec.astype(float).tolist()
 
-# ================= 3. TRÍCH XUẤT THÔNG MINH =================
-def extract_pdf_v107(file):
+# ================= 3. TRÍCH XUẤT =================
+def extract_pdf_v108(file):
     specs, img_bytes, full_text = {}, None, ""
     try:
         file.seek(0)
@@ -72,7 +72,7 @@ def extract_pdf_v107(file):
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
-                    if not any(x in str(tb).upper() for x in ["WAIST", "CHEST", "LENGTH", "HIP"]): continue
+                    if not any(x in str(tb).upper() for x in ["WAIST", "CHEST", "LENGTH"]): continue
                     n_col, v_col = -1, -1
                     for r_idx, row in df.head(15).iterrows():
                         row_up = [str(c).upper().strip() for c in row]
@@ -107,7 +107,7 @@ with st.sidebar:
     new_files = st.file_uploader("Nạp mẫu mới vào kho", accept_multiple_files=True, key=f"up_{st.session_state.up_key}")
     if new_files and st.button("🚀 XÁC NHẬN NẠP", use_container_width=True):
         for f in new_files:
-            data = extract_pdf_v107(f)
+            data = extract_pdf_v108(f)
             if data and data['specs']:
                 vec = get_vector(data['img'])
                 path = f"lib_{re.sub(r'[^A-Z]', '', f.name.upper())}.png"
@@ -118,23 +118,23 @@ with st.sidebar:
         st.rerun()
 
 # ================= 5. LUỒNG ĐỐI SOÁT CHÍNH =================
-st.title("🔍 AI SMART AUDITOR - V107")
+st.title("🔍 AI SMART AUDITOR - V108")
 
 col_f1, col_f2 = st.columns(2)
 with col_f1:
     filter_cust = st.selectbox("🎯 Lọc khách hàng:", ["TẤT CẢ (Tự động)"] + unique_custs)
 with col_f2:
-    file_audit = st.file_uploader("📤 Upload file đối soát", type="pdf", key="audit_upload")
+    file_audit = st.file_uploader("📤 Upload file đối soát", type="pdf")
 
 if file_audit:
     with st.spinner("Đang đối soát dữ liệu..."):
-        target = extract_pdf_v107(file_audit)
+        target = extract_pdf_v108(file_audit)
     
     if target and target["specs"]:
         st.success(f"Phát hiện: **{target['category']}** | Khách hàng: **{target['customer']}**")
         
-        # Truy vấn mẫu cùng loại
-        res = supabase.table("ai_data").select("*").eq("category", target['category']).execute()
+        # 1. Lấy tất cả dữ liệu (Không lọc category cứng để tránh bị 0 kết quả)
+        res = supabase.table("ai_data").select("*").execute()
         
         if res.data:
             target_vec = np.array(get_vector(target['img']), dtype=np.float32).reshape(1, -1)
@@ -143,8 +143,8 @@ if file_audit:
                 try:
                     db_vec = np.array(item['vector'], dtype=np.float32).reshape(1, -1)
                     sim = float(cosine_similarity(target_vec, db_vec))
-                    # Điểm ưu tiên cùng khách hàng
-                    score = sim + (0.5 if item['customer'] == target['customer'] else 0)
+                    # Điểm cộng ưu tiên: Cùng loại +0.3, Cùng khách hàng +0.5
+                    score = sim + (0.5 if item['customer'] == target['customer'] else 0) + (0.3 if item['category'] == target['category'] else 0)
                     matches.append({**item, "sim": sim, "score": score})
                 except: continue
             
@@ -155,33 +155,34 @@ if file_audit:
             top_3 = sorted(matches, key=lambda x: x['score'], reverse=True)[:3]
             
             if top_3:
-                # HIỂN THỊ TOP ẢNH
+                # HIỂN THỊ TOP MẪU
                 cols = st.columns(len(top_3))
                 for i, m in enumerate(top_3):
                     with cols[i]:
-                        st.image(m['image_url'], caption=f"{m['customer']} - Giống: {m['sim']:.1%}")
+                        tag = "💎 CÙNG KHÁCH" if m['customer'] == target['customer'] else "🌐 KHÁC"
+                        st.image(m['image_url'], caption=f"{tag}\n{m['file_name']}\nGiống: {m['sim']:.1%}")
                 
-                # --- SỬA LỖI TRUY XUẤT TẠI ĐÂY ---
-                best = top_3[0] # Lấy mẫu đầu tiên (Xịn nhất)
-                st.subheader(f"📊 ĐANG SO SÁNH VỚI: {best['file_name']}")
+                # TỰ ĐỘNG CHỌN MẪU KHỚP NHẤT
+                best = top_3[0]
+                st.subheader(f"📊 ĐỐI SOÁT VỚI: {best['file_name']}")
                 
                 audit_list = []
                 for pom, val in target['specs'].items():
                     m_val = best['spec_json'].get(pom, 0)
                     diff = round(val - m_val, 3) if m_val else 0
                     status = "✅ Khớp" if abs(diff) < 0.126 else f"❌ Lệch ({diff:+})"
-                    audit_list.append({"Vị trí đo (POM)": pom, "File Mới": val, "Mẫu Gốc": m_val, "Kết quả": status})
+                    audit_list.append({"POM": pom, "Mới": val, "Gốc": m_val, "Kết quả": status})
                 
                 st.table(pd.DataFrame(audit_list))
                 
-                # Nút tải Excel
+                # Xuất Excel
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     pd.DataFrame(audit_list).to_excel(writer, index=False)
-                st.download_button("📥 TẢI BÁO CÁO EXCEL", output.getvalue(), f"Report_{target['customer']}.xlsx")
+                st.download_button("📥 TẢI EXCEL", output.getvalue(), f"Report_{target['customer']}.xlsx")
             else:
                 st.warning("Không tìm thấy mẫu tương đồng để đối soát.")
         else:
-            st.warning("Kho hiện chưa có mẫu cùng loại hàng này.")
+            st.warning("Kho mẫu hiện chưa có dữ liệu.")
     else:
         st.error("Không tìm thấy bảng thông số kỹ thuật trong file này.")
