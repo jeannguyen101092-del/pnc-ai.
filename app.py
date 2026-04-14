@@ -93,30 +93,51 @@ def extract_pdf_v106(file):
     except: return None
 
 # ================= 4. SIDEBAR (KHỞI TẠO BIẾN AN TOÀN) =================
-unique_custs = [] # Khởi tạo rỗng để tránh lỗi NameError
+# ================= 4. SIDEBAR (FIX LỖI INSERT & KẾT NỐI DB) =================
+unique_custs = [] 
 with st.sidebar:
     st.header("📂 QUẢN LÝ KHO")
     try:
-        res_c = supabase.table("ai_data").select("customer", count="exact").execute()
+        # Lấy số lượng file thực tế
+        res_c = supabase.table("ai_data").select("file_name", count="exact").execute()
         st.metric("Tổng số mẫu trong kho", f"{res_c.count or 0} file")
-        # Lấy danh sách khách hàng thực tế
         if res_c.data:
-            unique_custs = sorted(list(set([item['customer'] for item in res_c.data if item.get('customer')])))
-    except: st.error("Lỗi kết nối database.")
+            unique_custs = sorted(list(set([item.get('customer') for item in res_c.data if item.get('customer')])))
+    except Exception as e:
+        st.error("Lỗi kết nối database")
 
     st.divider()
     new_files = st.file_uploader("Nạp mẫu mới", accept_multiple_files=True, key=f"up_{st.session_state.up_key}")
+    
     if new_files and st.button("🚀 XÁC NHẬN NẠP", use_container_width=True):
         for f in new_files:
-            data = extract_pdf_v106(f)
-            if data and data['specs']:
-                vec = get_vector(data['img'])
-                path = f"lib_{re.sub(r'[^A-Z]', '', f.name.upper())}.png"
-                supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true", "content-type": "image/png"})
-                url = supabase.storage.from_(BUCKET).get_public_url(path)
-                supabase.table("ai_data").insert({"file_name": f.name, "vector": vec, "spec_json": data['specs'], "image_url": url, "category": data['category'], "customer": data['customer']}).execute()
+            with st.spinner(f"Đang nạp {f.name}..."):
+                data = extract_pdf_v106(f) # Sử dụng hàm trích xuất của V106
+                if data and data['specs']:
+                    try:
+                        vec = get_vector(data['img'])
+                        # Tạo tên file an toàn cho Storage
+                        path = f"lib_{re.sub(r'[^A-Z0-9]', '', f.name.upper())}.png"
+                        
+                        supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert": "true", "content-type": "image/png"})
+                        url = supabase.storage.from_(BUCKET).get_public_url(path)
+                        
+                        # FIX LỖI API: Đảm bảo tên cột khớp 100% với Database của bạn
+                        # Nếu DB của bạn tên là 'spec_json', hãy giữ nguyên như dòng dưới:
+                        supabase.table("ai_data").insert({
+                            "file_name": f.name, 
+                            "vector": vec, 
+                            "spec_json": data['specs'], # Kiểm tra kỹ tên cột này trên Supabase
+                            "image_url": url, 
+                            "category": data['category'], 
+                            "customer": data['customer']
+                        }).execute()
+                    except Exception as e:
+                        st.error(f"Lỗi khi lưu file {f.name}: {e}")
+        
         st.session_state.up_key += 1
         st.rerun()
+
 
 # ================= 5. MAIN FLOW =================
 st.title("🔍 AI SMART AUDITOR - V106")
