@@ -12,7 +12,7 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V99.4", page_icon="📏")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V99.5", page_icon="🏢")
 
 if 'up_key' not in st.session_state: st.session_state.up_key = 0
 
@@ -22,12 +22,11 @@ st.markdown("""
     .stMetric { background-color: #ffffff; padding: 15px; border: 1px solid #e6e9ef; border-radius: 10px; }
     .status-khop { color: #28a745; font-weight: bold; }
     .status-lech { color: #dc3545; font-weight: bold; }
-    .priority-tag { background-color: #ff4b4b; color: white; padding: 2px 8px; border-radius: 5px; font-weight: bold; }
     thead th { background-color: #f8f9fa !important; color: #333 !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# ================= 2. MODEL AI & NHẬN DIỆN THÔNG MINH =================
+# ================= 2. CÔNG CỤ NHẬN DIỆN THÔNG MINH =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -46,20 +45,12 @@ def smart_detect(text, filename=""):
     if m == s_pa: return "QUẦN"
     return "ÁO"
 
-def extract_customer_name(text):
-    """Quét tên khách hàng từ nội dung PDF"""
-    patterns = [r"(?i)(CUSTOMER|CLIENT|BUYER|KHÁCH HÀNG)[:\s]+([^\n\r]+)", r"(?i)BRAND[:\s]+([^\n\r]+)"]
-    for p in patterns:
-        match = re.search(p, text)
-        if match: return match.group(2).strip().upper()[:30]
-    return "UNKNOWN"
-
 def parse_val(t):
     try:
         txt = str(t).replace(',', '.').strip().lower()
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0]
+        v = match
         if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
@@ -71,7 +62,7 @@ def get_image_vector(img_bytes):
     tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
     with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
 
-# ================= 3. TRÍCH XUẤT ĐA SIZE NÂNG CAO =================
+# ================= 3. TRÍCH XUẤT ĐA SIZE =================
 def extract_pdf_v99(file):
     all_specs, img_bytes, full_text_list = {}, None, []
     try:
@@ -82,7 +73,6 @@ def extract_pdf_v99(file):
         doc.close()
         full_text = " ".join(full_text_list)
         category = smart_detect(full_text, file.name)
-        customer = extract_customer_name(full_text)
         
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
@@ -93,7 +83,7 @@ def extract_pdf_v99(file):
                         row_up = [str(c).upper().strip() for c in row]
                         for i, v in enumerate(row_up):
                             if any(x in v for x in ["SPECIFICATION", "DESCRIPTION", "POM", "POSITION"]): n_col = i
-                            elif v.isdigit() or any(s == v for s in ["S", "M", "L", "XL", "XS", "XXL"]): size_cols[i] = v
+                            elif v.isdigit() or any(s == v for s in ["S", "M", "L", "XL", "XS"]): size_cols[i] = v
                         if n_col != -1 and size_cols: break
                     if n_col != -1 and size_cols:
                         for s_col, s_name in size_cols.items():
@@ -103,111 +93,83 @@ def extract_pdf_v99(file):
                                 val = parse_val(df.iloc[d_idx, s_col])
                                 if len(pom) > 3 and val > 0 and pom not in ["SPECIFICATION", "DESCRIPTION"]:
                                     all_specs[s_name][pom] = val
-        return {"all_specs": all_specs, "img": img_bytes, "category": category, "customer": customer}
+                if all_specs: break
+        return {"all_specs": all_specs, "img": img_bytes, "category": category}
     except: return None
 
-# ================= 4. SIDEBAR - NẠP KHO & CHỐNG TRÙNG =================
+# ================= 4. SIDEBAR - QUẢN LÝ KHO =================
 with st.sidebar:
     st.header("📂 KHO THIẾT KẾ MẪU")
     try:
         count_res = supabase.table("ai_data").select("id", count="exact").execute()
-        st.metric("Tổng số mẫu hiện có", f"{count_res.count or 0} file")
+        st.metric("Tổng và mẫu hiện có", f"{count_res.count or 0} file")
     except: pass
-    
     st.divider()
     cust_input_save = st.text_input("Nhập tên khách hàng (Để trống nếu muốn AI tự quét)", "")
-    
     new_files = st.file_uploader("Nạp Techpack mới", accept_multiple_files=True, key=f"up_{st.session_state.up_key}")
     if new_files and st.button("🚀 XÁC NHẬN NẠP KHO", use_container_width=True):
         res_existing = supabase.table("ai_data").select("file_name").execute()
         existing_names = [x['file_name'] for x in res_existing.data] if res_existing.data else []
-        
         progress_bar = st.progress(0)
         for i, f in enumerate(new_files):
-            if f.name in existing_names:
-                st.warning(f"File {f.name} đã tồn tại trong kho.")
-                continue
-                
+            if f.name in existing_names: continue
             data = extract_pdf_v99(f)
             if data and data['all_specs']:
                 try:
                     vec = get_image_vector(data['img'])
                     path = f"lib_{re.sub(r'[^a-zA-Z0-9]', '_', f.name)}.png"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
-                    
-                    # Nếu người dùng nhập tay thì lấy tên đó, không thì lấy từ PDF
-                    final_customer = cust_input_save.upper() if cust_input_save else data['customer']
-                    
-                    supabase.table("ai_data").insert({
-                        "file_name": f.name, "vector": vec, "spec_json": data['all_specs'], 
-                        "image_url": supabase.storage.from_(BUCKET).get_public_url(path), 
-                        "category": data['category'], "customer_name": final_customer
-                    }).execute()
-                except Exception as e: st.error(f"Lỗi nạp file {f.name}: {e}")
+                    supabase.table("ai_data").insert({"file_name": f.name, "vector": vec, "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path), "category": data['category'], "customer_name": cust_input_save.upper() if cust_input_save else "UNKNOWN"}).execute()
+                except Exception as e: st.error(f"Lỗi nạp: {e}")
             progress_bar.progress((i + 1) / len(new_files))
-        st.success("Xử lý hoàn tất!"); st.session_state.up_key += 1; st.rerun()
+        st.success("Nạp thành công!"); st.session_state.up_key += 1; st.rerun()
 
-# ================= 5. ĐỐI SOÁT CHÍNH - ƯU TIÊN TP MỚI =================
+# ================= 5. ĐỐI SOÁT CHÍNH =================
 st.title("🔍 AI SMART AUDITOR V99.3")
-
-# Giao diện nhập liệu Audit
 cust_audit_input = st.text_input("Nhập tên khách hàng cần đối soát (VD: TP MỚI)", "TP MỚI")
 file_audit = st.file_uploader("📤 Upload Techpack Audit", type="pdf")
 
 if file_audit:
     with st.status("🛠️ Đang quét nội dung...", expanded=True) as status:
         target = extract_pdf_v99(file_audit)
-        
         if target and target["all_specs"]:
-            st.write(f"✅ Nhận diện: **{target['category']}** | Khách (PDF): **{target['customer']}**")
-            
-            # Chỉ tìm trong kho mẫu cùng Category
+            st.write(f"✅ Nhận diện: **{target['category']}**")
             res = supabase.table("ai_data").select("*").eq("category", target['category']).execute()
-            
             if res.data:
                 df_db = pd.DataFrame(res.data)
                 target_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
                 db_vecs = np.array([v for v in df_db['vector']])
                 df_db['sim_score'] = cosine_similarity(target_vec, db_vecs).flatten()
                 
-                # --- LOGIC ƯU TIÊN ƯU VIỆT ---
-                # Điểm 2: Khớp khách hàng "TP MỚI" hoặc khớp tên khách hàng nhập tay
-                # Điểm 1: Các mẫu khác
-                search_term = cust_audit_input.upper()
-                df_db['priority'] = df_db['customer_name'].apply(lambda x: 2 if search_term in str(x).upper() else 1)
-                
-                # Sắp xếp: Ưu tiên trước, sau đó tới độ giống hình ảnh AI
+                # ƯU TIÊN THEO TÊN KHÁCH HÀNG
+                tar_c = cust_audit_input.upper()
+                df_db['priority'] = df_db['customer_name'].apply(lambda x: 2 if tar_c in str(x).upper() else 1)
                 df_top = df_db.sort_values(by=['priority', 'sim_score'], ascending=[False, False]).head(3)
                 
                 status.update(label="✅ Đã tìm thấy mẫu tương đồng!", state="complete", expanded=False)
                 
-                # HIỂN THỊ KẾT QUẢ TABS
+                # SỬA LỖI st.columns() TẠI ĐÂY
                 tabs = st.tabs([f"Top {i+1}: {row['file_name']}" for i, row in df_top.iterrows()])
                 for i, (idx, row) in enumerate(df_top.iterrows()):
                     with tabs[i]:
-                        c_info, c_table = st.columns()
+                        c_info, c_table = st.columns(2) # Đã thêm số 2 vào đây
                         with c_info:
                             st.image(row['image_url'], use_container_width=True)
                             st.metric("Độ khớp AI", f"{row['sim_score']*100:.1f}%")
-                            prio_label = "🔥 ƯU TIÊN" if row['priority'] == 2 else "✅ BÌNH THƯỜNG"
-                            st.write(f"Trạng thái: {prio_label}")
                             st.write(f"📌 Khách hàng: **{row['customer_name']}**")
-                        
                         with c_table:
                             common_sizes = sorted(list(set(target['all_specs'].keys()) & set(row['spec_json'].keys())))
-                            if not common_sizes:
-                                common_sizes = sorted(list(target['all_specs'].keys()))
-
+                            if not common_sizes: common_sizes = sorted(list(target['all_specs'].keys()))
                             if common_sizes:
-                                sel_s = st.selectbox(f"Size đối soát mẫu {i+1}:", common_sizes, key=f"s_{i}")
-                                aud_s = target['all_specs'].get(sel_s, {})
-                                lib_s_name = sel_s if sel_s in row['spec_json'] else list(row['spec_json'].keys())[0]
-                                lib_s = row['spec_json'].get(lib_s_name, {})
+                                sel_s = st.selectbox(f"Size đối soát {i+1}:", common_sizes, key=f"s_{i}")
+                                lib_s, aud_s = row['spec_json'].get(sel_s, {}), target['all_specs'].get(sel_s, {})
+                                res_list = [{"POM": k, "Mẫu Gốc": lib_s.get(k,0), "Audit": v, "Lệch": round(v-lib_s.get(k,0),4), "Kết quả": "✅ Khớp" if abs(v-lib_s.get(k,0))<0.01 else "❌ Lệch"} for k, v in aud_s.items()]
+                                df_res = pd.DataFrame(res_list)
+                                st.table(df_res)
                                 
-                                res_list = []
-                                for pom, v_aud in aud_s.items():
-                                    v_lib = lib_s.get(pom, 0)
-                                    diff = round(v_aud - v_lib, 4)
-                                    res_list.append({"Vị trí đo (POM)": pom, "Mẫu Gốc": v_lib, "Bản Audit": v_aud, "Lệch": diff, "Kết quả": "✅ Khớp" if abs(diff) < 0.01 else "❌ Lệch"})
-                                st.table(pd.DataFrame(res_list))
+                                # Nút xuất Excel
+                                output = io.BytesIO()
+                                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                                    df_res.to_excel(writer, index=False)
+                                st.download_button(f"📥 Tải Excel Top {i+1}", output.getvalue(), f"Report_{row['file_name']}.xlsx", key=f"dl_{i}")
             else: status.update(label="❌ Không tìm thấy mẫu cùng loại", state="error")
