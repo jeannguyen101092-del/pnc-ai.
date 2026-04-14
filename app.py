@@ -22,7 +22,8 @@ st.markdown("""
     .stMetric { background-color: #f0f2f6; padding: 10px; border-radius: 10px; }
     .status-khop { color: #28a745; font-weight: bold; }
     .status-lech { color: #dc3545; font-weight: bold; }
-    .percentage { color: #007bff; font-weight: bold; font-size: 18px; }
+    .percentage { color: #007bff; font-weight: bold; font-size: 22px; }
+    thead th { background-color: #f0f2f6 !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -67,7 +68,7 @@ def get_image_vector(img_bytes):
     tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
     with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
 
-# ================= 3. TRÍCH XUẤT (FIX LỖI CHỌN NHẦM SIZE 4) =================
+# ================= 3. TRÍCH XUẤT (FIX LỖI QUÉT SAI CỘT SIZE) =================
 def extract_pdf_v95(file, target_size=None):
     specs, img_bytes, full_text_list = {}, None, []
     try:
@@ -87,17 +88,24 @@ def extract_pdf_v95(file, target_size=None):
                     df = pd.DataFrame(tb).fillna("")
                     n_col, v_col = -1, -1
                     
-                    # QUAN TRỌNG: Dò tìm cột tiêu đề POM và Size chính xác
+                    # DÒ TÌM TIÊU ĐỀ CỘT SIZE (Dò kỹ hơn)
                     for r_idx, row in df.head(10).iterrows():
                         row_up = [str(c).upper().strip() for c in row]
+                        # 1. Tìm cột POM
                         for i, v in enumerate(row_up):
                             if any(x in v for x in ["DESCRIPTION", "POM NAME", "POSITION"]): n_col = i
-                            # BẮT BUỘC: Nếu người dùng nhập Size, phải tìm đúng cột đó
-                            if target_size and str(target_size).strip().upper() == v: 
-                                v_col = i
-                        if n_col != -1 and v_col != -1: break # Đã tìm thấy cả tên và size đúng
+                        
+                        # 2. Tìm đúng cột Size mục tiêu (VD: cột có tiêu đề là "10")
+                        if target_size:
+                            t_size = str(target_size).strip().upper()
+                            for i, v in enumerate(row_up):
+                                # Kiểm tra khớp chính xác hoặc khớp từ (VD: "SIZE 10")
+                                if t_size == v or f" {t_size}" in f" {v}": 
+                                    v_col = i; break
+                        
+                        if n_col != -1 and (v_col != -1 or target_size is None): break
                     
-                    # Nếu vẫn không thấy cột size theo tên, mới dùng logic tìm cột nhiều số nhất
+                    # Fallback: Chỉ dùng cột nhiều số nhất nếu không tìm thấy cột size cụ thể
                     if n_col != -1 and v_col == -1:
                         max_nums = 0
                         for i in range(len(df.columns)):
@@ -129,18 +137,18 @@ with st.sidebar:
                     path = f"lib_{re.sub(r'[^a-zA-Z0-9]', '_', f.name.replace('.pdf',''))}.png"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
                     supabase.table("ai_data").insert({"file_name": f.name, "vector": vec, "spec_json": data['specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path), "category": data['category'], "customer_name": data['customer']}).execute()
-                except Exception as e: st.error(f"Lỗi: {e}")
-        st.success("Nạp thành công!"); st.rerun()
+                except Exception as e: st.error(f"Lỗi nạp: {e}")
+        st.success("Nạp thành công!"); st.session_state.up_key += 1; st.rerun()
 
 # ================= 5. ĐỐI SOÁT CHÍNH =================
 st.title("🔍 AI SMART AUDITOR - V95")
+
 col_a, col_b = st.columns(2)
 with col_a: file_audit = st.file_uploader("📤 Upload file PDF Audit", type="pdf")
-with col_b: size_audit = st.text_input("Nhập Size cần check (VD: 10)", "10")
+with col_b: size_audit = st.text_input("Nhập Size cần check trong file mới (VD: 10)", "10")
 
 if file_audit:
-    with st.spinner("Đang trích xuất thông số..."):
-        # Gửi size_audit vào hàm trích xuất để máy biết đường tìm cột
+    with st.spinner("Đang trích xuất và tính toán AI..."):
         target = extract_pdf_v95(file_audit, target_size=size_audit)
     
     if target and target["specs"]:
@@ -150,24 +158,30 @@ if file_audit:
             target_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             db_vecs = np.array([v for v in df_db['vector']])
             
-            df_db['sim_score'] = cosine_similarity(target_vec, db_vecs).flatten()
+            # TÍNH % TƯƠNG ĐỒNG VÀ ƯU TIÊN KHÁCH HÀNG
+            sim_scores = cosine_similarity(target_vec, db_vecs).flatten()
+            df_db['sim_score'] = sim_scores
             df_db['priority'] = df_db['customer_name'].apply(lambda x: 2 if "TP MỚI" in str(x).upper() else (1 if str(x).upper() == target['customer'] else 0))
             df_db = df_db.sort_values(by=['priority', 'sim_score'], ascending=[False, False])
             
             best = df_db.iloc[0]
             sim_percent = best['sim_score'] * 100
 
-            st.subheader(f"🖼️ So sánh hình ảnh (Khớp: {sim_percent:.2f}%)")
+            # HIỂN THỊ HÌNH ẢNH SONG SONG
+            st.subheader(f"🖼️ So sánh hình ảnh mẫu")
+            st.markdown(f"Độ tương đồng hình ảnh (AI Match): <span class='percentage'>{sim_percent:.2f}%</span>", unsafe_allow_html=True)
+            
             img_c1, img_c2 = st.columns(2)
-            with img_c1: st.image(target['img'], caption="Bản Audit", use_container_width=True)
-            with img_c2: st.image(best['image_url'], caption=f"Mẫu gốc đối xứng (AI Match)", use_container_width=True)
+            with img_c1: st.image(target['img'], caption="Bản đang Audit", use_container_width=True)
+            with img_c2: st.image(best['image_url'], caption=f"Mẫu gốc (Khách: {best['customer_name']})", use_container_width=True)
 
-            st.subheader("📊 Bảng đối soát thông số chi tiết")
+            # BẢNG ĐỐI SOÁT THÔNG SỐ
+            st.subheader(f"📊 Bảng đối soát chi tiết (Audit Size {size_audit})")
             lib_specs = best['spec_json']
             res_table = []
             for pom, val_new in target['specs'].items():
                 val_old = lib_specs.get(pom, 0)
                 diff = val_new - val_old
                 status = "✅ Khớp" if abs(diff) < 0.1 else f"❌ Lệch ({diff:+.2f})"
-                res_table.append({"POM": pom, "Mẫu Gốc": val_old, f"Audit (S{size_audit})": val_new, "Kết quả": status})
+                res_table.append({"POM": pom, "Mẫu Gốc (S10)": val_old, f"Audit (S{size_audit})": val_new, "Kết quả": status})
             st.table(pd.DataFrame(res_table))
