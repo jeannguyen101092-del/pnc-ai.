@@ -47,7 +47,8 @@ def parse_val_safe(t):
         elif '/' in s:
             f = s.split('/')
             return float(f[0]) / float(f[1])
-        return float(s)
+        val = float(s)
+        return val if val < 300 else 0
     except: return 0
 
 def get_image_vector(img_bytes):
@@ -55,7 +56,7 @@ def get_image_vector(img_bytes):
     tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
     with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
 
-# ================= 3. TRÍCH XUẤT ĐA SIZE (NÂNG CẤP MẠNH) =================
+# ================= 3. TRÍCH XUẤT ĐA SIZE (NÂNG CẤP "ÉP CỘT") =================
 def extract_pdf_v102(file):
     all_specs, img_bytes, full_text_list = {}, None, []
     try:
@@ -72,38 +73,48 @@ def extract_pdf_v102(file):
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna(""); n_col = -1; size_cols = {}
-                    for r_idx, row in df.iterrows():
+                    if df.shape[1] < 2: continue # Bỏ qua bảng 1 cột
+                    
+                    # Bước 1: Dò tiêu đề chuẩn
+                    for r_idx, row in df.head(20).iterrows():
                         row_up = [str(c).upper().strip() for c in row]
-                        # Tìm cột POM (Hỗ trợ thêm SPEC, DESC, POM, POSITION)
-                        if any(x in v for x in ["SPEC", "DESC", "POM", "POS"]):
+                        if any(x in v for x in ["SPEC", "DESC", "POM", "POS", "POINT"]):
                             for i, v in enumerate(row_up):
-                                if any(x in v for x in ["SPEC", "DESC", "POM", "POS"]): n_col = i; break
-                        # Tìm Size
+                                if any(x in v for x in ["SPEC", "DESC", "POM", "POS", "POINT"]): n_col = i; break
                         for i, v in enumerate(row_up):
                             if i == n_col: continue
                             cl = v.replace("SIZE", "").strip()
-                            if cl.isdigit() or cl in ["S", "M", "L", "XL", "XS", "XXL"]: size_cols[i] = cl
+                            if cl.isdigit() or cl in ["S", "M", "L", "XL", "XS", "XXL", "31", "32", "34"]: size_cols[i] = cl
                         if n_col != -1 and size_cols: break
                     
+                    # Bước 2: ÉP CỘT (Nếu không thấy tiêu đề nhưng thấy cột có nhiều số)
+                    if n_col == -1: 
+                        n_col = 0 # Giả định cột đầu tiên là tên POM
+                        for i in range(1, df.shape[1]):
+                            if sum(1 for val in df.iloc[:10, i] if parse_val_safe(val) > 0) >= 3:
+                                size_cols[i] = f"Size_{i}"
+
                     if n_col != -1 and size_cols:
                         for s_col, s_name in size_cols.items():
                             if s_name not in all_specs: all_specs[s_name] = {}
                             for d_idx in range(len(df)):
                                 pom = str(df.iloc[d_idx, n_col]).replace('\n', ' ').strip().upper()
                                 val = parse_val_safe(df.iloc[d_idx, s_col])
-                                if len(pom) > 3 and val > 0: all_specs[s_name][pom] = val
+                                if len(pom) > 3 and val > 0 and not any(x in pom for x in ["DESCRIPTION", "SPEC", "POM"]):
+                                    all_specs[s_name][pom] = val
                 if all_specs: break
         return {"all_specs": all_specs, "img": img_bytes, "category": category}
     except: return None
 
-# ================= 4. SIDEBAR - QUẢN LÝ KHO (FIX LỖI) =================
+# ================= 4. SIDEBAR - QUẢN LÝ KHO (CHỐNG TRÙNG) =================
 with st.sidebar:
     st.header("📂 KHO THIẾT KẾ MẪU")
     try:
-        db_count = supabase.table("ai_data").select("customer_name", count="exact").execute()
-        st.metric("Tổng số mẫu hiện có", f"{db_count.count or 0} file")
-        unique_custs = sorted(list(set([x['customer_name'] for x in db_count.data if x['customer_name']])))
-    except: unique_custs = []
+        db_res = supabase.table("ai_data").select("customer_name", "file_name", count="exact").execute()
+        st.metric("Tổng số file hiện có", f"{db_res.count or 0} file")
+        unique_custs = sorted(list(set([x['customer_name'] for x in db_res.data if x['customer_name']])))
+        existing_files = [x['file_name'] for x in db_res.data]
+    except: unique_custs, existing_files = [], []
 
     st.divider()
     cust_name = st.text_input("Nạp mẫu mới - Nhập tên khách hàng", placeholder="Ví dụ: Vineyard Vines")
@@ -111,45 +122,32 @@ with st.sidebar:
     
     if new_files and st.button("🚀 XÁC NHẬN NẠP KHO", use_container_width=True):
         count_success = 0
-        existing = [x['file_name'] for x in supabase.table("ai_data").select("file_name").execute().data]
-        
         for f in new_files:
-            if f.name in existing:
-                st.warning(f"Bỏ qua: {f.name} đã tồn tại.")
+            if f.name in existing_files:
+                st.warning(f"⚠️ {f.name} đã tồn tại trong kho.")
                 continue
-                
-            with st.spinner(f"Đang xử lý {f.name}..."):
-                data = extract_pdf_v102(f)
-                if data and data['all_specs']:
-                    try:
-                        vec = get_image_vector(data['img'])
-                        path = f"lib_{re.sub(r'[^a-zA-Z0-9]', '_', f.name)}.png"
-                        supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
-                        supabase.table("ai_data").insert({
-                            "file_name": f.name, "vector": vec, "spec_json": data['all_specs'], 
-                            "image_url": supabase.storage.from_(BUCKET).get_public_url(path), 
-                            "category": data['category'], "customer_name": cust_name.upper() or "UNKNOWN"
-                        }).execute()
-                        count_success += 1
-                    except Exception as e: st.error(f"Lỗi Database: {e}")
-                else:
-                    st.error(f"⚠️ File {f.name} không có bảng thông số hợp lệ.")
-        
-        if count_success > 0:
-            st.success(f"Đã nạp thành công {count_success} file!")
-            st.session_state.up_key += 1
-            st.rerun()
+            data = extract_pdf_v102(f)
+            if data and data['all_specs']:
+                try:
+                    vec = get_image_vector(data['img'])
+                    path = f"lib_{re.sub(r'[^a-zA-Z0-9]', '_', f.name)}.png"
+                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
+                    supabase.table("ai_data").insert({"file_name": f.name, "vector": vec, "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path), "category": data['category'], "customer_name": cust_name.upper() or "UNKNOWN"}).execute()
+                    count_success += 1
+                except Exception as e: st.error(f"Lỗi: {e}")
+            else: st.error(f"❌ File {f.name} không tìm thấy bảng thông số hợp lệ.")
+        if count_success > 0: st.success(f"Đã nạp {count_success} file!"); st.rerun()
 
 # ================= 5. ĐỐI SOÁT CHÍNH =================
 st.title("🔍 AI SMART AUDITOR V102")
 col_h1, col_h2 = st.columns(2)
-with col_h1: sel_prio = st.selectbox("🎯 Chọn khách hàng ưu tiên hiển thị", ["Tất cả khách hàng"] + unique_custs)
+with col_h1: sel_cust = st.selectbox("🎯 Chọn khách hàng ưu tiên hiển thị", ["Tất cả khách hàng"] + unique_custs)
 with col_h2: tar_cust = st.text_input("Nhập tên khách hàng cho Audit hiện tại", placeholder="Để AI tự quét")
 
 file_audit = st.file_uploader("📤 Upload Techpack Audit", type="pdf")
 
 if file_audit:
-    with st.status("🛠️ Đang xử lý đối soát...", expanded=True) as status:
+    with st.status("🛠️ Đang quét thông số...", expanded=True) as status:
         target = extract_pdf_v102(file_audit)
         if target and target["all_specs"]:
             st.write(f"✅ Nhận diện: **{target['category']}**")
@@ -158,13 +156,10 @@ if file_audit:
                 df_db = pd.DataFrame(res.data)
                 target_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
                 df_db['sim_score'] = cosine_similarity(target_vec, np.array([v for v in df_db['vector']])).flatten()
-                
-                # Ưu tiên
-                final_tar = tar_cust.upper() if tar_cust.strip() else "NONE"
-                df_db['priority'] = df_db['customer_name'].apply(lambda x: 3 if final_tar in str(x).upper() else (2 if "TP MỚI" in str(x).upper() else 1))
-                df_top = df_db.sort_values(by=['priority', 'sim_score'], ascending=[False, False]).head(3)
-                
-                status.update(label="✅ Đã tìm thấy các mẫu tương đồng!", state="complete", expanded=False)
+                f_tar = tar_cust.upper() if tar_cust.strip() else "NONE"
+                df_db['priority'] = df_db['customer_name'].apply(lambda x: 3 if f_tar in str(x).upper() else (2 if sel_cust.upper() in str(x).upper() else 1))
+                df_top = df_db.sort_values(by=['priority', 'sim_score'], ascending=[False, False]).head(5)
+                status.update(label="✅ Đã tìm thấy mẫu tương đồng!", state="complete", expanded=False)
                 
                 tabs = st.tabs([f"Mã {i+1}: {row['file_name']}" for i, row in df_top.iterrows()])
                 for i, (idx, row) in enumerate(df_top.iterrows()):
@@ -182,7 +177,13 @@ if file_audit:
                                 lib_j = row['spec_json']
                                 b_size = sel_s if sel_s in lib_j else list(lib_j.keys())[0]
                                 lib_d = lib_j.get(b_size, {})
-                                res_l = [{"POM": k, "Gốc": lib_d.get(k,0), "Audit": v, "Lệch": round(v-lib_d.get(k,0),3)} for k, v in aud_d.items()]
-                                st.table(pd.DataFrame(res_l))
-            else: status.update(label="❌ Không tìm thấy mẫu cùng loại hàng", state="error")
-        else: status.update(label="❌ Không tìm thấy bảng thông số trong PDF", state="error")
+                                res_l = [{"POM": k, "Mẫu Gốc": lib_d.get(k,0), "Audit": v, "Lệch": round(v-lib_d.get(k,0),3)} for k, v in aud_d.items()]
+                                df_final = pd.DataFrame(res_l)
+                                st.table(df_final)
+                                # Nút xuất Excel
+                                buf = io.BytesIO()
+                                with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+                                    df_final.to_excel(writer, index=False)
+                                st.download_button(label=f"📥 Tải Excel Mã {i+1}", data=buf.getvalue(), file_name=f"Audit_{row['file_name']}.xlsx", key=f"dl_{i}")
+            else: status.update(label="❌ Không tìm thấy mẫu cùng loại", state="error")
+        else: status.update(label="❌ Không tìm thấy bảng thông số hợp lệ", state="error")
