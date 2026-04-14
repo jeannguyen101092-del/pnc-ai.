@@ -92,57 +92,34 @@ def extract_pdf_v106(file):
         return {"specs": specs, "img": img_bytes, "category": category, "customer": customer}
     except: return None
 
-# ================= 4. SIDEBAR (KHỞI TẠO BIẾN AN TOÀN) =================
-# ================= 4. SIDEBAR (FIX LỖI INSERT & KẾT NỐI DB) =================
-unique_custs = [] 
+# ================= 4. SIDEBAR =================
+unique_custs = []
 with st.sidebar:
     st.header("📂 QUẢN LÝ KHO")
     try:
-        # Lấy số lượng file thực tế
-        res_c = supabase.table("ai_data").select("file_name", count="exact").execute()
+        res_c = supabase.table("ai_data").select("customer", count="exact").execute()
         st.metric("Tổng số mẫu trong kho", f"{res_c.count or 0} file")
         if res_c.data:
-            unique_custs = sorted(list(set([item.get('customer') for item in res_c.data if item.get('customer')])))
-    except Exception as e:
-        st.error("Lỗi kết nối database")
+            unique_custs = sorted(list(set([item['customer'] for item in res_c.data if item.get('customer')])))
+    except: st.error("Lỗi kết nối database")
 
     st.divider()
-    new_files = st.file_uploader("Nạp mẫu mới", accept_multiple_files=True, key=f"up_{st.session_state.up_key}")
-    
+    new_files = st.file_uploader("Nạp mẫu mới", type="pdf", accept_multiple_files=True, key=f"up_{st.session_state.up_key}")
     if new_files and st.button("🚀 XÁC NHẬN NẠP", use_container_width=True):
         for f in new_files:
-            with st.spinner(f"Đang nạp {f.name}..."):
-                data = extract_pdf_v106(f) # Sử dụng hàm trích xuất của V106
-                if data and data['specs']:
-                    try:
-                        vec = get_vector(data['img'])
-                        # Tạo tên file an toàn cho Storage
-                        path = f"lib_{re.sub(r'[^A-Z0-9]', '', f.name.upper())}.png"
-                        
-                        supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert": "true", "content-type": "image/png"})
-                        url = supabase.storage.from_(BUCKET).get_public_url(path)
-                        
-                        # FIX LỖI API: Đảm bảo tên cột khớp 100% với Database của bạn
-                        # Nếu DB của bạn tên là 'spec_json', hãy giữ nguyên như dòng dưới:
-                        supabase.table("ai_data").insert({
-                            "file_name": f.name, 
-                            "vector": vec, 
-                            "spec_json": data['specs'], # Kiểm tra kỹ tên cột này trên Supabase
-                            "image_url": url, 
-                            "category": data['category'], 
-                            "customer": data['customer']
-                        }).execute()
-                    except Exception as e:
-                        st.error(f"Lỗi khi lưu file {f.name}: {e}")
-        
+            data = extract_pdf_v106(f)
+            if data and data['specs']:
+                vec = get_vector(data['img'])
+                path = f"lib_{re.sub(r'[^A-Z]', '', f.name.upper())}.png"
+                supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true", "content-type": "image/png"})
+                url = supabase.storage.from_(BUCKET).get_public_url(path)
+                supabase.table("ai_data").insert({"file_name": f.name, "vector": vec, "spec_json": data['specs'], "image_url": url, "category": data['category'], "customer": data['customer']}).execute()
         st.session_state.up_key += 1
         st.rerun()
-
 
 # ================= 5. MAIN FLOW =================
 st.title("🔍 AI SMART AUDITOR - V106")
 
-# Sửa lỗi dòng 170: Đảm bảo danh sách luôn có giá trị
 col_f1, col_f2 = st.columns(2)
 with col_f1:
     filter_cust = st.selectbox("🎯 Lọc khách hàng:", ["TẤT CẢ (Tự động)"] + unique_custs)
@@ -154,7 +131,11 @@ if file_audit:
         target = extract_pdf_v106(file_audit)
     if target and target["specs"]:
         st.success(f"Phát hiện: {target['category']} | Khách hàng: {target['customer']}")
-        res = supabase.table("ai_data").select("*").execute()
+        
+        query = supabase.table("ai_data").select("*")
+        if filter_cust != "TẤT CẢ (Tự động)": query = query.eq("customer", filter_cust)
+        res = query.execute()
+        
         if res.data:
             target_vec = np.array(get_vector(target['img']), dtype=np.float32).reshape(1, -1)
             matches = []
@@ -165,19 +146,25 @@ if file_audit:
                     score = sim + (0.5 if item['customer'] == target['customer'] else 0) + (0.3 if item['category'] == target['category'] else 0)
                     matches.append({**item, "sim": sim, "score": score})
                 except: continue
+            
             top_3 = sorted(matches, key=lambda x: x['score'], reverse=True)[:3]
             if top_3:
-                st.subheader("🖼️ MẪU TƯƠNG ĐỒNG")
+                st.subheader("🖼️ MẪU TƯƠNG ĐỒNG NHẤT")
                 cols = st.columns(len(top_3))
                 for i, m in enumerate(top_3):
                     with cols[i]: st.image(m['image_url'], caption=f"{m['customer']} - {m['sim']:.1%}")
-                best = top_3[0]
-                st.subheader(f"📊 SO SÁNH VỚI: {best['file_name']}")
-                audit_list = [{"POM": k, "Mới": v, "Gốc": best['spec_json'].get(k, 0), "KQ": "✅" if abs(v - best['spec_json'].get(k, 0)) < 0.126 else "❌"} for k, v in target['specs'].items()]
+                
+                # FIX LỖI TRUY XUẤT: Lấy phần tử đầu tiên của top_3
+                best = top_3[0] 
+                st.subheader(f"📊 ĐANG SO SÁNH VỚI: {best['file_name']}")
+                
+                audit_list = []
+                for pom, val in target['specs'].items():
+                    m_val = best['spec_json'].get(pom, 0)
+                    diff = round(val - m_val, 3) if m_val else 0
+                    status = "✅ Khớp" if abs(diff) < 0.126 else f"❌ Lệch ({diff:+})"
+                    audit_list.append({"POM": pom, "Mới": val, "Gốc": m_val, "Kết quả": status})
+                
                 st.table(pd.DataFrame(audit_list))
-                # Thêm nút xuất Excel
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    pd.DataFrame(audit_list).to_excel(writer, index=False)
-                st.download_button("📥 TẢI EXCEL", output.getvalue(), "Report.xlsx")
         else: st.warning("Kho đang trống.")
+    else: st.error("Không tìm thấy bảng thông số.")
