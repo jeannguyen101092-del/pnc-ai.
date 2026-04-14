@@ -17,6 +17,7 @@ st.set_page_config(layout="wide", page_title="AI Fashion Auditor V95", page_icon
 if 'up_key' not in st.session_state: 
     st.session_state.up_key = 0
 
+# CSS làm đẹp giao diện
 st.markdown("""
     <style>
     .stMetric { background-color: #f0f2f6; padding: 10px; border-radius: 10px; }
@@ -34,7 +35,13 @@ def load_model():
 model_ai = load_model()
 
 def extract_customer_name(text):
-    patterns = [r"(?i)CUSTOMER[:\s]+([^\n]+)", r"(?i)CLIENT[:\s]+([^\n]+)", r"(?i)BUYER[:\s]+([^\n]+)", r"(?i)KHÁCH HÀNG[:\s]+([^\n]+)"]
+    """Quét tên khách hàng từ PDF"""
+    patterns = [
+        r"(?i)CUSTOMER[:\s]+([^\n]+)", 
+        r"(?i)CLIENT[:\s]+([^\n]+)", 
+        r"(?i)BUYER[:\s]+([^\n]+)",
+        r"(?i)KHÁCH HÀNG[:\s]+([^\n]+)"
+    ]
     for p in patterns:
         match = re.search(p, text)
         if match: return match.group(1).strip().upper()
@@ -43,7 +50,7 @@ def extract_customer_name(text):
 def detect_category(text, filename=""):
     t = (str(text) + " " + str(filename)).upper()
     keywords = {"VÁY/ĐẦM": ["DRESS", "SKIRT", "VÁY", "ĐẦM", "GOWN"], "QUẦN": ["PANT", "JEAN", "SHORT", "TROUSER", "BOTTOM", "QUẦN"], "ÁO": ["SHIRT", "JACKET", "HOODIE", "TOP", "TEE", "COAT", "ÁO", "SWEATER"]}
-    scores = {cat: sum(t.count(k) for k in keywords[cat]) for cat in keywords}
+    scores = {cat: sum(t.count(k) for k in keys) for cat, keys in keywords.items()}
     detected = max(scores, key=scores.get)
     return detected if scores[detected] > 0 else "KHÁC"
 
@@ -63,7 +70,7 @@ def get_image_vector(img_bytes):
     tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
     with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
 
-# ================= 3. TRÍCH XUẤT THÔNG MINH =================
+# ================= 3. TRÍCH XUẤT THÔNG MINH (DÒ SIZE) =================
 def extract_pdf_v95(file, target_size=None):
     specs, img_bytes, full_text_list = {}, None, []
     try:
@@ -73,8 +80,11 @@ def extract_pdf_v95(file, target_size=None):
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         for page in doc: full_text_list.append(str(page.get_text() or ""))
         doc.close()
+        
         full_text = " ".join(full_text_list)
-        category, customer = detect_category(full_text, file.name), extract_customer_name(full_text)
+        category = detect_category(full_text, file.name)
+        customer = extract_customer_name(full_text)
+
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
@@ -87,12 +97,14 @@ def extract_pdf_v95(file, target_size=None):
                             if any(x in v for x in ["DESCRIPTION", "POM NAME", "POSITION"]): n_col = i
                             if target_size and str(target_size).upper() == v: v_col = i
                         if n_col != -1 and (v_col != -1 or not target_size): break
+                    
                     if n_col != -1 and v_col == -1:
                         max_nums = 0
                         for i in range(len(df.columns)):
                             if i == n_col: continue
                             num_count = sum(1 for val in df.iloc[:12, i] if parse_val(val) > 0)
                             if num_count > max_nums: max_nums = num_count; v_col = i
+
                     if n_col != -1 and v_col != -1:
                         for d_idx in range(len(df)):
                             name = str(df.iloc[d_idx, n_col]).replace('\n', ' ').strip().upper()
@@ -102,11 +114,12 @@ def extract_pdf_v95(file, target_size=None):
         return {"specs": specs, "img": img_bytes, "category": category, "customer": customer}
     except: return None
 
-# ================= 4. SIDEBAR =================
+# ================= 4. SIDEBAR (QUẢN LÝ KHO) =================
 with st.sidebar:
     st.header("📂 KHO THIẾT KẾ MẪU")
     size_save = st.text_input("Size lưu kho (VD: 10)", "10")
     new_files = st.file_uploader("Nạp Techpack mới", accept_multiple_files=True, key=f"up_{st.session_state.up_key}")
+    
     if new_files and st.button("🚀 XÁC NHẬN NẠP"):
         for f in new_files:
             data = extract_pdf_v95(f, target_size=size_save)
@@ -121,25 +134,28 @@ with st.sidebar:
                         "category": data['category'], "customer_name": data['customer']
                     }).execute()
                 except Exception as e: st.error(f"Lỗi: {e}")
-        st.success("Nạp thành công!"); st.rerun()
+        st.success("Nạp thành công!"); st.session_state.up_key += 1; st.rerun()
 
 # ================= 5. LUỒNG ĐỐI SOÁT CHÍNH =================
 st.title("🔍 AI SMART AUDITOR - V95")
-c1, c2 = st.columns()
-with c1: file_audit = st.file_uploader("📤 Upload file PDF Audit", type="pdf")
-with c2: size_audit = st.text_input("Nhập Size cần check (VD: 4)", "10")
+
+# Sửa lỗi st.columns() tại đây
+cols = st.columns(2) 
+with cols[0]: file_audit = st.file_uploader("📤 Upload file PDF Audit", type="pdf")
+with cols[1]: size_audit = st.text_input("Nhập Size cần check (VD: 4)", "4")
 
 if file_audit:
-    target = extract_pdf_v95(file_audit, target_size=size_audit)
+    with st.spinner("Đang trích xuất và đối chiếu..."):
+        target = extract_pdf_v95(file_audit, target_size=size_audit)
+    
     if target and target["specs"]:
-        st.info(f"✨ Khách hàng: **{target['customer']}** | Size Audit: **{size_audit}**")
+        st.info(f"✨ Khách hàng: **{target['customer']}** | Phân loại: **{target['category']}**")
+        
         res = supabase.table("ai_data").select("*").execute()
         if res.data:
             df_db = pd.DataFrame(res.data)
             target_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             db_vecs = np.array([v for v in df_db['vector']])
-            
-            # --- ĐÃ SỬA LỖI TẠI ĐÂY (.flatten()) ---
             df_db['sim_score'] = cosine_similarity(target_vec, db_vecs).flatten()
             
             # Logic ưu tiên: TP MỚI (2) > Cùng khách hàng (1) > Khác (0)
@@ -147,9 +163,10 @@ if file_audit:
             df_db = df_db.sort_values(by=['priority', 'sim_score'], ascending=[False, False])
             
             best = df_db.iloc[0]
+            
             st.success(f"Mẫu khớp nhất: **{best['file_name']}** (Khách: {best['customer_name']})")
             
-            # Bảng so sánh
+            # Hiển thị bảng so sánh
             results = []
             for pom, val_new in target['specs'].items():
                 val_old = best['spec_json'].get(pom, 0)
