@@ -9,10 +9,10 @@ from supabase import create_client
 # ================= 1. CONFIG =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
-BUCKET = "fashion-imgs"
+BUCKET = "fashion-imgs" # Đảm bảo tên Bucket này đã được tạo trên Supabase
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Smart Auditor V108", page_icon="🔍")
+st.set_page_config(layout="wide", page_title="AI Smart Auditor V109", page_icon="🔍")
 
 if 'up_key' not in st.session_state: st.session_state.up_key = 0
 
@@ -55,8 +55,8 @@ def get_vector(img_bytes):
         vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
     return vec.astype(float).tolist()
 
-# ================= 3. TRÍCH XUẤT THÔNG MINH =================
-def extract_pdf_v108(file):
+# ================= 3. TRÍCH XUẤT =================
+def extract_pdf_v109(file):
     specs, img_bytes, full_text = {}, None, ""
     try:
         file.seek(0)
@@ -92,33 +92,47 @@ def extract_pdf_v108(file):
         return {"specs": specs, "img": img_bytes, "category": category, "customer": customer}
     except: return None
 
-# ================= 4. SIDEBAR =================
+# ================= 4. SIDEBAR (FIX UPLOAD) =================
 unique_custs = []
 with st.sidebar:
     st.header("📂 QUẢN LÝ KHO")
     try:
         res_c = supabase.table("ai_data").select("customer").execute()
-        if res_c.data:
-            unique_custs = sorted(list(set([item['customer'] for item in res_c.data if item.get('customer')])))
-            st.metric("Tổng số mẫu trong kho", f"{len(res_c.data)} file")
+        st.metric("Số mẫu trong kho", f"{len(res_c.data)} file")
+        unique_custs = sorted(list(set([item['customer'] for item in res_c.data if item.get('customer')])))
     except: st.error("Lỗi kết nối database")
 
     st.divider()
     new_files = st.file_uploader("Nạp mẫu mới vào kho", accept_multiple_files=True, key=f"up_{st.session_state.up_key}")
     if new_files and st.button("🚀 XÁC NHẬN NẠP", use_container_width=True):
         for f in new_files:
-            data = extract_pdf_v108(f)
-            if data and data['specs']:
-                vec = get_vector(data['img'])
-                path = f"lib_{re.sub(r'[^A-Z]', '', f.name.upper())}.png"
-                supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true", "content-type": "image/png"})
-                url = supabase.storage.from_(BUCKET).get_public_url(path)
-                supabase.table("ai_data").insert({"file_name": f.name, "vector": vec, "spec_json": data['specs'], "image_url": url, "category": data['category'], "customer": data['customer']}).execute()
+            data = extract_pdf_v109(f)
+            if data and data['img']:
+                try:
+                    vec = get_vector(data['img'])
+                    # FIX: Xóa ký tự lạ trong tên file để không lỗi Storage
+                    safe_name = re.sub(r'[^A-Za-z0-9]', '_', f.name.upper().replace(".PDF",""))
+                    path = f"img_{safe_name}.png"
+                    
+                    # Nạp ảnh lên Storage
+                    supabase.storage.from_(BUCKET).upload(
+                        path, data['img'], 
+                        {"upsert": "true", "content-type": "image/png"}
+                    )
+                    url = supabase.storage.from_(BUCKET).get_public_url(path)
+                    
+                    # Lưu vào Database
+                    supabase.table("ai_data").insert({
+                        "file_name": f.name, "vector": vec, "spec_json": data['specs'], 
+                        "image_url": url, "category": data['category'], "customer": data['customer']
+                    }).execute()
+                except Exception as e:
+                    st.error(f"Lỗi nạp {f.name}: {e}")
         st.session_state.up_key += 1
         st.rerun()
 
-# ================= 5. LUỒNG ĐỐI SOÁT CHÍNH =================
-st.title("🔍 AI SMART AUDITOR - V108")
+# ================= 5. LUỒNG ĐỐI SOÁT =================
+st.title("🔍 AI SMART AUDITOR - V109")
 
 col_f1, col_f2 = st.columns(2)
 with col_f1:
@@ -127,13 +141,13 @@ with col_f2:
     file_audit = st.file_uploader("📤 Upload file đối soát", type="pdf")
 
 if file_audit:
-    with st.spinner("Đang đối soát dữ liệu..."):
-        target = extract_pdf_v108(file_audit)
+    with st.spinner("Đang AI quét dữ liệu..."):
+        target = extract_pdf_v109(file_audit)
     
     if target and target["specs"]:
         st.success(f"Phát hiện: **{target['category']}** | Khách hàng: **{target['customer']}**")
         
-        # 1. Lấy toàn bộ kho (Bỏ lọc category cứng để tránh lỗi không tìm thấy)
+        # Tìm trong toàn bộ kho, ưu tiên cùng khách hàng
         res = supabase.table("ai_data").select("*").execute()
         
         if res.data:
@@ -143,46 +157,25 @@ if file_audit:
                 try:
                     db_vec = np.array(item['vector'], dtype=np.float32).reshape(1, -1)
                     sim = float(cosine_similarity(target_vec, db_vec))
-                    # Điểm ưu tiên: Cùng khách hàng +0.5, Cùng loại +0.3
-                    score = sim + (0.5 if item['customer'] == target['customer'] else 0) + (0.3 if item['category'] == target['category'] else 0)
+                    score = sim + (0.5 if item['customer'] == target['customer'] else 0)
                     matches.append({**item, "sim": sim, "score": score})
                 except: continue
             
-            # Lọc theo khách hàng nếu bạn chọn thủ công ở selectbox
             if filter_cust != "TẤT CẢ (Tự động)":
                 matches = [m for m in matches if m['customer'] == filter_cust]
             
             top_3 = sorted(matches, key=lambda x: x['score'], reverse=True)[:3]
             
             if top_3:
-                # 2. Hiển thị mẫu tương đồng
+                st.subheader("🖼️ MẪU TƯƠNG ĐỒNG NHẤT")
                 cols = st.columns(len(top_3))
                 for i, m in enumerate(top_3):
                     with cols[i]:
-                        tag = "💎 CÙNG KHÁCH" if m['customer'] == target['customer'] else "🌐 KHÁC"
-                        st.image(m['image_url'], caption=f"{tag}\n{m['file_name']}\nGiống: {m['sim']:.1%}")
+                        st.image(m['image_url'], caption=f"{m['customer']}\nGiống: {m['sim']:.1%}")
                 
-                # 3. Tự động lấy mẫu đứng đầu danh sách để đổ bảng
-                best = top_3[0] 
-                st.subheader(f"📊 ĐANG SO SÁNH VỚI: {best['file_name']}")
-                
-                audit_list = []
-                for pom, val in target['specs'].items():
-                    m_val = best['spec_json'].get(pom, 0)
-                    diff = round(val - m_val, 3) if m_val else 0
-                    status = "✅ Khớp" if abs(diff) < 0.126 else f"❌ Lệch ({diff:+})"
-                    audit_list.append({"POM": pom, "File Mới": val, "Mẫu Gốc": m_val, "Kết quả": status})
-                
-                st.table(pd.DataFrame(audit_list))
-                
-                # Xuất Excel
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    pd.DataFrame(audit_list).to_excel(writer, index=False)
-                st.download_button("📥 TẢI BÁO CÁO EXCEL", output.getvalue(), f"Report_{target['customer']}.xlsx")
+                best = top_3[0]
+                st.subheader(f"📊 ĐỐI SOÁT VỚI: {best['file_name']}")
+                audit_df = pd.DataFrame([{"POM": k, "Mới": v, "Gốc": best['spec_json'].get(k, 0), "KQ": "✅" if abs(v - best['spec_json'].get(k, 0)) < 0.126 else "❌"} for k, v in target['specs'].items()])
+                st.table(audit_df)
             else:
-                st.warning("Không tìm thấy mẫu tương đồng trong kho.")
-        else:
-            st.warning("Kho mẫu hiện tại đang trống.")
-    else:
-        st.error("Không tìm thấy bảng thông số kỹ thuật trong file này.")
+                st.warning("Không tìm thấy mẫu tương đồng.")
