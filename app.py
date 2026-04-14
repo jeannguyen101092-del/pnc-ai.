@@ -7,7 +7,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
 # ================= 1. CẤU HÌNH HỆ THỐNG =================
-# Thay đổi URL và KEY của bạn tại đây
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
@@ -34,7 +33,7 @@ def load_model():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_model()
 
-# --- THÊM TÍNH NĂNG: QUÉT TÊN KHÁCH HÀNG ---
+# --- THÊM: HÀM QUÉT TÊN KHÁCH HÀNG ---
 def extract_customer_name(text):
     patterns = [
         r"(?i)CUSTOMER[:\s]+([^\n]+)", 
@@ -49,22 +48,15 @@ def extract_customer_name(text):
 
 def detect_category(text, filename=""):
     t = (str(text) + " " + str(filename)).upper()
-    keywords = {
-        "VÁY/ĐẦM": ["DRESS", "SKIRT", "VÁY", "ĐẦM", "GOWN"],
-        "QUẦN": ["PANT", "JEAN", "SHORT", "TROUSER", "BOTTOM", "QUẦN"],
-        "ÁO": ["SHIRT", "JACKET", "HOODIE", "TOP", "TEE", "COAT", "ÁO", "SWEATER"]
-    }
-    scores = {"VÁY/ĐẦM": 0, "QUẦN": 0, "ÁO": 0}
-    for cat, keys in keywords.items():
-        for k in keys: scores[cat] += t.count(k)
+    keywords = {"VÁY/ĐẦM": ["DRESS", "SKIRT", "VÁY", "ĐẦM", "GOWN"], "QUẦN": ["PANT", "JEAN", "SHORT", "TROUSER", "BOTTOM", "QUẦN"], "ÁO": ["SHIRT", "JACKET", "HOODIE", "TOP", "TEE", "COAT", "ÁO", "SWEATER"]}
+    scores = {cat: sum(t.count(k) for k in keys) for cat, keys in keywords.items()}
     detected = max(scores, key=scores.get)
     return detected if scores[detected] > 0 else "KHÁC"
 
 def parse_val(t):
     try:
         txt = str(t).replace(',', '.').strip().lower()
-        if len(txt) > 10 or not txt or any(x in txt for x in ["mm", "yd", "gr", "kg", "pcs", "date", "2024", "2025"]): 
-            return 0
+        if len(txt) > 10 or not txt or any(x in txt for x in ["mm", "yd", "gr", "kg", "pcs", "date"]): return 0
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
         v_str = match[0]
@@ -74,14 +66,8 @@ def parse_val(t):
 
 def get_image_vector(img_bytes):
     img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-    tf = transforms.Compose([
-        transforms.Resize((224,224)), 
-        transforms.ToTensor(), 
-        transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
-    ])
-    with torch.no_grad():
-        vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
-    return vec.astype(float).tolist()
+    tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
+    with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
 
 # ================= 3. TRÍCH XUẤT THÔNG MINH =================
 def extract_pdf_v95(file):
@@ -93,19 +79,14 @@ def extract_pdf_v95(file):
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         for page in doc: full_text_list.append(str(page.get_text() or ""))
         doc.close()
-        
         full_text = " ".join(full_text_list)
-        category = detect_category(full_text, file.name)
-        # --- THÊM: Lấy khách hàng ---
-        customer = extract_customer_name(full_text)
+        category, customer = detect_category(full_text, file.name), extract_customer_name(full_text)
 
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
-                    flat_text = " ".join(df.astype(str).values.flatten()).upper()
-                    if sum(1 for k in ["WAIST", "CHEST", "HIP", "LENGTH", "SHOULDER", "THIGH", "RISE"] if k in flat_text) < 2: continue
                     n_col, v_col = -1, -1
                     for r_idx, row in df.head(10).iterrows():
                         row_up = [str(c).upper().strip() for c in row]
@@ -122,8 +103,7 @@ def extract_pdf_v95(file):
                         for d_idx in range(len(df)):
                             name = str(df.iloc[d_idx, n_col]).replace('\n', ' ').strip().upper()
                             val = parse_val(df.iloc[d_idx, v_col])
-                            if len(name) > 3 and val > 0 and not any(x in name for x in ["DESCRIPTION", "POM"]):
-                                specs[name] = val
+                            if len(name) > 3 and val > 0: specs[name] = val
                 if specs: break 
         return {"specs": specs, "img": img_bytes, "category": category, "customer": customer}
     except: return None
@@ -137,26 +117,21 @@ with st.sidebar:
     except: st.error("Lỗi kết nối database.")
 
     st.divider()
-    new_files = st.file_uploader("Nạp Techpack mới vào kho", accept_multiple_files=True, key=f"uploader_{st.session_state.up_key}")
-    
+    new_files = st.file_uploader("Nạp Techpack mới", accept_multiple_files=True, key=f"uploader_{st.session_state.up_key}")
     if new_files and st.button("🚀 XÁC NHẬN NẠP", use_container_width=True):
         for f in new_files:
             with st.spinner(f"Đang nạp {f.name}..."):
                 data = extract_pdf_v95(f)
                 if data and data['specs']:
                     vec = get_image_vector(data['img'])
-                    clean_name = re.sub(r'[^a-zA-Z0-9]', '_', f.name.replace('.pdf',''))
-                    path = f"lib_{clean_name}.png"
+                    path = f"lib_{re.sub(r'[^a-zA-Z0-9]', '_', f.name)}.png"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
-                    url = supabase.storage.from_(BUCKET).get_public_url(path)
                     supabase.table("ai_data").insert({
                         "file_name": f.name, "vector": vec, "spec_json": data['specs'], 
-                        "image_url": url, "category": data['category'],
-                        "customer_name": data['customer'] # --- LƯU THÊM KHÁCH HÀNG ---
+                        "image_url": supabase.storage.from_(BUCKET).get_public_url(path), 
+                        "category": data['category'], "customer_name": data['customer']
                     }).execute()
-        st.success("Nạp thành công!")
-        st.session_state.up_key += 1
-        st.rerun()
+        st.success("Nạp thành công!"); st.session_state.up_key += 1; st.rerun()
 
 # ================= 5. LUỒNG ĐỐI SOÁT CHÍNH =================
 st.title("🔍 AI SMART AUDITOR - V95")
@@ -170,38 +145,39 @@ if file_audit:
     if target and target["specs"]:
         st.info(f"✨ Khách hàng: **{target['customer']}** | Phân loại: **{target['category']}**")
         
+        # --- ĐÃ SỬA LỖI TRUY XUẤT DỮ LIỆU TẠI ĐÂY ---
         res = supabase.table("ai_data").select("*").eq("category", target['category']).execute()
         if res.data:
             df_db = pd.DataFrame(res.data)
             
-            # --- ĐOẠN THÊM: ƯU TIÊN THEO KHÁCH HÀNG TP MỚI ---
-            # Tính tương đồng hình ảnh trước
+            # Tính tương đồng hình ảnh
             target_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             db_vecs = np.array([v for v in df_db['vector']])
             df_db['sim_score'] = cosine_similarity(target_vec, db_vecs).flatten()
             
-            # Logic ưu tiên: 2 điểm cho TP MỚI, 1 điểm cho cùng khách hàng, 0 điểm còn lại
-            def get_prio(c_name):
-                c_name = str(c_name).upper()
-                if "TP MỚI" in c_name: return 2
-                if c_name == target['customer']: return 1
+            # Ưu tiên 1: Khách hàng TP MỚI | Ưu tiên 2: Cùng khách hàng Audit
+            def get_prio(name):
+                name = str(name).upper()
+                if "TP MỚI" in name: return 2
+                if name == target['customer']: return 1
                 return 0
-                
+            
             df_db['priority'] = df_db['customer_name'].apply(get_prio)
             
-            # Sắp xếp: Ưu tiên trước (Priority), tương đồng hình ảnh sau (sim_score)
+            # Sắp xếp ưu tiên khách hàng rồi mới đến độ tương đồng ảnh
             df_db = df_db.sort_values(by=['priority', 'sim_score'], ascending=[False, False])
             
-            best_match = df_db.iloc
-            st.success(f"Mẫu khớp nhất: **{best_match['file_name']}** (Khách: {best_match['customer_name']})")
+            # Lấy dòng đầu tiên một cách an toàn
+            best_match = df_db.iloc[0] 
+            
+            st.success(f"Mẫu khớp nhất: {best_match['file_name']} (Khách: {best_match['customer_name']})")
             
             # Hiển thị bảng so sánh (Giữ nguyên logic của bạn)
             lib_specs = best_match['spec_json']
-            audit_results = []
+            results = []
             for pom, val_audit in target['specs'].items():
                 val_lib = lib_specs.get(pom, 0)
-                diff = val_audit - val_lib
-                status = "✅ Khớp" if abs(diff) < 0.25 else f"❌ Lệch ({diff:+.2f})"
-                audit_results.append({"POM": pom, "Mẫu Gốc": val_lib, "Audit": val_audit, "Kết quả": status})
-            st.table(pd.DataFrame(audit_results))
-
+                diff = abs(val_audit - val_lib)
+                status = "✅ Khớp" if diff < 0.25 else f"❌ Lệch ({val_audit - val_lib:+.2f})"
+                results.append({"POM": pom, "Mẫu Gốc": val_lib, "Audit": val_audit, "Kết quả": status})
+            st.table(pd.DataFrame(results))
