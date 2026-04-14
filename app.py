@@ -7,6 +7,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
 # ================= 1. CONFIG =================
+# Đảm bảo URL và KEY này chính xác 100% từ phần Project Settings > API
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
@@ -55,7 +56,7 @@ def get_vector(img_bytes):
         vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
     return vec.astype(float).tolist()
 
-# ================= 3. TRÍCH XUẤT THÔNG MINH =================
+# ================= 3. TRÍCH XUẤT =================
 def extract_pdf_v106(file):
     specs, img_bytes, full_text = {}, None, ""
     try:
@@ -97,11 +98,15 @@ unique_custs = []
 with st.sidebar:
     st.header("📂 QUẢN LÝ KHO")
     try:
-        res_c = supabase.table("ai_data").select("customer", count="exact").execute()
-        st.metric("Tổng số mẫu trong kho", f"{res_c.count or 0} file")
+        # Sử dụng select("customer") để lấy danh sách khách hàng
+        res_c = supabase.table("ai_data").select("customer").execute()
         if res_c.data:
             unique_custs = sorted(list(set([item['customer'] for item in res_c.data if item.get('customer')])))
-    except: st.error("Lỗi kết nối database")
+            st.metric("Tổng số mẫu trong kho", f"{len(res_c.data)} file")
+        else:
+            st.metric("Tổng số mẫu trong kho", "0 file")
+    except Exception as e:
+        st.error(f"Lỗi kết nối database")
 
     st.divider()
     new_files = st.file_uploader("Nạp mẫu mới", type="pdf", accept_multiple_files=True, key=f"up_{st.session_state.up_key}")
@@ -110,10 +115,13 @@ with st.sidebar:
             data = extract_pdf_v106(f)
             if data and data['specs']:
                 vec = get_vector(data['img'])
-                path = f"lib_{re.sub(r'[^A-Z]', '', f.name.upper())}.png"
-                supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true", "content-type": "image/png"})
-                url = supabase.storage.from_(BUCKET).get_public_url(path)
-                supabase.table("ai_data").insert({"file_name": f.name, "vector": vec, "spec_json": data['specs'], "image_url": url, "category": data['category'], "customer": data['customer']}).execute()
+                safe_path = f"lib_{re.sub(r'[^A-Z]', '', f.name.upper())}.png"
+                supabase.storage.from_(BUCKET).upload(safe_path, data['img'], {"upsert":"true", "content-type": "image/png"})
+                url = supabase.storage.from_(BUCKET).get_public_url(safe_path)
+                supabase.table("ai_data").insert({
+                    "file_name": f.name, "vector": vec, "spec_json": data['specs'], 
+                    "image_url": url, "category": data['category'], "customer": data['customer']
+                }).execute()
         st.session_state.up_key += 1
         st.rerun()
 
@@ -127,15 +135,13 @@ with col_f2:
     file_audit = st.file_uploader("📤 Upload file đối soát", type="pdf")
 
 if file_audit:
-    with st.spinner("Đang đối soát..."):
+    with st.spinner("Đang AI quét dữ liệu PDF..."):
         target = extract_pdf_v106(file_audit)
     if target and target["specs"]:
-        st.success(f"Phát hiện: {target['category']} | Khách hàng: {target['customer']}")
+        st.success(f"Phát hiện: **{target['category']}** | Khách hàng: **{target['customer']}**")
         
-        query = supabase.table("ai_data").select("*")
-        if filter_cust != "TẤT CẢ (Tự động)": query = query.eq("customer", filter_cust)
-        res = query.execute()
-        
+        # Truy vấn và so sánh
+        res = supabase.table("ai_data").select("*").execute()
         if res.data:
             target_vec = np.array(get_vector(target['img']), dtype=np.float32).reshape(1, -1)
             matches = []
@@ -143,28 +149,27 @@ if file_audit:
                 try:
                     db_vec = np.array(item['vector'], dtype=np.float32).reshape(1, -1)
                     sim = float(cosine_similarity(target_vec, db_vec))
-                    score = sim + (0.5 if item['customer'] == target['customer'] else 0) + (0.3 if item['category'] == target['category'] else 0)
+                    # Tính điểm ưu tiên khách hàng
+                    score = sim + (0.5 if item['customer'] == target['customer'] else 0)
                     matches.append({**item, "sim": sim, "score": score})
                 except: continue
             
+            # Nếu người dùng chọn lọc khách hàng cụ thể
+            if filter_cust != "TẤT CẢ (Tự động)":
+                matches = [m for m in matches if m['customer'] == filter_cust]
+
             top_3 = sorted(matches, key=lambda x: x['score'], reverse=True)[:3]
             if top_3:
-                st.subheader("🖼️ MẪU TƯƠNG ĐỒNG NHẤT")
                 cols = st.columns(len(top_3))
                 for i, m in enumerate(top_3):
                     with cols[i]: st.image(m['image_url'], caption=f"{m['customer']} - {m['sim']:.1%}")
                 
-                # FIX LỖI TRUY XUẤT: Lấy phần tử đầu tiên của top_3
-                best = top_3[0] 
-                st.subheader(f"📊 ĐANG SO SÁNH VỚI: {best['file_name']}")
-                
-                audit_list = []
-                for pom, val in target['specs'].items():
-                    m_val = best['spec_json'].get(pom, 0)
-                    diff = round(val - m_val, 3) if m_val else 0
-                    status = "✅ Khớp" if abs(diff) < 0.126 else f"❌ Lệch ({diff:+})"
-                    audit_list.append({"POM": pom, "Mới": val, "Gốc": m_val, "Kết quả": status})
-                
-                st.table(pd.DataFrame(audit_list))
+                best = top_3[0] # Lấy mẫu tốt nhất
+                st.subheader(f"📊 ĐỐI SOÁT VỚI: {best['file_name']}")
+                audit_df = pd.DataFrame([
+                    {"Vị trí": k, "Mới": v, "Gốc": best['spec_json'].get(k, 0), 
+                     "Kết quả": "✅" if abs(v - best['spec_json'].get(k, 0)) < 0.126 else "❌"} 
+                    for k, v in target['specs'].items()
+                ])
+                st.table(audit_df)
         else: st.warning("Kho đang trống.")
-    else: st.error("Không tìm thấy bảng thông số.")
