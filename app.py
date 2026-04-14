@@ -36,7 +36,7 @@ def load_model():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_model()
 
-# --- ĐOẠN THÊM MỚI: QUÉT TÊN KHÁCH HÀNG ---
+# --- THÊM: HÀM QUÉT TÊN KHÁCH HÀNG ---
 def extract_customer_name(text):
     patterns = [
         r"(?i)CUSTOMER[:\s]+([^\n]+)", 
@@ -48,7 +48,6 @@ def extract_customer_name(text):
         match = re.search(p, text)
         if match: return match.group(1).strip().upper()
     return "UNKNOWN"
-# ------------------------------------------
 
 def detect_category(text, filename=""):
     t = (str(text) + " " + str(filename)).upper()
@@ -91,7 +90,6 @@ def parse_val(t):
             val = eval(v_str) if '/' in v_str else float(v_str)
             
         # LỌC NHIỄU: Thông số may mặc thực tế thường nằm trong khoảng 0.1 đến 150. 
-        # Nếu con số trích xuất ra là 10001337 hay 313.000 (do lỗi đọc text dính chùm) thì bỏ qua.
         if val > 200: return 0 
         return val
     except: return 0
@@ -120,7 +118,7 @@ def extract_pdf_v95(file):
         
         full_text = " ".join(full_text_list)
         category = detect_category(full_text, file.name)
-        # THÊM: lấy khách hàng
+        # THÊM: Lấy khách hàng
         customer = extract_customer_name(full_text)
 
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
@@ -166,7 +164,6 @@ with st.sidebar:
     except: st.error("Lỗi kết nối database.")
 
     st.divider()
-    # Sử dụng up_key để reset uploader sau khi nạp xong
     new_files = st.file_uploader("Nạp Techpack mới vào kho", accept_multiple_files=True, key=f"uploader_{st.session_state.up_key}")
     
     if new_files and st.button("🚀 XÁC NHẬN NẠP", use_container_width=True):
@@ -175,7 +172,6 @@ with st.sidebar:
                 data = extract_pdf_v95(f)
                 if data and data['specs']:
                     vec = get_image_vector(data['img'])
-                    # Làm sạch tên file để lưu trữ
                     clean_name = re.sub(r'[^a-zA-Z0-9]', '_', f.name.replace('.pdf',''))
                     path = f"lib_{clean_name}.png"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
@@ -183,11 +179,11 @@ with st.sidebar:
                     supabase.table("ai_data").insert({
                         "file_name": f.name, "vector": vec, "spec_json": data['specs'], 
                         "image_url": url, "category": data['category'],
-                        "customer_name": data['customer'] # LƯU THÊM TÊN KHÁCH HÀNG
+                        "customer_name": data['customer'] # THÊM LƯU TÊN KHÁCH HÀNG
                     }).execute()
         
         st.success("Nạp thành công!")
-        st.session_state.up_key += 1 # Thay đổi key để xóa danh sách file đã chọn
+        st.session_state.up_key += 1
         st.rerun()
 
 # ================= 5. LUỒNG ĐỐI SOÁT CHÍNH =================
@@ -202,29 +198,29 @@ if file_audit:
     if target and target["specs"]:
         st.info(f"✨ Khách hàng: **{target['customer']}** | Phát hiện: **{target['category']}** | {len(target['specs'])} vị trí đo.")
         
+        # --- THÊM: LOGIC ƯU TIÊN TÌM KIẾM ---
         res = supabase.table("ai_data").select("*").eq("category", target['category']).execute()
         if res.data:
             df_db = pd.DataFrame(res.data)
             
-            # --- ĐOẠN THÊM MỚI: LOGIC ƯU TIÊN ---
+            # Tính độ tương đồng ảnh
             target_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             db_vecs = np.array([v for v in df_db['vector']])
-            df_db['sim_score'] = cosine_similarity(target_vec, db_vecs)[0]
+            df_db['sim_score'] = cosine_similarity(target_vec, db_vecs)
             
-            # Ưu tiên 1: Khách hàng TP MỚI
-            # Ưu tiên 2: Cùng tên khách hàng với file Audit
-            def set_priority(name):
-                name = str(name).upper()
-                if "TP MỚI" in name: return 2
-                if name == target['customer']: return 1
+            # Ưu tiên theo Khách hàng (TP MỚI > Cùng khách hàng > Khác)
+            def set_priority(db_customer):
+                db_customer = str(db_customer).upper()
+                if "TP MỚI" in db_customer: return 2
+                if db_customer == target['customer']: return 1
                 return 0
             
             df_db['priority'] = df_db['customer_name'].apply(set_priority)
             
-            # Sắp xếp theo Ưu tiên trước, sau đó mới tới độ tương đồng AI
+            # Sắp xếp theo: 1. Ưu tiên (priority), 2. Độ giống (sim_score)
             df_db = df_db.sort_values(by=['priority', 'sim_score'], ascending=[False, False])
-            # ------------------------------------------
-
+            
             best_match = df_db.iloc[0]
-            # (Tiếp tục code hiển thị của bạn...)
-            st.write(f"Mẫu khớp nhất: **{best_match['file_name']}** (Khách: {best_match.get('customer_name','UNKNOWN')})")
+            
+            # Hiển thị kết quả (Bạn có thể tiếp tục phần hiển thị bảng ở đây)
+            st.success(f"Mẫu khớp nhất: **{best_match['file_name']}** (Khách: {best_match.get('customer_name', 'UNKNOWN')})")
