@@ -22,7 +22,6 @@ st.markdown("""
     .stMetric { background-color: #ffffff; padding: 15px; border: 1px solid #e6e9ef; border-radius: 10px; }
     .status-khop { color: #28a745; font-weight: bold; }
     .status-lech { color: #dc3545; font-weight: bold; }
-    .percentage { color: #007bff; font-weight: bold; font-size: 20px; }
     thead th { background-color: #f8f9fa !important; }
     </style>
     """, unsafe_allow_html=True)
@@ -39,11 +38,9 @@ def smart_detect(text, filename=""):
     skirt_keys = ["SKIRT", "DRESS", "VÁY", "ĐẦM", "HEM", "SWEEP", "WAIST TO HEM"]
     pant_keys = ["INSEAM", "THIGH", "RISE", "LEG OPENING", "PANT", "TROUSER", "QUẦN", "FLY-STITCH", "CROTCH"]
     shirt_keys = ["CHEST", "BUST", "SLEEVE", "SHOULDER", "NECK", "SHIRT", "ÁO", "JACKET", "BODY LENGTH"]
-    
     s_skirt = sum(1 for k in skirt_keys if k in t)
     s_pant = sum(1 for k in pant_keys if k in t)
     s_shirt = sum(1 for k in shirt_keys if k in t)
-    
     m = max(s_skirt, s_pant, s_shirt)
     if m == 0: return "KHÁC"
     if m == s_skirt: return "VÁY"
@@ -74,7 +71,7 @@ def get_image_vector(img_bytes):
     tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
     with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
 
-# ================= 3. TRÍCH XUẤT ĐA SIZE =================
+# ================= 3. TRÍCH XUẤT ĐA SIZE (ĐÃ FIX LỖI BẢNG LẠ) =================
 def extract_pdf_v99(file):
     all_specs, img_bytes, full_text_list = {}, None, []
     try:
@@ -85,24 +82,39 @@ def extract_pdf_v99(file):
         doc.close()
         full_text = " ".join(full_text_list)
         category, customer = smart_detect(full_text, file.name), extract_customer_v99(full_text)
+        
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna(""); n_col = -1; size_cols = {}
-                    for r_idx, row in df.head(10).iterrows():
+                    
+                    # 1. Tìm tiêu đề cột (Mở rộng thêm SPECIFICATION, POINT OF MEASURE)
+                    for r_idx, row in df.head(15).iterrows():
                         row_up = [str(c).upper().strip() for c in row]
                         for i, v in enumerate(row_up):
-                            if any(x in v for x in ["DESCRIPTION", "POM", "POSITION", "SPECIFICATION"]): n_col = i
-                            elif v.isdigit() or any(s == v for s in ["S", "M", "L", "XL", "XS", "XXL"]): size_cols[i] = v
+                            if any(x in v for x in ["DESCRIPTION", "POM", "POSITION", "SPECIFICATION", "POINT OF MEASURE"]): 
+                                n_col = i
+                            elif v.isdigit() or any(s == v for s in ["S", "M", "L", "XL", "XS", "XXL", "32", "34", "36"]): 
+                                size_cols[i] = v
                         if n_col != -1 and size_cols: break
+                    
+                    # 2. Nếu không tìm thấy cột size cụ thể, dò tìm các cột có giá trị số liên tục
+                    if n_col != -1 and not size_cols:
+                        for i in range(len(df.columns)):
+                            if i == n_col: continue
+                            if sum(1 for val in df.iloc[:10, i] if parse_val(val) > 0) >= 3:
+                                size_cols[i] = f"Size_{i}"
+
+                    # 3. Trích xuất thông số
                     if n_col != -1 and size_cols:
                         for s_col, s_name in size_cols.items():
                             if s_name not in all_specs: all_specs[s_name] = {}
                             for d_idx in range(len(df)):
                                 pom = str(df.iloc[d_idx, n_col]).replace('\n', ' ').strip().upper()
                                 val = parse_val(df.iloc[d_idx, s_col])
-                                if len(pom) > 3 and val > 0: all_specs[s_name][pom] = val
+                                if len(pom) > 3 and val > 0 and not any(x in pom for x in ["SPECIFICATION", "DESCRIPTION", "POM"]):
+                                    all_specs[s_name][pom] = val
                 if all_specs: break
         return {"all_specs": all_specs, "img": img_bytes, "customer": customer, "category": category}
     except: return None
@@ -130,7 +142,7 @@ with st.sidebar:
             progress_bar.progress((i + 1) / len(new_files))
         st.success("Nạp thành công!"); st.session_state.up_key += 1; st.rerun()
 
-# ================= 5. ĐỐI SOÁT CHÍNH (CÓ HIỆN BẢNG THÔNG SỐ) =================
+# ================= 5. ĐỐI SOÁT CHÍNH =================
 st.title("🔍 AI SMART AUDITOR V99")
 file_audit = st.file_uploader("📤 Upload Techpack Audit", type="pdf")
 
@@ -154,7 +166,6 @@ if file_audit:
                 
                 status.update(label="✅ Đã tìm thấy mẫu tương đồng!", state="complete", expanded=False)
                 
-                # --- HIỂN THỊ KẾT QUẢ VÀ BẢNG THÔNG SỐ ---
                 tabs = st.tabs([f"Top {i+1}: {row['file_name']}" for i, row in df_top.iterrows()])
                 for i, (idx, row) in enumerate(df_top.iterrows()):
                     with tabs[i]:
@@ -162,31 +173,25 @@ if file_audit:
                         with c_info:
                             st.image(row['image_url'], use_container_width=True)
                             st.metric("Độ khớp AI", f"{row['sim_score']*100:.1f}%")
-                            st.write(f"📌 Khách hàng: **{row['customer_name']}**")
                         
                         with c_table:
-                            # Tự động tìm các size chung để so sánh
                             common_sizes = sorted(list(set(target['all_specs'].keys()) & set(row['spec_json'].keys())))
+                            if not common_sizes:
+                                # Nếu ko khớp tên size, lấy size đầu tiên của mỗi bên để so sánh mẫu
+                                common_sizes = [list(target['all_specs'].keys())[0]] if target['all_specs'] else []
+
                             if common_sizes:
                                 sel_s = st.selectbox(f"Chọn Size đối soát mẫu {i+1}:", common_sizes, key=f"s_{i}")
-                                lib_s, aud_s = row['spec_json'][sel_s], target['all_specs'][sel_s]
+                                aud_s = target['all_specs'].get(sel_s, {})
+                                # Lấy size tương ứng của mẫu gốc (nếu ko có size y hệt thì lấy size đầu tiên của mẫu gốc)
+                                lib_s_name = sel_s if sel_s in row['spec_json'] else list(row['spec_json'].keys())[0]
+                                lib_s = row['spec_json'].get(lib_s_name, {})
                                 
-                                # Tạo bảng thông số
                                 res_list = []
                                 for pom, v_aud in aud_s.items():
                                     v_lib = lib_s.get(pom, 0)
                                     diff = round(v_aud - v_lib, 4)
-                                    res_list.append({
-                                        "Vị trí (POM)": pom, 
-                                        "Mẫu Gốc": v_lib, 
-                                        "Bản Audit": v_aud, 
-                                        "Lệch": diff,
-                                        "Kết quả": "✅ Khớp" if abs(diff) < 0.01 else "❌ Lệch"
-                                    })
+                                    res_list.append({"Vị trí (POM)": pom, "Mẫu Gốc": v_lib, "Bản Audit": v_aud, "Lệch": diff, "Kết quả": "✅ Khớp" if abs(diff) < 0.01 else "❌ Lệch"})
                                 
-                                st.subheader(f"📊 Bảng so sánh thông số (Size {sel_s})")
                                 st.table(pd.DataFrame(res_list))
-                            else:
-                                st.warning("⚠️ Không tìm thấy size tương ứng để đối soát thông số.")
-            else:
-                status.update(label="❌ Không tìm thấy mẫu cùng loại trong kho", state="error")
+            else: status.update(label="❌ Không tìm thấy mẫu cùng loại", state="error")
