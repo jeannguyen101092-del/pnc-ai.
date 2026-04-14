@@ -6,215 +6,202 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
-# ================= CONFIG =================
+# ================= 1. CẤU HÌNH HỆ THỐNG =================
+# Thay đổi URL và KEY của bạn tại đây
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
-
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI AUDITOR V97")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V95", page_icon="📏")
 
-if "up_key" not in st.session_state:
+if 'up_key' not in st.session_state: 
     st.session_state.up_key = 0
 
-# ================= MODEL =================
+st.markdown("""
+    <style>
+    .stMetric { background-color: #f0f2f6; padding: 10px; border-radius: 10px; }
+    .status-khop { color: #28a745; font-weight: bold; }
+    .status-lech { color: #dc3545; font-weight: bold; }
+    thead th { background-color: #f0f2f6 !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# ================= 2. MODEL AI & CÔNG CỤ HỖ TRỢ =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
-
 model_ai = load_model()
 
-# ================= TOOLS =================
+# --- THÊM TÍNH NĂNG: QUÉT TÊN KHÁCH HÀNG ---
+def extract_customer_name(text):
+    patterns = [
+        r"(?i)CUSTOMER[:\s]+([^\n]+)", 
+        r"(?i)CLIENT[:\s]+([^\n]+)", 
+        r"(?i)BUYER[:\s]+([^\n]+)",
+        r"(?i)KHÁCH HÀNG[:\s]+([^\n]+)"
+    ]
+    for p in patterns:
+        match = re.search(p, text)
+        if match: return match.group(1).strip().upper()
+    return "UNKNOWN"
+
+def detect_category(text, filename=""):
+    t = (str(text) + " " + str(filename)).upper()
+    keywords = {
+        "VÁY/ĐẦM": ["DRESS", "SKIRT", "VÁY", "ĐẦM", "GOWN"],
+        "QUẦN": ["PANT", "JEAN", "SHORT", "TROUSER", "BOTTOM", "QUẦN"],
+        "ÁO": ["SHIRT", "JACKET", "HOODIE", "TOP", "TEE", "COAT", "ÁO", "SWEATER"]
+    }
+    scores = {"VÁY/ĐẦM": 0, "QUẦN": 0, "ÁO": 0}
+    for cat, keys in keywords.items():
+        for k in keys: scores[cat] += t.count(k)
+    detected = max(scores, key=scores.get)
+    return detected if scores[detected] > 0 else "KHÁC"
+
 def parse_val(t):
     try:
-        t = str(t).replace(",", ".")
-        m = re.findall(r"\d+\.\d+|\d+", t)
-        if not m: return 0
-        v = float(m[0])
-        if v > 200: return 0
-        return v
-    except:
-        return 0
+        txt = str(t).replace(',', '.').strip().lower()
+        if len(txt) > 10 or not txt or any(x in txt for x in ["mm", "yd", "gr", "kg", "pcs", "date", "2024", "2025"]): 
+            return 0
+        match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
+        if not match: return 0
+        v_str = match[0]
+        val = float(parts[0]) + eval(parts[1]) if ' ' in v_str and (parts := v_str.split()) else (eval(v_str) if '/' in v_str else float(v_str))
+        return val if val <= 200 else 0
+    except: return 0
 
-def detect_category(text):
-    t = text.upper()
-    if any(x in t for x in ["DRESS","SKIRT","VÁY"]): return "VÁY"
-    if any(x in t for x in ["PANT","JEAN","QUẦN"]): return "QUẦN"
-    if any(x in t for x in ["SHIRT","JACKET","ÁO"]): return "ÁO"
-    return "KHÁC"
-
-def extract_customer(text):
-    t = text.upper()
-    m = re.search(r'(CUSTOMER|CLIENT|BRAND)[:\s]+([A-Z0-9 _-]+)', t)
-    return m.group(2).strip() if m else "UNKNOWN"
-
-def extract_size(text):
-    m = re.search(r'\b(XXS|XS|S|M|L|XL|XXL|\d{1,2})\b', text.upper())
-    return m.group(1) if m else "UNKNOWN"
-
-def get_vec(img):
-    img = Image.open(io.BytesIO(img)).convert("RGB")
+def get_image_vector(img_bytes):
+    img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
     tf = transforms.Compose([
-        transforms.Resize((224,224)),
-        transforms.ToTensor(),
+        transforms.Resize((224,224)), 
+        transforms.ToTensor(), 
         transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
     ])
     with torch.no_grad():
-        v = model_ai(tf(img).unsqueeze(0)).flatten().numpy()
-    return v.tolist()
+        vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
+    return vec.astype(float).tolist()
 
-# ================= EXTRACT =================
-def extract_pdf(file):
+# ================= 3. TRÍCH XUẤT THÔNG MINH =================
+def extract_pdf_v95(file):
+    specs, img_bytes, full_text_list = {}, None, []
     try:
         file.seek(0)
-        content = file.read()
-
-        doc = fitz.open(stream=content, filetype="pdf")
-        img = doc[0].get_pixmap().tobytes("png")
-        text = " ".join([p.get_text() for p in doc])
+        pdf_content = file.read()
+        doc = fitz.open(stream=pdf_content, filetype="pdf")
+        img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
+        for page in doc: full_text_list.append(str(page.get_text() or ""))
         doc.close()
+        
+        full_text = " ".join(full_text_list)
+        category = detect_category(full_text, file.name)
+        # --- THÊM: Lấy khách hàng ---
+        customer = extract_customer_name(full_text)
 
-        category = detect_category(text)
-        customer = extract_customer(text)
-        size = extract_size(text)
-
-        specs = {}
-
-        with pdfplumber.open(io.BytesIO(content)) as pdf:
+        with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
-                    if len(df.columns) < 2: continue
+                    flat_text = " ".join(df.astype(str).values.flatten()).upper()
+                    if sum(1 for k in ["WAIST", "CHEST", "HIP", "LENGTH", "SHOULDER", "THIGH", "RISE"] if k in flat_text) < 2: continue
+                    n_col, v_col = -1, -1
+                    for r_idx, row in df.head(10).iterrows():
+                        row_up = [str(c).upper().strip() for c in row]
+                        for i, v in enumerate(row_up):
+                            if any(x in v for x in ["DESCRIPTION", "POM NAME", "POSITION"]): n_col = i; break
+                        if n_col != -1: break
+                    if n_col != -1:
+                        max_nums = 0
+                        for i in range(len(df.columns)):
+                            if i == n_col: continue
+                            num_count = sum(1 for val in df.iloc[:12, i] if parse_val(val) > 0)
+                            if num_count > max_nums: max_nums = num_count; v_col = i
+                    if n_col != -1 and v_col != -1:
+                        for d_idx in range(len(df)):
+                            name = str(df.iloc[d_idx, n_col]).replace('\n', ' ').strip().upper()
+                            val = parse_val(df.iloc[d_idx, v_col])
+                            if len(name) > 3 and val > 0 and not any(x in name for x in ["DESCRIPTION", "POM"]):
+                                specs[name] = val
+                if specs: break 
+        return {"specs": specs, "img": img_bytes, "category": category, "customer": customer}
+    except: return None
 
-                    name_col = 0
-                    val_col = 1
-
-                    for i in range(len(df.columns)):
-                        nums = sum(1 for v in df.iloc[:10,i] if parse_val(v)>0)
-                        if nums > 3:
-                            val_col = i
-
-                    for i in range(len(df)):
-                        name = str(df.iloc[i,name_col]).upper().strip()
-                        val = parse_val(df.iloc[i,val_col])
-                        if len(name)>3 and val>0:
-                            specs[name]=val
-
-                if specs: break
-
-        return {
-            "specs": specs,
-            "img": img,
-            "category": category,
-            "customer": customer,
-            "size": size
-        }
-    except:
-        return None
-
-# ================= SIDEBAR =================
+# ================= 4. SIDEBAR =================
 with st.sidebar:
-    st.title("KHO")
-
+    st.header("📂 KHO THIẾT KẾ MẪU")
     try:
-        count = supabase.table("ai_data").select("*", count="exact").execute().count
-        st.metric("Tổng mẫu", count or 0)
-    except:
-        st.error("DB lỗi")
+        res_db = supabase.table("ai_data").select("file_name", count="exact").execute()
+        st.metric("Tổng số mẫu hiện có", f"{res_db.count or 0} file")
+    except: st.error("Lỗi kết nối database.")
 
-    files = st.file_uploader("Upload", accept_multiple_files=True, key=st.session_state.up_key)
-
-    if files and st.button("NẠP"):
-        for f in files:
-            data = extract_pdf(f)
-            if not data: continue
-
-            vec = get_vec(data["img"])
-            name = re.sub(r'[^a-zA-Z0-9]', '_', f.name)
-
-            path = f"{name}.png"
-
-            supabase.storage.from_(BUCKET).upload(path, data["img"], {"upsert":"true"})
-            url = supabase.storage.from_(BUCKET).get_public_url(path)
-
-            supabase.table("ai_data").insert({
-                "file_name": f.name,
-                "vector": vec,
-                "spec_json": data["specs"],
-                "image_url": url,
-                "category": data["category"],
-                "customer": data["customer"],
-                "size": data["size"]
-            }).execute()
-
-        st.success("OK")
+    st.divider()
+    new_files = st.file_uploader("Nạp Techpack mới vào kho", accept_multiple_files=True, key=f"uploader_{st.session_state.up_key}")
+    
+    if new_files and st.button("🚀 XÁC NHẬN NẠP", use_container_width=True):
+        for f in new_files:
+            with st.spinner(f"Đang nạp {f.name}..."):
+                data = extract_pdf_v95(f)
+                if data and data['specs']:
+                    vec = get_image_vector(data['img'])
+                    clean_name = re.sub(r'[^a-zA-Z0-9]', '_', f.name.replace('.pdf',''))
+                    path = f"lib_{clean_name}.png"
+                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
+                    url = supabase.storage.from_(BUCKET).get_public_url(path)
+                    supabase.table("ai_data").insert({
+                        "file_name": f.name, "vector": vec, "spec_json": data['specs'], 
+                        "image_url": url, "category": data['category'],
+                        "customer_name": data['customer'] # --- LƯU THÊM KHÁCH HÀNG ---
+                    }).execute()
+        st.success("Nạp thành công!")
         st.session_state.up_key += 1
         st.rerun()
 
-# ================= AUDIT =================
-st.title("AI AUDITOR")
+# ================= 5. LUỒNG ĐỐI SOÁT CHÍNH =================
+st.title("🔍 AI SMART AUDITOR - V95")
 
-file = st.file_uploader("Upload audit", type="pdf")
-customer_filter = st.text_input("Customer filter")
+file_audit = st.file_uploader("📤 Upload file PDF cần kiểm tra (Audit)", type="pdf")
 
-if file:
-    target = extract_pdf(file)
+if file_audit:
+    with st.spinner("Đang trích xuất và đối chiếu..."):
+        target = extract_pdf_v95(file_audit)
+    
+    if target and target["specs"]:
+        st.info(f"✨ Khách hàng: **{target['customer']}** | Phân loại: **{target['category']}**")
+        
+        res = supabase.table("ai_data").select("*").eq("category", target['category']).execute()
+        if res.data:
+            df_db = pd.DataFrame(res.data)
+            
+            # --- ĐOẠN THÊM: ƯU TIÊN THEO KHÁCH HÀNG TP MỚI ---
+            # Tính tương đồng hình ảnh trước
+            target_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
+            db_vecs = np.array([v for v in df_db['vector']])
+            df_db['sim_score'] = cosine_similarity(target_vec, db_vecs).flatten()
+            
+            # Logic ưu tiên: 2 điểm cho TP MỚI, 1 điểm cho cùng khách hàng, 0 điểm còn lại
+            def get_prio(c_name):
+                c_name = str(c_name).upper()
+                if "TP MỚI" in c_name: return 2
+                if c_name == target['customer']: return 1
+                return 0
+                
+            df_db['priority'] = df_db['customer_name'].apply(get_prio)
+            
+            # Sắp xếp: Ưu tiên trước (Priority), tương đồng hình ảnh sau (sim_score)
+            df_db = df_db.sort_values(by=['priority', 'sim_score'], ascending=[False, False])
+            
+            best_match = df_db.iloc
+            st.success(f"Mẫu khớp nhất: **{best_match['file_name']}** (Khách: {best_match['customer_name']})")
+            
+            # Hiển thị bảng so sánh (Giữ nguyên logic của bạn)
+            lib_specs = best_match['spec_json']
+            audit_results = []
+            for pom, val_audit in target['specs'].items():
+                val_lib = lib_specs.get(pom, 0)
+                diff = val_audit - val_lib
+                status = "✅ Khớp" if abs(diff) < 0.25 else f"❌ Lệch ({diff:+.2f})"
+                audit_results.append({"POM": pom, "Mẫu Gốc": val_lib, "Audit": val_audit, "Kết quả": status})
+            st.table(pd.DataFrame(audit_results))
 
-    if not target:
-        st.error("Lỗi đọc file")
-    else:
-        st.write(target["category"], target["customer"], target["size"])
-
-        q = supabase.table("ai_data").select("*").eq("category", target["category"])
-
-        if customer_filter:
-            q = q.ilike("customer", f"%{customer_filter.upper()}%")
-
-        res = q.execute().data
-
-        if not res:
-            st.warning("Không có data")
-        else:
-            tvec = np.array(get_vec(target["img"])).reshape(1,-1)
-
-            scores = []
-            for r in res:
-                vec = np.array(r["vector"]).reshape(1,-1)
-                sim = cosine_similarity(tvec, vec)[0][0]
-
-                size_bonus = 1 if r.get("size")==target["size"] else 0.6
-
-                scores.append({**r, "score": sim*size_bonus})
-
-            top = sorted(scores, key=lambda x:x["score"], reverse=True)[:3]
-
-            cols = st.columns(3)
-            for i,t in enumerate(top):
-                with cols[i]:
-                    st.image(t["image_url"], caption=f"{t['file_name']} {t['score']:.2f}")
-
-            sel = st.selectbox("Chọn mẫu", [t["file_name"] for t in top])
-            best = next(x for x in top if x["file_name"]==sel)
-
-            rows=[]
-            for k,v in target["specs"].items():
-                m = best["spec_json"].get(k,0)
-                diff = v-m if m else 0
-
-                if m==0: status="MISS"
-                elif abs(diff)>0.125: status="LECH"
-                else: status="OK"
-
-                rows.append([k,v,m,diff,status])
-
-            df = pd.DataFrame(rows, columns=["POM","NEW","OLD","DIFF","KQ"])
-            st.dataframe(df, use_container_width=True)
-
-            buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
-                df.to_excel(w, index=False)
-
-            st.download_button("DOWNLOAD", buf.getvalue(), "audit.xlsx")
