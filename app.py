@@ -23,7 +23,6 @@ st.markdown("""
     .status-khop { color: #28a745; font-weight: bold; }
     .status-lech { color: #dc3545; font-weight: bold; }
     .percentage { color: #007bff; font-weight: bold; font-size: 18px; }
-    thead th { background-color: #f0f2f6 !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -55,7 +54,11 @@ def parse_val(t):
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
         v_str = match[0]
-        val = float(parts[0]) + eval(parts[1]) if ' ' in v_str and (parts := v_str.split()) else (eval(v_str) if '/' in v_str else float(v_str))
+        if ' ' in v_str:
+            parts = v_str.split()
+            val = float(parts[0]) + eval(parts[1])
+        else:
+            val = eval(v_str) if '/' in v_str else float(v_str)
         return val if val <= 200 else 0
     except: return 0
 
@@ -64,7 +67,7 @@ def get_image_vector(img_bytes):
     tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
     with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
 
-# ================= 3. TRÍCH XUẤT (DÒ CỘT SIZE) =================
+# ================= 3. TRÍCH XUẤT (FIX LỖI CHỌN NHẦM SIZE 4) =================
 def extract_pdf_v95(file, target_size=None):
     specs, img_bytes, full_text_list = {}, None, []
     try:
@@ -83,14 +86,18 @@ def extract_pdf_v95(file, target_size=None):
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
                     n_col, v_col = -1, -1
-                    # Dò hàng tiêu đề tìm đúng cột Size
+                    
+                    # QUAN TRỌNG: Dò tìm cột tiêu đề POM và Size chính xác
                     for r_idx, row in df.head(10).iterrows():
                         row_up = [str(c).upper().strip() for c in row]
                         for i, v in enumerate(row_up):
                             if any(x in v for x in ["DESCRIPTION", "POM NAME", "POSITION"]): n_col = i
-                            if target_size and str(target_size).strip().upper() == v: v_col = i
-                        if n_col != -1 and (v_col != -1 or target_size is None): break
+                            # BẮT BUỘC: Nếu người dùng nhập Size, phải tìm đúng cột đó
+                            if target_size and str(target_size).strip().upper() == v: 
+                                v_col = i
+                        if n_col != -1 and v_col != -1: break # Đã tìm thấy cả tên và size đúng
                     
+                    # Nếu vẫn không thấy cột size theo tên, mới dùng logic tìm cột nhiều số nhất
                     if n_col != -1 and v_col == -1:
                         max_nums = 0
                         for i in range(len(df.columns)):
@@ -102,7 +109,8 @@ def extract_pdf_v95(file, target_size=None):
                         for d_idx in range(len(df)):
                             name = str(df.iloc[d_idx, n_col]).replace('\n', ' ').strip().upper()
                             val = parse_val(df.iloc[d_idx, v_col])
-                            if len(name) > 3 and val > 0: specs[name] = val
+                            if len(name) > 3 and val > 0 and not any(x in name for x in ["DESCRIPTION", "POM"]):
+                                specs[name] = val
                 if specs: break 
         return {"specs": specs, "img": img_bytes, "category": category, "customer": customer}
     except: return None
@@ -122,16 +130,17 @@ with st.sidebar:
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
                     supabase.table("ai_data").insert({"file_name": f.name, "vector": vec, "spec_json": data['specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path), "category": data['category'], "customer_name": data['customer']}).execute()
                 except Exception as e: st.error(f"Lỗi: {e}")
-        st.success("Nạp thành công!"); st.session_state.up_key += 1; st.rerun()
+        st.success("Nạp thành công!"); st.rerun()
 
 # ================= 5. ĐỐI SOÁT CHÍNH =================
 st.title("🔍 AI SMART AUDITOR - V95")
 col_a, col_b = st.columns(2)
 with col_a: file_audit = st.file_uploader("📤 Upload file PDF Audit", type="pdf")
-with col_b: size_audit = st.text_input("Nhập Size cần check trong file mới (VD: 10)", "10")
+with col_b: size_audit = st.text_input("Nhập Size cần check (VD: 10)", "10")
 
 if file_audit:
-    with st.spinner("Đang trích xuất và tính toán tương đồng AI..."):
+    with st.spinner("Đang trích xuất thông số..."):
+        # Gửi size_audit vào hàm trích xuất để máy biết đường tìm cột
         target = extract_pdf_v95(file_audit, target_size=size_audit)
     
     if target and target["specs"]:
@@ -141,32 +150,24 @@ if file_audit:
             target_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             db_vecs = np.array([v for v in df_db['vector']])
             
-            # TÍNH % TƯƠNG ĐỒNG
-            sim_scores = cosine_similarity(target_vec, db_vecs).flatten()
-            df_db['sim_score'] = sim_scores
-            
-            # ƯU TIÊN TP MỚI
+            df_db['sim_score'] = cosine_similarity(target_vec, db_vecs).flatten()
             df_db['priority'] = df_db['customer_name'].apply(lambda x: 2 if "TP MỚI" in str(x).upper() else (1 if str(x).upper() == target['customer'] else 0))
             df_db = df_db.sort_values(by=['priority', 'sim_score'], ascending=[False, False])
             
             best = df_db.iloc[0]
             sim_percent = best['sim_score'] * 100
 
-            # HIỂN THỊ HÌNH ẢNH SONG SONG
-            st.subheader(f"🖼️ So sánh mẫu khớp nhất: {best['file_name']}")
-            st.markdown(f"Độ tương đồng hình ảnh: <span class='percentage'>{sim_percent:.2f}%</span>", unsafe_allow_html=True)
-            
+            st.subheader(f"🖼️ So sánh hình ảnh (Khớp: {sim_percent:.2f}%)")
             img_c1, img_c2 = st.columns(2)
-            with img_c1: st.image(target['img'], caption="Bản đang Audit", use_container_width=True)
+            with img_c1: st.image(target['img'], caption="Bản Audit", use_container_width=True)
             with img_c2: st.image(best['image_url'], caption=f"Mẫu gốc đối xứng (AI Match)", use_container_width=True)
 
-            # BẢNG ĐỐI SOÁT THÔNG SỐ
             st.subheader("📊 Bảng đối soát thông số chi tiết")
             lib_specs = best['spec_json']
             res_table = []
             for pom, val_new in target['specs'].items():
                 val_old = lib_specs.get(pom, 0)
                 diff = val_new - val_old
-                status = "✅ Khớp" if abs(diff) < 0.25 else f"❌ Lệch ({diff:+.2f})"
-                res_table.append({"POM": pom, "Mẫu Gốc (Lib)": val_old, f"Audit (S{size_audit})": val_new, "Kết quả": status})
+                status = "✅ Khớp" if abs(diff) < 0.1 else f"❌ Lệch ({diff:+.2f})"
+                res_table.append({"POM": pom, "Mẫu Gốc": val_old, f"Audit (S{size_audit})": val_new, "Kết quả": status})
             st.table(pd.DataFrame(res_table))
