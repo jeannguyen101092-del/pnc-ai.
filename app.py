@@ -83,15 +83,21 @@ def extract_pdf_multi_size(file):
                     n_col = -1
                     size_cols = {} # {col_index: size_name}
                     
-                    for r_idx, row in df.head(10).iterrows():
-                        row_up = [str(c).upper().strip() for c in row]
-                        for i, v in enumerate(row_up):
-                            if any(x in v for x in ["DESCRIPTION", "POM NAME", "POSITION"]): 
-                                n_col = i
-                            # Nếu cột có tiêu đề là số hoặc chữ viết tắt Size (S, M, L, XL...)
-                            elif len(v) > 0 and (v.isdigit() or any(s == v for s in ["S", "M", "L", "XL", "XXL", "2XL", "3XL"])):
-                                size_cols[i] = v
-                        if n_col != -1 and size_cols: break
+                    # Cải tiến logic nhận diện cột tại Bước 1 & 2 trong hàm extract_pdf_multi_size
+for r_idx, row in df.head(10).iterrows():
+    row_up = [str(c).upper().strip() for c in row]
+    for i, v in enumerate(row_up):
+        # Xác định cột tên thông số (POM)
+        if any(x in v for x in ["DESCRIPTION", "POM NAME", "POSITION", "MEASUREMENT"]): 
+            n_col = i
+        
+        # Xác định cột Size: Là số/chữ nhưng KHÔNG phải STT hay Dung sai
+        is_size = (v.isdigit() or any(s == v for s in ["S", "M", "L", "XL", "XXL", "2XL", "3XL"]))
+        is_not_noise = not any(n in v for n in ["NO.", "TOL", "TOLERANCE", "+/-", "SIZE"])
+        
+        if is_size and is_not_noise:
+            size_cols[i] = v
+
                     
                     # 2. Trích xuất dữ liệu cho từng size
                     if n_col != -1 and size_cols:
