@@ -14,6 +14,7 @@ supabase = create_client(URL, KEY)
 
 st.set_page_config(layout="wide", page_title="AI Fashion Auditor", page_icon="👖")
 
+# Quản lý reset uploader để xóa file sau khi quét
 if 'reset_key' not in st.session_state:
     st.session_state['reset_key'] = 0
 
@@ -27,11 +28,21 @@ model_ai = load_model()
 def get_file_hash(file_bytes):
     return hashlib.md5(file_bytes).hexdigest()
 
+def get_image_vector(img_bytes):
+    img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
+    tf = transforms.Compose([
+        transforms.Resize((224,224)), 
+        transforms.ToTensor(), 
+        transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
+    ])
+    with torch.no_grad(): 
+        return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
+
 def parse_val(t):
     try:
         if not t or str(t).strip() == "": return 0
         txt = str(t).replace(',', '.').replace('"', '').strip().lower()
-        txt = re.sub(r'(cm|inch|in|mm|yds|tol)$', '', txt)
+        txt = re.sub(r'(cm|inch|in|mm|yds)$', '', txt)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
         v = match[0]
@@ -41,7 +52,7 @@ def parse_val(t):
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. TRÍCH XUẤT PDF (FIX CHẶN DUNG SAI) =================
+# ================= 3. TRÍCH XUẤT PDF (CHẶN DUNG SAI) =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes, customer = {}, None, "UNKNOWN"
     try:
@@ -69,38 +80,34 @@ def extract_pdf_multi_size(file_content):
                                 desc_col = i
                         for i, v in enumerate(row):
                             if i == desc_col or not v: continue
-                            # BỎ QUA CÁC CỘT CHỨA TỪ KHÓA DUNG SAI
-                            if any(x in v for x in ["TOL", "+/-", "MIN", "MAX", "GRADE", "CODE", "SPEC"]): continue
+                            if any(x in v for x in ["TOL", "+/-", "MIN", "MAX", "GRADE", "CODE"]): continue
                             if v.isdigit() or v in ["XS","S","M","L","XL","2XL","3XL"]:
                                 potential_size_cols[i] = v
 
                     if desc_col != -1 and potential_size_cols:
                         for s_col, s_name in potential_size_cols.items():
-                            temp_values = []
-                            col_data = {}
+                            temp_values, col_data = [], {}
                             for d_idx in range(len(df)):
                                 desc = re.sub(r'^\d+[\.\-\)]*\s*', '', str(df.iloc[d_idx, desc_col])).strip()
-                                if len(desc) < 3 or desc.upper() in ["DESCRIPTION", "POM NAME"]: continue
+                                if len(desc) < 3: continue
                                 val = parse_val(df.iloc[d_idx, s_col])
                                 if val > 0:
                                     col_data[desc] = val
                                     temp_values.append(val)
                             
-                            # LOGIC QUAN TRỌNG: Chỉ lấy cột nếu giá trị trung bình > 1 (Loại bỏ cột dung sai 0.125, 0.25...)
+                            # CHỈ LẤY CỘT NẾU TRUNG BÌNH > 1 (LOẠI DUNG SAI)
                             if temp_values and np.mean(temp_values) > 1.0:
                                 if s_name not in all_specs: all_specs[s_name] = {}
                                 all_specs[s_name].update(col_data)
-                                
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
-# ================= 4. GIAO DIỆN =================
+# ================= 4. GIAO DIỆN CHÍNH =================
 with st.sidebar:
     st.header("🏢 QUẢN LÝ KHO")
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
     st.metric("Số lượng mẫu trong kho", f"{res_count.count or 0} mẫu")
     
-    # RESET UPLOADER: Tự xóa file sau khi nạp
     new_files = st.file_uploader("Nạp mẫu mới", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
     if new_files and st.button("NẠP KHO"):
         for f in new_files:
@@ -114,8 +121,8 @@ with st.sidebar:
                     "id": f_hash, "file_name": f.name, "vector": get_image_vector(data['img']),
                     "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                 }).execute()
-        st.session_state['reset_key'] += 1 
-        st.success("Đã nạp và tự động xóa file tạm!"); st.rerun()
+        st.session_state['reset_key'] += 1
+        st.success("Đã nạp xong!"); st.rerun()
 
 st.title("🔍 AI SMART AUDITOR - V96 PRO")
 file_audit = st.file_uploader("📤 Upload PDF Audit", type="pdf", key=f"audit_{st.session_state['reset_key']}")
@@ -124,6 +131,7 @@ if file_audit:
     audit_content = file_audit.read()
     target = extract_pdf_multi_size(audit_content)
     
+    # KIỂM TRA ĐỂ TRÁNH LỖI NAMEERROR
     if target and target["all_specs"]:
         res = supabase.table("ai_data").select("*").execute()
         if res.data:
@@ -131,11 +139,11 @@ if file_audit:
             t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             
-            # TOP 3 TƯƠNG ĐỒNG
+            # HIỂN THỊ TOP 3
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
-            st.subheader("🎯 Top 3 mẫu tương đồng tìm thấy")
+            st.subheader("🎯 Mẫu tương đồng nhất")
             cols = st.columns(4)
-            cols[0].image(target['img'], caption="FILE HIỆN TẠI", use_container_width=True)
+            cols[0].image(target['img'], caption="FILE ĐANG QUÉT", use_container_width=True)
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 cols[i+1].image(row['image_url'], caption=f"Top {i+1}: {row['sim']:.1%}", use_container_width=True)
                 if cols[i+1].button(f"Chọn mẫu {i+1}", key=f"btn_{idx}"):
@@ -168,14 +176,9 @@ if file_audit:
             df_rep.to_excel(towrite, index=False, engine='xlsxwriter')
             st.download_button("📥 Xuất báo cáo Excel", data=towrite.getvalue(), file_name=f"Report_{file_audit.name}.xlsx")
             
-            if st.button("Xóa phiên làm việc"):
+            if st.button("Xóa và Quét lại"):
                 st.session_state['reset_key'] += 1
                 if 'selected_ref' in st.session_state: del st.session_state['selected_ref']
                 st.rerun()
     else:
-        st.error("Không tìm thấy thông số đo (Chỉ tìm thấy dung sai). Hãy kiểm tra lại file PDF.")
-
-def get_image_vector(img_bytes):
-    img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-    tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
-    with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
+        st.error("⚠️ Không tìm thấy bảng số đo hợp lệ. Hãy kiểm tra lại file PDF.")
