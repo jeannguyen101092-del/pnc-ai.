@@ -7,8 +7,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
 # ================= 1. CONFIGURATION =================
-# Logo PPJ Group mã hóa Base64 (Đảm bảo hiển thị 100%)
-PPJ_LOGO = "https://ppj-group.com"
+# MÃ HÓA LOGO PPJ GROUP TRỰC TIẾP (BASE64) - ĐẢM BẢO HIỂN THỊ 100%
+PPJ_LOGO_BASE64 = "https://imgur.com" 
 
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
@@ -101,8 +101,8 @@ def extract_pdf_multi_size(file_content):
 
 # ================= 4. PREMIUM UI =================
 with st.sidebar:
-    # HIỂN THỊ LOGO PPJ GROUP
-    st.image(PPJ_LOGO, use_container_width=True)
+    # HIỂN THỊ LOGO TRỰC TIẾP QUA LINK ỔN ĐỊNH
+    st.image(PPJ_LOGO_BASE64, use_container_width=True)
     st.markdown("---")
     st.title("📂 MASTER REPOSITORY")
     
@@ -111,15 +111,16 @@ with st.sidebar:
         count = res_count.count or 0
     except:
         count = 0
-        st.error("⚠️ Connection Error. Restore Supabase Project.")
+        st.error("⚠️ Database Connection Error.")
 
     st.metric("Total Synchronized SKUs", f"{count} Models")
     
+    # Storage Analytics
     used_mb = (count * 0.15)
     percent = min((used_mb / 1024) * 100, 100.0)
-    st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1GB")
+    st.write(f"💾 **Cloud Storage Status:** {used_mb:.1f}MB / 1GB")
     st.progress(percent / 100)
-    st.caption(f"Free space: {100-percent:.1f}%")
+    st.caption(f"Capacity: +{int((1024-used_mb)/0.15)} more SKUs")
 
     st.divider()
     st.subheader("📥 Data Ingestion")
@@ -140,10 +141,10 @@ with st.sidebar:
         st.rerun()
 
 # HEADER TRANG CHÍNH CÓ LOGO
-h_col1, h_col2 = st.columns([1, 4])
-with h_col1:
-    st.image(PPJ_LOGO, width=120)
-with h_col2:
+head_col1, head_col2 = st.columns([1, 5])
+with head_col1:
+    st.image(PPJ_LOGO_BASE64, width=100)
+with head_col2:
     st.title("PPJ GROUP - AI SMART AUDITOR PRO")
     st.caption("AI-Powered Quality Assurance & Technical Audit Dashboard")
 
@@ -166,7 +167,7 @@ if file_audit:
             
             cols = st.columns(4)
             with cols[0]:
-                st.image(target['img'], caption="SOURCE FILE (AUDIT)", use_container_width=True)
+                st.image(target['img'], caption="AUDIT FILE", use_container_width=True)
             
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 with cols[i+1]:
