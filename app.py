@@ -13,7 +13,7 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor V99", page_icon="👖")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V100", page_icon="👖")
 
 # ================= 2. HÀM AI & XỬ LÝ SỐ ĐO =================
 @st.cache_resource
@@ -76,7 +76,6 @@ def extract_pdf_multi_size(file):
                             if s_name not in all_specs: all_specs[s_name] = {}
                             for d_idx in range(len(df)):
                                 pom_raw = str(df.iloc[d_idx, n_col]).replace('\n',' ').strip()
-                                # CHỈ LẤY NẾU CÓ CHỮ (DESCRIPTION)
                                 if len(pom_raw) > 2 and re.search('[a-zA-Z]', pom_raw):
                                     val = parse_val(df.iloc[d_idx, s_col])
                                     if val > 0: all_specs[s_name][pom_raw.upper()] = val
@@ -105,8 +104,8 @@ with st.sidebar:
                 }).execute()
         st.success("Đã nạp kho thành công!"); st.rerun()
 
-# ================= 5. ĐỐI SOÁT (FIX LỖI MÀN HÌNH ĐỎ) =================
-st.title("🔍 AI SMART AUDITOR - V99 GOLD")
+# ================= 5. ĐỐI SOÁT (FIX LỖI TRUY XUẤT TUPLE) =================
+st.title("🔍 AI SMART AUDITOR - V100 GOLD")
 file_audit = st.file_uploader("📤 Upload file PDF Audit", type="pdf")
 
 if file_audit:
@@ -125,20 +124,18 @@ if file_audit:
             
             st.divider()
             audit_all, db_all = target['all_specs'], (best.get('spec_json') or {})
-            
             sel_size = st.selectbox("Chọn Size đối soát:", list(audit_all.keys()))
             
             if sel_size and db_all:
-                # --- FIX LỖI TẠI ĐÂY ---
-                # Lấy tên chuỗi khớp nhất từ kết quả trả về của rapidfuzz
-                sz_match_res = process.extractOne(sel_size, list(db_all.keys()), scorer=fuzz.Ratio)
-                db_sz_key = sz_match_res[0] if sz_match_res else None
+                # --- FIX LỖI TẠI ĐÂY: Chỉ lấy phần tử đầu tiên của Tuple ---
+                sz_match = process.extractOne(sel_size, list(db_all.keys()), scorer=fuzz.Ratio)
+                db_sz_key = sz_match[0] if sz_match else None
                 spec_ref = db_all.get(db_sz_key, {}) if db_sz_key else {}
                 
                 report = []
                 for pom_audit, v_audit in audit_all[sel_size].items():
-                    pm_match_res = process.extractOne(pom_audit, list(spec_ref.keys()), scorer=fuzz.TokenSortRatio)
-                    db_pm_key = pm_match_res[0] if pm_match_res and pm_match_res[1] > 80 else None
+                    pm_match = process.extractOne(pom_audit, list(spec_ref.keys()), scorer=fuzz.TokenSortRatio)
+                    db_pm_key = pm_match[0] if pm_match and pm_match[1] > 80 else None
                     v_ref = spec_ref.get(db_pm_key, 0) if db_pm_key else 0
                     
                     diff = round(v_audit - v_ref, 4)
