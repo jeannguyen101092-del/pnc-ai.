@@ -7,8 +7,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
 # ================= 1. CONFIGURATION =================
-# Đường dẫn logo PPJ Group
-LOGO_URL = "https://ppj-group.com" 
+# Dùng link ảnh khác ổn định hơn để tránh lỗi "k ra" logo
+LOGO_URL = "https://imgur.com" 
 
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
@@ -50,14 +50,14 @@ def parse_val(t):
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION (PPJ & REITMANS COMPATIBLE) =================
+# ================= 3. PDF EXTRACTION =================
 def extract_pdf_multi_size(file_content):
-    all_specs, img_bytes, is_reitmants = {}, None, False
+    all_specs, img_bytes, is_reitmans = {}, None, False
     try:
         txt_check = ""
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for p in pdf.pages[:1]: txt_check += (p.extract_text() or "").upper()
-        if "REITMAN" in txt_check: is_reitmants = True
+        if "REITMAN" in txt_check: is_reitmans = True
 
         doc = fitz.open(stream=file_content, filetype="pdf")
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
@@ -74,8 +74,8 @@ def extract_pdf_multi_size(file_content):
                     for r_idx in range(min(15, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         for i, v in enumerate(row):
-                            if is_reitmants and "POM NAME" in v: desc_col = i; break
-                            elif not is_reitmants and ("DESCRIPTION" in v or "POM NAME" in v): desc_col = i; break
+                            if is_reitmans and "POM NAME" in v: desc_col = i; break
+                            elif not is_reitmans and ("DESCRIPTION" in v or "POM NAME" in v): desc_col = i; break
                         if desc_col != -1: break
                     if desc_col == -1: continue
                     for r_idx in range(min(15, len(df))):
@@ -96,13 +96,13 @@ def extract_pdf_multi_size(file_content):
                             if temp_data:
                                 if s_name not in all_specs: all_specs[s_name] = {}
                                 all_specs[s_name].update(temp_data)
-        return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reitmants}
+        return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reitmans}
     except: return None
 
-# ================= 4. PPJ GROUP PREMIUM UI =================
+# ================= 4. PPJ GROUP PRO UI =================
 with st.sidebar:
-    # HIỂN THỊ LOGO PPJ GROUP
-    st.image(LOGO_URL, use_container_width=True)
+    # HIỂN THỊ LOGO TRONG SIDEBAR VỚI ĐƯỜNG LINK DỰ PHÒNG
+    st.image(LOGO_URL, width=200)
     st.markdown("---")
     st.title("📂 MASTER REPOSITORY")
     
@@ -111,22 +111,20 @@ with st.sidebar:
         count = res_count.count or 0
     except:
         count = 0
-        st.error("⚠️ Database Connection Lost. Please Restore Supabase Project.")
+        st.error("⚠️ Connection Error. Restore Supabase Project.")
 
     st.metric("Total Synchronized SKUs", f"{count} Models")
     
-    # Storage Analytics
     used_mb = (count * 0.15)
     percent = min((used_mb / 1024) * 100, 100.0)
     st.write(f"💾 **Cloud Storage Status:** {used_mb:.1f}MB / 1GB")
     st.progress(percent / 100)
-    st.caption(f"Estimated capacity: +{int((1024-used_mb)/0.15)} more SKUs")
 
     st.divider()
     st.subheader("📥 Data Ingestion")
-    new_files = st.file_uploader("Upload Master Tech-Packs", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
+    new_files = st.file_uploader("Upload Tech-Packs (Bulk)", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
     if new_files and st.button("SYNCHRONIZE TO DATABASE", use_container_width=True):
-        with st.spinner("AI Processing..."):
+        with st.spinner("AI Syncing..."):
             for f in new_files:
                 c = f.read(); h = get_file_hash(c); data = extract_pdf_multi_size(c)
                 if data and data['all_specs']:
@@ -137,16 +135,15 @@ with st.sidebar:
                         "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                     }).execute()
         st.session_state['reset_key'] += 1
-        st.success("Synchronization Complete!")
         st.rerun()
 
-# HEADER TRANG CHÍNH
-head_col1, head_col2 = st.columns([1, 5])
-with head_col1:
-    st.image(LOGO_URL, width=120)
-with head_col2:
+# HEADER TRANG CHÍNH CÓ LOGO
+h_col1, h_col2 = st.columns([1, 5])
+with h_col1:
+    st.image(LOGO_URL, width=100)
+with h_col2:
     st.title("PPJ GROUP - AI SMART AUDITOR PRO")
-    st.caption("AI-Powered Quality Assurance & Technical Audit Dashboard")
+    st.caption("AI-Powered Quality Assurance Dashboard")
 
 st.markdown("---")
 
@@ -163,25 +160,23 @@ if file_audit:
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
             
-            st.subheader(f"🎯 AI Best Matches (System: {'REITMANS Mode' if target['is_reit'] else 'General Mode'})")
+            st.subheader(f"🎯 AI Best Matches (Mode: {'REITMANS' if target['is_reit'] else 'General'})")
             
             cols = st.columns(4)
             with cols[0]:
-                st.image(target['img'], caption="SOURCE FILE (AUDIT)", use_container_width=True)
+                st.image(target['img'], caption="AUDIT FILE", use_container_width=True)
             
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 with cols[i+1]:
-                    st.image(row['image_url'], caption=f"Match Score: {row['sim']:.1%}", use_container_width=True)
+                    st.image(row['image_url'], caption=f"Score: {row['sim']:.1%}", use_container_width=True)
                     if st.button(f"SELECT MODEL {i+1}", key=f"btn_{idx}", use_container_width=True):
                         st.session_state['sel'] = row.to_dict()
 
             best = st.session_state.get('sel', top_3.iloc[0].to_dict())
             st.success(f"**ACTIVE REFERENCE:** {best['file_name']}")
             
-            # Workspace
             st.divider()
             sel_size = st.selectbox("Select Target Size:", list(target['all_specs'].keys()))
-            
             spec_audit = target['all_specs'][sel_size]
             spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values())[0])
             
@@ -203,7 +198,6 @@ if file_audit:
             df_rep = pd.DataFrame(report)
             st.dataframe(df_rep, use_container_width=True, hide_index=True)
             
-            # Export
             towrite = io.BytesIO()
             df_rep.to_excel(towrite, index=False, engine='xlsxwriter')
             col_ex1, col_ex2 = st.columns(2)
