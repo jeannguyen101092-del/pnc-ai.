@@ -168,16 +168,39 @@ if file_audit:
             spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values())[0])
             
             report = []
-            for pom, val in spec_audit.items():
-                ref_val = spec_ref.get(pom, 0)
-                diff = round(val - ref_val, 3)
-                report.append({
-                    "Thông số": pom, 
-                    "Thực tế": val, 
-                    "Mẫu kho": ref_val, 
-                    "Lệch": diff,
-                    "Kết quả": "✅ OK" if abs(diff) < 0.2 else "❌ Lệch"
-                })
+          # ===== normalize key =====
+def norm_key(x):
+    x = str(x).lower().strip()
+    x = re.sub(r'\(.*?\)', '', x)
+    x = re.sub(r'[^a-z0-9 ]', '', x)
+    x = re.sub(r'\s+', ' ', x)
+    return x
+
+# build map normalized cho DB
+ref_map = {norm_key(k): v for k, v in spec_ref.items()}
+
+# ===== loop compare =====
+for pom, val in spec_audit.items():
+    k_norm = norm_key(pom)
+
+    ref_val = ref_map.get(k_norm, 0)
+
+    # fuzzy match nhẹ
+    if ref_val == 0:
+        for k, v in ref_map.items():
+            if k_norm in k or k in k_norm:
+                ref_val = v
+                break
+
+    diff = round(val - ref_val, 3)
+
+    report.append({
+        "Thông số": pom,
+        "Thực tế": val,
+        "Mẫu kho": ref_val,
+        "Lệch": diff,
+        "Kết quả": "✅ OK" if abs(diff) < 0.2 else "❌ Lệch"
+    })
             
             df_rep = pd.DataFrame(report)
             st.table(df_rep)
