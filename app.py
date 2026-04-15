@@ -42,57 +42,91 @@ def get_image_vector(img_bytes):
 
 # ================= 3. FIX LỖI NHẬN DIỆN PDF =================
 def extract_pdf_multi_size(file):
-    all_specs, img_bytes = {}, None
+    all_specs, img_bytes, customer = {}, None, "UNKNOWN"
     try:
         file.seek(0); pdf_content = file.read()
-        # Lấy ảnh preview
+
+        # ===== Detect CUSTOMER (Reimant hay không) =====
+        txt_all = ""
+        with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
+            for p in pdf.pages[:2]:
+                txt_all += p.extract_text() or ""
+        if "REIMANT" in txt_all.upper():
+            customer = "REIMANT"
+
+        # ===== Lấy ảnh =====
         doc = fitz.open(stream=pdf_content, filetype="pdf")
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         doc.close()
 
+        # ===== Read table =====
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
-                    if df.empty or len(df.columns) < 2: continue
-                    
-                    # --- TÌM CỘT DESCRIPTION VÀ CỘT SIZE ---
+                    if df.empty or len(df.columns) < 2:
+                        continue
+
                     desc_col = -1
                     size_cols = {}
-                    
+
+                    # ===== Detect header =====
                     for r_idx in range(min(10, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
-                        
-                        # Ưu tiên cột DESCRIPTION (mô tả chi tiết)
+
                         for i, v in enumerate(row):
-                            if "DESCRIPTION" in v or "POM NAME" in v:
-                                desc_col = i
-                                break
-                        
-                        # Tìm các cột Size (S, M, L hoặc số)
+                            # ===== KEY FIX =====
+                            if customer == "REIMANT":
+                                if "POM NAME" in v:
+                                    desc_col = i
+                                    break
+                            else:
+                                if "DESCRIPTION" in v or "POM" in v:
+                                    desc_col = i
+                                    break
+
                         for i, v in enumerate(row):
-                            if i == desc_col or not v: continue
-                            if any(x in v for x in ["TOL", "+/-", "CODE", "DIM"]): continue
-                            if v.isdigit() or any(s == v for s in ["S","M","L","XL","2XL"]):
+                            if i == desc_col or not v:
+                                continue
+                            if any(x in v for x in ["TOL", "+/-", "CODE", "DIM"]):
+                                continue
+                            if v.isdigit() or v in ["XS","S","M","L","XL","2XL","3XL"]:
                                 size_cols[i] = v
-                        
-                        if desc_col != -1 and size_cols: break
-                    
-                    # --- QUÉT DỮ LIỆU ---
+
+                        if desc_col != -1 and size_cols:
+                            break
+
+                    # ===== Extract data =====
                     if desc_col != -1:
                         for s_col, s_name in size_cols.items():
-                            if s_name not in all_specs: all_specs[s_name] = {}
+                            if s_name not in all_specs:
+                                all_specs[s_name] = {}
+
                             for d_idx in range(len(df)):
-                                # Lấy nội dung chi tiết ở cột Description
-                                full_desc = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
-                                # Loại bỏ các dòng tiêu đề rác
-                                if len(full_desc) > 3 and not full_desc.isupper():
-                                    val = parse_val(df.iloc[d_idx, s_col])
-                                    if val > 0:
-                                        all_specs[s_name][full_desc] = val
+                                raw_desc = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
+
+                                # ===== CLEAN TEXT =====
+                                desc = re.sub(r'^\d+[\.\-\)]*\s*', '', raw_desc)  # bỏ STT
+                                desc = re.sub(r'\s+', ' ', desc).strip()
+
+                                # bỏ dòng header / rác
+                                if len(desc) < 3:
+                                    continue
+                                if desc.upper() in ["DESCRIPTION", "POM NAME"]:
+                                    continue
+                                if desc.isupper() and len(desc.split()) < 3:
+                                    continue
+
+                                val = parse_val(df.iloc[d_idx, s_col])
+                                if val > 0:
+                                    all_specs[s_name][desc] = val
+
         return {"all_specs": all_specs, "img": img_bytes}
-    except: return None
+
+    except Exception as e:
+        print("ERROR extract:", e)
+        return None
 
 
 # ================= 4. GIAO DIỆN =================
