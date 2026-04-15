@@ -57,6 +57,8 @@ def extract_pdf_multi_size(file):
         file.seek(0); pdf_content = file.read()
         doc = fitz.open(stream=pdf_content, filetype="pdf")
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
+        # Kiểm tra xem có phải hàng Reitmans không qua text trong trang đầu
+        is_reitmans = "REITMANS" in doc.load_page(0).get_text().upper()
         doc.close()
 
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
@@ -65,27 +67,44 @@ def extract_pdf_multi_size(file):
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
                     if df.empty or len(df.columns) < 2: continue
+                    
                     desc_col, size_cols = -1, {}
-                    for r_idx in range(min(10, len(df))):
+                    for r_idx in range(min(15, len(df))): # Quét sâu hơn 1 chút để tìm header
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
+                        
+                        # --- CHỖ NÀY QUAN TRỌNG: ƯU TIÊN POM NAME CHO REITMANS ---
                         for i, v in enumerate(row):
-                            if any(x in v for x in ["DESCRIPTION", "POM NAME", "THÔNG SỐ"]): desc_col = i; break
+                            if "POM NAME" in v: # Ưu tiên hàng đầu
+                                desc_col = i
+                                break
+                            if desc_col == -1 and ("DESCRIPTION" in v or "POM" == v): 
+                                desc_col = i
+                        
+                        # Tìm các cột Size (24, 25, 26... hoặc S, M, L)
                         for i, v in enumerate(row):
                             if i == desc_col or not v: continue
-                            if any(x in v for x in ["TOL", "+/-", "CODE"]): continue
-                            if v.isdigit() or any(s == v for s in ["S","M","L","XL","2XL"]): size_cols[i] = v
+                            if any(x in v for x in ["TOL", "+/-", "CODE", "PLACEMENT"]): continue
+                            # Reitmans thường dùng size số: 24, 26, 28...
+                            if v.isdigit() or any(s == v for s in ["S","M","L","XL","2XL"]):
+                                size_cols[i] = v
+                        
                         if desc_col != -1 and size_cols: break
                     
                     if desc_col != -1:
                         for s_col, s_name in size_cols.items():
                             if s_name not in all_specs: all_specs[s_name] = {}
                             for d_idx in range(len(df)):
+                                # Lấy nội dung ở cột POM NAME / Description
                                 full_desc = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
-                                if len(full_desc) > 3 and not full_desc.isupper():
+                                
+                                # Loại bỏ dòng trống hoặc dòng hướng dẫn (Ref:, Related:, Master:)
+                                if len(full_desc) > 3 and not any(k in full_desc.upper() for k in ["REF:", "MASTER:", "RELATED:", "POM NAME"]):
                                     val = parse_val(df.iloc[d_idx, s_col])
-                                    if val > 0: all_specs[s_name][full_desc.upper()] = val
+                                    if val > 0:
+                                        all_specs[s_name][full_desc.upper()] = val
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
+
 
 # ================= 4. GIAO DIỆN CHÍNH =================
 # --- Thêm biến vào đầu chương trình để quản lý việc reset file ---
