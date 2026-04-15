@@ -49,7 +49,7 @@ def get_image_vector(img_bytes):
                              transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
     with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().tolist()
 
-# ================= 3. QUÉT PDF: CHỈ LẤY TÊN VỊ TRÍ (CHỮ) =================
+# ================= 3. QUÉT PDF: LẤY TÊN VỊ TRÍ (POM CHỮ) =================
 def extract_pdf_multi_size(file):
     all_specs, img_bytes, customer = {}, None, "UNKNOWN"
     try:
@@ -71,10 +71,10 @@ def extract_pdf_multi_size(file):
                         if n_col == -1:
                             for i, v in enumerate(row):
                                 if any(x in v for x in ["DESCRIPTION", "POSITION", "POM NAME", "POINT OF"]):
+                                    # Kiểm tra dòng dưới phải là chữ mới lấy cột này làm POM
                                     test_val = str(df.iloc[min(r_idx+1, len(df)-1), i])
                                     if not test_val.replace('.','').isdigit():
                                         n_col = i; break
-                        
                         for i, v in enumerate(row):
                             if i == n_col or not v: continue
                             if any(x in v for x in ["TOL", "+/-", "NO.", "STT"]): continue
@@ -87,7 +87,7 @@ def extract_pdf_multi_size(file):
                             if s_name not in all_specs: all_specs[s_name] = {}
                             for d_idx in range(len(df)):
                                 pom_raw = str(df.iloc[d_idx, n_col]).replace('\n',' ').strip()
-                                # Chỉ lấy POM nếu có chữ (Leg Opening, Waist...), bỏ qua mã số W005...
+                                # Chỉ lấy nếu tên có chứa chữ cái (Leg Opening, Waist...), bỏ qua mã W005...
                                 if len(pom_raw) > 2 and re.search('[a-zA-Z]', pom_raw):
                                     val = parse_val(df.iloc[d_idx, s_col])
                                     if val > 0: all_specs[s_name][pom_raw.upper()] = val
@@ -108,16 +108,15 @@ with st.sidebar:
         for f in new_files:
             data = extract_pdf_multi_size(f)
             if data and data['all_specs']:
-                vec = get_image_vector(data['img'])
                 path = f"lib_{re.sub(r'[^a-zA-Z0-9]', '_', f.name)}.png"
                 supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
                 supabase.table("ai_data").insert({
-                    "file_name": f.name, "vector": vec, "spec_json": data['all_specs'],
-                    "image_url": supabase.storage.from_(BUCKET).get_public_url(path), "customer_name": data['customer']
+                    "file_name": f.name, "vector": get_image_vector(data['img']),
+                    "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                 }).execute()
         st.success("Đã nạp kho!"); st.rerun()
 
-# ================= 5. ĐỐI SOÁT CHI TIẾT (FIXED ATTRIBUTEERROR) =================
+# ================= 5. ĐỐI SOÁT CHI TIẾT (FIXED ERROR) =================
 st.title("🔍 AI SMART AUDITOR - V96 GOLD")
 file_audit = st.file_uploader("📤 Upload file PDF Audit", type="pdf")
 
@@ -139,29 +138,26 @@ if file_audit:
             audit_all, db_all = target['all_specs'], best['spec_json']
             sel_size = st.selectbox("Chọn Size đối soát:", list(audit_all.keys()))
             
-            if sel_size in audit_all:
-                spec_audit = audit_all[sel_size]
+            # --- FIX LỖI ATTRIBUTEERROR TẠI ĐÂY ---
+            # Lấy giá trị đầu tiên của Tuple từ kết quả extractOne
+            sz_res = process.extractOne(sel_size, list(db_all.keys()), scorer=fuzz.Ratio)
+            db_sz_key = sz_res[0] if sz_res else None
+            spec_ref = db_all.get(db_sz_key, {}) if db_sz_key else {}
+            
+            report = []
+            for pom_audit, v_audit in audit_all[sel_size].items():
+                # Lấy giá trị đầu tiên của Tuple cho POM
+                pm_res = process.extractOne(pom_audit, list(spec_ref.keys()), scorer=fuzz.TokenSortRatio)
+                db_pm_key = pm_res[0] if pm_res and pm_res[1] > 80 else None
+                v_ref = spec_ref.get(db_pm_key, 0) if db_pm_key else 0
                 
-                # --- FIX LỖI ATTRIBUTEERROR TẠI ĐÂY ---
-                match_result = process.extractOne(sel_size, list(db_all.keys()), scorer=fuzz.Ratio)
-                # Lấy trực tiếp chuỗi khớp từ kết quả (vị trí 0 của tuple)
-                db_sz_key = match_result[0] if match_result else None
-                spec_ref = db_all.get(db_sz_key, {}) if db_sz_key else {}
-                
-                report = []
-                for pom_audit, v_audit in spec_audit.items():
-                    pm_match = process.extractOne(pom_audit, list(spec_ref.keys()), scorer=fuzz.TokenSortRatio)
-                    db_pm_key = pm_match[0] if pm_match and pm_match[1] > 80 else None
-                    v_ref = spec_ref.get(db_pm_key, 0) if db_pm_key else 0
-                    
-                    diff = round(v_audit - v_ref, 4)
-                    status = "✅ OK" if abs(diff) < 0.0001 else f"❌ LỆCH ({diff:+.4f})"
-                    report.append({"Vị trí (POM)": pom_audit, "Audit": v_audit, "Gốc": v_ref, "Lệch": diff, "Kết quả": status})
-                
-                st.table(pd.DataFrame(report))
-                
-                # Xuất Excel
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    pd.DataFrame(report).to_excel(writer, index=False, sheet_name='Audit')
-                st.download_button("📥 TẢI BÁO CÁO EXCEL", output.getvalue(), f"Audit_{sel_size}.xlsx")
+                diff = round(v_audit - v_ref, 4)
+                status = "✅ OK" if abs(diff) < 0.0001 else f"❌ LỆCH ({diff:+.4f})"
+                report.append({"Vị trí (POM)": pom_audit, "Audit": v_audit, "Gốc": v_ref, "Lệch": diff, "Kết quả": status})
+            
+            st.table(pd.DataFrame(report))
+            
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                pd.DataFrame(report).to_excel(writer, index=False, sheet_name='Audit')
+            st.download_button("📥 TẢI BÁO CÁO EXCEL", output.getvalue(), f"Audit_{sel_size}.xlsx")
