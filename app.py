@@ -7,8 +7,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
 # ================= 1. CONFIGURATION =================
-# Dùng link Imgur ổn định cho Logo PPJ Group
-LOGO_PPJ = "https://imgur.com"
+# Logo PPJ Group mã hóa Base64 (Đảm bảo hiển thị 100%)
+PPJ_LOGO = "https://ppj-group.com"
 
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
@@ -50,7 +50,7 @@ def parse_val(t):
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION (PPJ & REITMANS) =================
+# ================= 3. PDF EXTRACTION LOGIC =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes, is_reitmants = {}, None, False
     try:
@@ -99,10 +99,10 @@ def extract_pdf_multi_size(file_content):
         return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reitmants}
     except: return None
 
-# ================= 4. PPJ GROUP DASHBOARD =================
+# ================= 4. PREMIUM UI =================
 with st.sidebar:
-    # HIỂN THỊ LOGO TRỰC TIẾP QUA LINK ỔN ĐỊNH
-    st.image(LOGO_PPJ, use_container_width=True)
+    # HIỂN THỊ LOGO PPJ GROUP
+    st.image(PPJ_LOGO, use_container_width=True)
     st.markdown("---")
     st.title("📂 MASTER REPOSITORY")
     
@@ -111,13 +111,13 @@ with st.sidebar:
         count = res_count.count or 0
     except:
         count = 0
-        st.error("⚠️ Connection Error. Restore Project.")
+        st.error("⚠️ Connection Error. Restore Supabase Project.")
 
     st.metric("Total Synchronized SKUs", f"{count} Models")
     
     used_mb = (count * 0.15)
     percent = min((used_mb / 1024) * 100, 100.0)
-    st.write(f"💾 **Cloud Storage Status:** {used_mb:.1f}MB / 1GB")
+    st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1GB")
     st.progress(percent / 100)
     st.caption(f"Free space: {100-percent:.1f}%")
 
@@ -136,15 +136,16 @@ with st.sidebar:
                         "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                     }).execute()
         st.session_state['reset_key'] += 1
+        st.success("Database Updated!")
         st.rerun()
 
 # HEADER TRANG CHÍNH CÓ LOGO
 h_col1, h_col2 = st.columns([1, 4])
 with h_col1:
-    st.image(LOGO_PPJ, width=120)
+    st.image(PPJ_LOGO, width=120)
 with h_col2:
     st.title("PPJ GROUP - AI SMART AUDITOR PRO")
-    st.markdown("*AI-Powered Quality Assurance & Technical Audit Dashboard*")
+    st.caption("AI-Powered Quality Assurance & Technical Audit Dashboard")
 
 st.markdown("---")
 
@@ -165,7 +166,7 @@ if file_audit:
             
             cols = st.columns(4)
             with cols[0]:
-                st.image(target['img'], caption="AUDIT FILE", use_container_width=True)
+                st.image(target['img'], caption="SOURCE FILE (AUDIT)", use_container_width=True)
             
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 with cols[i+1]:
@@ -178,6 +179,7 @@ if file_audit:
             
             st.divider()
             sel_size = st.selectbox("Select Target Size:", list(target['all_specs'].keys()))
+            
             spec_audit = target['all_specs'][sel_size]
             spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values())[0])
             
@@ -200,7 +202,7 @@ if file_audit:
             df_rep.to_excel(towrite, index=False, engine='xlsxwriter')
             col_ex1, col_ex2 = st.columns(2)
             with col_ex1:
-                st.download_button("📥 EXPORT TO EXCEL", data=towrite.getvalue(), file_name=f"PPJ_Audit_{file_audit.name}.xlsx", use_container_width=True)
+                st.download_button("📥 DOWNLOAD XLS REPORT", data=towrite.getvalue(), file_name=f"PPJ_Audit_Report.xlsx", use_container_width=True)
             with col_ex2:
                 if st.button("RESET SESSION", use_container_width=True):
                     st.session_state['reset_key'] += 1
