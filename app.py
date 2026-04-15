@@ -13,7 +13,7 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor Gold", page_icon="👖")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor V98", page_icon="👖")
 
 # ================= 2. HÀM AI & XỬ LÝ SỐ ĐO =================
 @st.cache_resource
@@ -41,7 +41,7 @@ def get_image_vector(img_bytes):
                              transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
     with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().tolist()
 
-# ================= 3. QUÉT PDF: CHỈ LẤY TÊN VỊ TRÍ (DESCRIPTION) =================
+# ================= 3. QUÉT PDF: CHỈ LẤY TÊN VỊ TRÍ (CHỮ) =================
 def extract_pdf_multi_size(file):
     all_specs, img_bytes, customer = {}, None, "UNKNOWN"
     try:
@@ -58,12 +58,10 @@ def extract_pdf_multi_size(file):
                     if df.empty or len(df.columns) < 2: continue
                     
                     n_col, size_cols = -1, {}
-                    # Bước 1: Tìm cột POM là CHỮ (Description)
                     for r_idx in range(min(15, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         if n_col == -1:
                             for i, v in enumerate(row):
-                                # Ưu tiên lấy Description/Position, bỏ qua cột chỉ có số
                                 if any(x in v for x in ["DESCRIPTION", "POSITION", "POM NAME"]):
                                     n_col = i; break
                         for i, v in enumerate(row):
@@ -73,20 +71,19 @@ def extract_pdf_multi_size(file):
                                 size_cols[i] = v
                         if n_col != -1 and size_cols: break
                     
-                    # Bước 2: Chỉ lấy các dòng có tên vị trí là chữ
                     if n_col != -1:
                         for s_col, s_name in size_cols.items():
                             if s_name not in all_specs: all_specs[s_name] = {}
                             for d_idx in range(len(df)):
                                 pom_raw = str(df.iloc[d_idx, n_col]).replace('\n',' ').strip()
-                                # Chỉ lấy nếu tên có chứa chữ cái (Leg Opening, Waist...), bỏ qua mã số
+                                # CHỈ LẤY NẾU CÓ CHỮ (DESCRIPTION)
                                 if len(pom_raw) > 2 and re.search('[a-zA-Z]', pom_raw):
                                     val = parse_val(df.iloc[d_idx, s_col])
                                     if val > 0: all_specs[s_name][pom_raw.upper()] = val
         return {"all_specs": all_specs, "img": img_bytes, "customer": customer}
     except: return None
 
-# ================= 4. SIDEBAR (HIỆN SỐ LƯỢNG KHO) =================
+# ================= 4. SIDEBAR QUẢN LÝ KHO =================
 with st.sidebar:
     st.header("🏢 QUẢN LÝ KHO MẪU")
     try:
@@ -108,12 +105,12 @@ with st.sidebar:
                 }).execute()
         st.success("Đã nạp kho thành công!"); st.rerun()
 
-# ================= 5. ĐỐI SOÁT (FIX LỖI CRASH) =================
-st.title("🔍 AI SMART AUDITOR - V97 GOLD")
+# ================= 5. ĐỐI SOÁT (FIX LỖI MÀN HÌNH ĐỎ) =================
+st.title("🔍 AI SMART AUDITOR - V98 GOLD")
 file_audit = st.file_uploader("📤 Upload file PDF Audit", type="pdf")
 
 if file_audit:
-    with st.spinner("Đang soi thông số..."):
+    with st.spinner("AI đang soi thông số..."):
         target = extract_pdf_multi_size(file_audit)
     
     if target and target["all_specs"]:
@@ -132,26 +129,20 @@ if file_audit:
             sel_size = st.selectbox("Chọn Size đối soát:", list(audit_all.keys()))
             
             if sel_size and db_all:
-                # --- FIX LỖI ATTRIBUTEERROR TẠI ĐÂY ---
-                sz_res = process.extractOne(sel_size, list(db_all.keys()), scorer=fuzz.Ratio)
-                db_sz_key = sz_res[0] if sz_res and sz_res[1] > 60 else None
+                # --- FIX LỖI TẠI ĐÂY ---
+                # Lấy tên chuỗi khớp nhất từ kết quả trả về của rapidfuzz
+                sz_match = process.extractOne(sel_size, list(db_all.keys()), scorer=fuzz.Ratio)
+                db_sz_key = sz_match[0] if sz_match and sz_match[1] > 60 else None
                 spec_ref = db_all.get(db_sz_key, {}) if db_sz_key else {}
                 
                 report = []
                 for pom_audit, v_audit in audit_all[sel_size].items():
-                    pm_res = process.extractOne(pom_audit, list(spec_ref.keys()), scorer=fuzz.TokenSortRatio)
-                    db_pm_key = pm_res[0] if pm_res and pm_res[1] > 80 else None
+                    pm_match = process.extractOne(pom_audit, list(spec_ref.keys()), scorer=fuzz.TokenSortRatio)
+                    db_pm_key = pm_match[0] if pm_match and pm_match[1] > 80 else None
                     v_ref = spec_ref.get(db_pm_key, 0) if db_pm_key else 0
                     
                     diff = round(v_audit - v_ref, 4)
-                    status = "✅ OK" if abs(diff) < 0.0001 else f"❌ LỆCH ({diff:+.4f})"
+                    status = "✅ OK" if abs(diff) < 0.001 else f"❌ LỆCH ({diff:+.4f})"
                     report.append({"Vị trí (POM)": pom_audit, "Audit": v_audit, "Gốc": v_ref, "Lệch": diff, "Kết quả": status})
                 
                 st.table(pd.DataFrame(report))
-                
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    pd.DataFrame(report).to_excel(writer, index=False, sheet_name='Audit')
-                st.download_button("📥 TẢI EXCEL", output.getvalue(), f"Audit_{sel_size}.xlsx")
-            else:
-                st.warning("Không tìm thấy dữ liệu size tương ứng trong mẫu gốc.")
