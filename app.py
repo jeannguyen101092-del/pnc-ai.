@@ -14,7 +14,6 @@ supabase = create_client(URL, KEY)
 
 st.set_page_config(layout="wide", page_title="AI Fashion Auditor", page_icon="👖")
 
-# Khởi tạo key để reset uploader sau khi xong
 if 'reset_key' not in st.session_state:
     st.session_state['reset_key'] = 0
 
@@ -29,25 +28,26 @@ def get_file_hash(file_bytes):
     return hashlib.md5(file_bytes).hexdigest()
 
 def parse_val(t):
+    """Hàm giải mã số đo PDF - Đã cải tiến để tránh lấy nhầm sai số nhỏ"""
     try:
         if t is None or str(t).strip() == "": return 0
         txt = str(t).replace(',', '.').replace('"', '').strip().lower()
-        txt = re.sub(r'(cm|inch|in|mm|yds)$', '', txt)
+        # Loại bỏ các đơn vị
+        txt = re.sub(r'(cm|inch|in|mm|yds|tol)$', '', txt)
+        # Tìm số thập phân hoặc phân số (vd: 1 1/2)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
+        
         v_str = match[0]
         if ' ' in v_str:
             p = v_str.split()
-            return float(p[0]) + eval(p[1])
-        return float(eval(v_str)) if '/' in v_str else float(v_str)
+            val = float(p[0]) + eval(p[1])
+        else:
+            val = float(eval(v_str)) if '/' in v_str else float(v_str)
+        return val
     except: return 0
 
-def get_image_vector(img_bytes):
-    img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-    tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
-    with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
-
-# ================= 3. FIX PDF =================
+# ================= 3. TRÍCH XUẤT PDF (FIXED LOGIC) =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes, customer = {}, None, "UNKNOWN"
     try:
@@ -66,14 +66,27 @@ def extract_pdf_multi_size(file_content):
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
                     if df.empty or len(df.columns) < 2: continue
+
                     desc_col, size_cols = -1, {}
-                    for r_idx in range(min(10, len(df))):
+                    # 1. Tìm tiêu đề cột
+                    for r_idx in range(min(12, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
+                        
+                        # Xác định cột tên thông số
                         for i, v in enumerate(row):
-                            if (customer == "REIMANT" and "POM NAME" in v) or ("DESCRIPTION" in v or "POM" in v): desc_col = i
+                            if (customer == "REIMANT" and "POM NAME" in v) or ("DESCRIPTION" in v or "POM" in v):
+                                desc_col = i
+                        
+                        # Xác định các cột Size (Bỏ qua cột Tolerance/Sai số)
                         for i, v in enumerate(row):
-                            if i == desc_col or not v or any(x in v for x in ["TOL", "+/-", "CODE", "DIM"]): continue
-                            if v.isdigit() or v in ["XS","S","M","L","XL","2XL","3XL"]: size_cols[i] = v
+                            if i == desc_col or not v: continue
+                            # CHẶN CỘT SAI SỐ (Lỗi bạn đang gặp nằm ở đây)
+                            if any(x in v for x in ["TOL", "+/-", "MIN", "MAX", "GRADE", "CODE"]): continue
+                            
+                            if v.isdigit() or v in ["XS","S","M","L","XL","2XL","3XL","4XL"] or len(v) <= 3:
+                                size_cols[i] = v
+
+                    # 2. Lấy dữ liệu
                     if desc_col != -1 and size_cols:
                         for s_col, s_name in size_cols.items():
                             if s_name not in all_specs: all_specs[s_name] = {}
@@ -81,13 +94,17 @@ def extract_pdf_multi_size(file_content):
                                 raw_desc = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
                                 desc = re.sub(r'^\d+[\.\-\)]*\s*', '', raw_desc)
                                 desc = re.sub(r'\s+', ' ', desc).strip()
-                                if len(desc) < 3 or desc.upper() in ["DESCRIPTION", "POM NAME"]: continue
+                                
+                                if len(desc) < 3 or desc.upper() in ["DESCRIPTION", "POM NAME", "SIZE"]: continue
+                                
                                 val = parse_val(df.iloc[d_idx, s_col])
-                                if val > 0: all_specs[s_name][desc] = val
+                                # Chỉ lấy nếu giá trị có ý nghĩa (tránh các con số 0.125 của sai số nếu có thể)
+                                if val > 0:
+                                    all_specs[s_name][desc] = val
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
-# ================= 4. UI =================
+# ================= 4. GIAO DIỆN =================
 with st.sidebar:
     st.header("🏢 QUẢN LÝ KHO")
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
@@ -96,18 +113,18 @@ with st.sidebar:
     new_files = st.file_uploader("Nạp mẫu mới", accept_multiple_files=True, key=f"lib_{st.session_state['reset_key']}")
     if new_files and st.button("NẠP KHO"):
         for f in new_files:
-            f_content = f.read()
-            f_hash = get_file_hash(f_content)
-            data = extract_pdf_multi_size(f_content)
-            if data:
+            content = f.read()
+            f_hash = get_file_hash(content)
+            data = extract_pdf_multi_size(content)
+            if data and data['all_specs']:
                 path = f"lib_{f_hash}.png"
                 supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
                 supabase.table("ai_data").upsert({
                     "id": f_hash, "file_name": f.name, "vector": get_image_vector(data['img']),
                     "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                 }).execute()
-        st.session_state['reset_key'] += 1 # Reset uploader
-        st.success("Đã nạp!"); st.rerun()
+        st.session_state['reset_key'] += 1
+        st.success("Đã cập nhật kho!"); st.rerun()
 
 st.title("🔍 AI SMART AUDITOR - V96 PRO")
 file_audit = st.file_uploader("📤 Upload PDF Audit", type="pdf", key=f"audit_{st.session_state['reset_key']}")
@@ -115,6 +132,7 @@ file_audit = st.file_uploader("📤 Upload PDF Audit", type="pdf", key=f"audit_{
 if file_audit:
     audit_content = file_audit.read()
     target = extract_pdf_multi_size(audit_content)
+    
     if target and target["all_specs"]:
         res = supabase.table("ai_data").select("*").execute()
         if res.data:
@@ -122,45 +140,55 @@ if file_audit:
             t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             
-            # --- HIỂN THỊ TOP 3 ---
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
             st.subheader("🎯 Top 3 mẫu tương đồng")
             cols = st.columns(4)
-            cols[0].image(target['img'], caption="File Hiện Tại", use_container_width=True)
+            cols.image(target['img'], caption="File Hiện Tại", use_container_width=True)
+            
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 cols[i+1].image(row['image_url'], caption=f"Top {i+1}: {row['sim']:.1%}", use_container_width=True)
-                if cols[i+1].button(f"Chọn mẫu {i+1}", key=f"select_{idx}"):
+                if cols[i+1].button(f"Chọn mẫu {i+1}", key=f"sel_{idx}"):
                     st.session_state['selected_model'] = row.to_dict()
 
-            # Lấy mẫu đối soát (mặc định là Top 1)
             best = st.session_state.get('selected_model', top_3.iloc[0].to_dict())
-            st.write(f"✅ Đang đối soát với mẫu: **{best['file_name']}**")
+            st.info(f"✅ Đối soát với: **{best['file_name']}**")
             
-            sel_size = st.selectbox("Chọn Size:", list(target['all_specs'].keys()))
+            # Chọn Size
+            available_sizes = list(target['all_specs'].keys())
+            sel_size = st.selectbox("Chọn Size:", available_sizes)
+            
             spec_audit = target['all_specs'][sel_size]
+            # Lấy size tương ứng trong kho, nếu không có lấy size đầu tiên
             spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values())[0])
             
-            def norm(x): return re.sub(r'\s+', ' ', re.sub(r'[^a-z0-9 ]', '', str(x).lower())).strip()
+            def norm(x): return re.sub(r'[^a-z0-9]', '', str(x).lower())
             ref_map = {norm(k): v for k, v in spec_ref.items()}
             
             report = []
             for pom, val in spec_audit.items():
-                k_n = norm(pom); rv = ref_map.get(k_n, 0)
+                k_n = norm(pom)
+                rv = ref_map.get(k_n, 0)
                 if rv == 0:
                     for k, v in ref_map.items():
                         if k_n in k or k in k_n: rv = v; break
-                diff = round(val - rv, 3)
-                report.append({"Thông số": pom, "Thực tế": val, "Mẫu kho": rv, "Lệch": diff, "Kết quả": "✅ OK" if abs(diff) < 0.2 else "❌ Lệch"})
+                
+                diff = round(val - rv, 4)
+                report.append({
+                    "Thông số": pom, 
+                    "Thực tế": val, 
+                    "Mẫu kho": rv, 
+                    "Lệch": diff, 
+                    "Kết quả": "✅ OK" if abs(diff) < 0.0001 else "❌ Lệch"
+                })
             
             df_rep = pd.DataFrame(report)
             st.table(df_rep)
             
-            # --- XUẤT EXCEL ---
+            # Xuất Excel
             towrite = io.BytesIO()
-            with pd.ExcelWriter(towrite, engine='xlsxwriter') as writer:
-                df_rep.to_excel(writer, index=False, sheet_name='Audit_Report')
-            st.download_button("📥 Xuất báo cáo Excel", data=towrite.getvalue(), file_name=f"Audit_{file_audit.name}.xlsx")
+            df_rep.to_excel(towrite, index=False, engine='xlsxwriter')
+            st.download_button("📥 Xuất báo cáo Excel", data=towrite.getvalue(), file_name=f"Report_{file_audit.name}.xlsx")
             
-            if st.button("Xóa và Quét file mới"):
+            if st.button("Xóa phiên làm việc"):
                 st.session_state['reset_key'] += 1
                 st.rerun()
