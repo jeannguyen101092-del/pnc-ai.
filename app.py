@@ -38,7 +38,6 @@ def parse_val(t):
         if not t or str(t).strip() == "": return 0
         txt = str(t).replace(',', '.').replace('"', '').strip().lower()
         txt = re.sub(r'(cm|inch|in|mm|yds)$', '', txt)
-        # Tìm số, phân số, số thập phân
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
         v = match[0]
@@ -48,16 +47,14 @@ def parse_val(t):
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. TRÍCH XUẤT PDF (FIX CHẶN DUNG SAI) =================
+# ================= 3. TRÍCH XUẤT PDF (FIX LẤY CHỮ DESCRIPTION) =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes = {}, None
     try:
-        # 1. Lấy ảnh trang đầu
         doc = fitz.open(stream=file_content, filetype="pdf")
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         doc.close()
 
-        # 2. Quét bảng
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
@@ -66,50 +63,45 @@ def extract_pdf_multi_size(file_content):
                     if df.empty or len(df.columns) < 2: continue
 
                     desc_col, size_cols = -1, {}
-                    # Tìm cột tên thông số (Description/POM)
+                    # ƯU TIÊN LẤY CỘT DESCRIPTION LÀM TÊN THÔNG SỐ
                     for r_idx in range(min(10, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         for i, v in enumerate(row):
-                            if any(x in v for x in ["DESCRIPTION", "POM", "SPEC NAME"]):
+                            if "DESCRIPTION" in v or "POM NAME" in v:
                                 desc_col = i
                                 break
                         if desc_col != -1: break
 
-                    if desc_col == -1: continue # Không thấy cột tên thông số thì bỏ qua bảng này
+                    if desc_col == -1: continue
 
-                    # Tìm các cột Size (BỎ QUA Tolerance/Dung sai)
-                    header_row = [str(c).strip().upper() for c in df.iloc[0]] # Giả định dòng 0 là header
-                    for i, v in enumerate(header_row):
-                        if i == desc_col or not v: continue
-                        # LOẠI BỎ CÁC CỘT DUNG SAI
-                        if any(x in v for x in ["TOL", "+/-", "GRADE", "MIN", "MAX", "REIMANT"]): continue
-                        # Chỉ lấy nếu tên cột giống tên Size (S, M, L, hoặc số 28, 30...)
-                        if len(v) <= 5: 
-                            size_cols[i] = v
+                    # Tìm các cột Size (Bỏ qua Dung sai/Tolerance)
+                    for i, v in enumerate(df.iloc[0]):
+                        v_up = str(v).strip().upper()
+                        if i == desc_col or not v_up: continue
+                        if any(x in v_up for x in ["TOL", "+/-", "GRADE", "POM"]): continue
+                        if len(v_up) <= 5 or v_up.isdigit():
+                            size_cols[i] = v_up
 
-                    # Trích xuất dữ liệu
                     if size_cols:
                         for s_col, s_name in size_cols.items():
-                            valid_vals = []
-                            temp_data = {}
+                            valid_vals, temp_data = [], {}
                             for d_idx in range(len(df)):
-                                pom = re.sub(r'^\d+[\.\-\)]*\s*', '', str(df.iloc[d_idx, desc_col])).strip()
-                                if len(pom) < 3 or any(x in pom.upper() for x in ["DESCRIPTION", "POM", "SIZE"]): continue
+                                # Lấy chữ ở cột Description, bỏ mã số POM
+                                raw_txt = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
+                                if len(raw_txt) < 3 or raw_txt.upper() in ["DESCRIPTION", "POM NAME"]: continue
                                 
                                 val = parse_val(df.iloc[d_idx, s_col])
                                 if val > 0:
-                                    temp_data[pom] = val
+                                    temp_data[raw_txt] = val
                                     valid_vals.append(val)
                             
-                            # LOGIC QUAN TRỌNG: Chỉ lưu nếu trung bình giá trị > 1 (Loại bỏ cột dung sai 0.125, 0.25...)
+                            # Chỉ lấy cột có giá trị trung bình > 1 (Chặn dung sai)
                             if valid_vals and np.mean(valid_vals) > 1.0:
                                 if s_name not in all_specs: all_specs[s_name] = {}
                                 all_specs[s_name].update(temp_data)
         
         return {"all_specs": all_specs, "img": img_bytes}
-    except Exception as e:
-        st.error(f"Lỗi đọc PDF: {e}")
-        return None
+    except: return None
 
 # ================= 4. GIAO DIỆN =================
 with st.sidebar:
@@ -146,7 +138,7 @@ if file_audit:
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
-            st.subheader("🎯 Top 3 mẫu giống nhất")
+            st.subheader("🎯 Top 3 mẫu giống nhất trong kho")
             cols = st.columns(4)
             cols[0].image(target['img'], caption="FILE ĐANG QUÉT")
             for i, (idx, row) in enumerate(top_3.iterrows()):
@@ -155,10 +147,9 @@ if file_audit:
                     st.session_state['sel_ref'] = row.to_dict()
 
             best = st.session_state.get('sel_ref', top_3.iloc[0].to_dict())
-            st.info(f"✅ Đối soát: **{best['file_name']}**")
+            st.info(f"✅ Đang đối soát với: **{best['file_name']}**")
             
-            # So khớp dữ liệu
-            sel_size = st.selectbox("Chọn Size:", list(target['all_specs'].keys()))
+            sel_size = st.selectbox("Chọn Size đối soát:", list(target['all_specs'].keys()))
             spec_audit = target['all_specs'][sel_size]
             spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values())[0])
             
@@ -166,13 +157,13 @@ if file_audit:
             ref_map = {norm(k): v for k, v in spec_ref.items()}
             
             report = []
-            for pom, val in spec_audit.items():
-                k_n = norm(pom); rv = ref_map.get(k_n, 0)
+            for desc, val in spec_audit.items():
+                k_n = norm(desc); rv = ref_map.get(k_n, 0)
                 if rv == 0:
                     for k, v in ref_map.items():
                         if k_n in k or k in k_n: rv = v; break
                 diff = round(val - rv, 3)
-                report.append({"Thông số": pom, "Thực tế": val, "Mẫu kho": rv, "Lệch": diff, "Kết quả": "✅ OK" if abs(diff) < 0.2 else "❌ Lệch"})
+                report.append({"Thông số (Description)": desc, "Thực tế": val, "Mẫu kho": rv, "Lệch": diff, "Kết quả": "✅ OK" if abs(diff) < 0.2 else "❌ Lệch"})
             
             df_rep = pd.DataFrame(report)
             st.table(df_rep)
@@ -181,9 +172,9 @@ if file_audit:
             df_rep.to_excel(towrite, index=False, engine='xlsxwriter')
             st.download_button("📥 Xuất báo cáo Excel", data=towrite.getvalue(), file_name=f"Report_{file_audit.name}.xlsx")
             
-            if st.button("Xóa và Quét lại"):
+            if st.button("Xóa phiên & Quét lại"):
                 st.session_state['reset_key'] += 1
                 if 'sel_ref' in st.session_state: del st.session_state['sel_ref']
                 st.rerun()
     else:
-        st.error("⚠️ Không tìm thấy bảng số đo hợp lệ (Chỉ thấy dung sai). Vui lòng kiểm tra lại file PDF.")
+        st.error("⚠️ Không tìm thấy bảng số đo. Hãy kiểm tra lại file PDF.")
