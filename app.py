@@ -8,9 +8,11 @@ from supabase import create_client
 
 # ================= 1. CẤU HÌNH & KẾT NỐI =================
 # Điền URL và KEY Supabase của bạn
-BUCKET = "fashion-imgs"
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
+BUCKET = "fashion-imgs"
+supabase = create_client(URL, KEY)
+
 st.set_page_config(layout="wide", page_title="AI Fashion Auditor V96 Pro", page_icon="👖")
 
 # ================= 2. BỘ NÃO AI & NHẬN DIỆN "CHỐNG NHẦM" =================
