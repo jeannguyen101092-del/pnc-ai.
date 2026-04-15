@@ -1,14 +1,14 @@
 import streamlit as st
 import io, fitz, pdfplumber, re, pandas as pd, numpy as np
-import torch, hashlib, base64
+import torch, hashlib
 from PIL import Image
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
 # ================= 1. CONFIGURATION =================
-# Mã hóa Logo PPJ Group để nhúng trực tiếp (Không lo lỗi link)
-PPJ_LOGO_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAZAAAABkCAYAAAC02766AAAACXBIWXMAAAsTAAALEwEAmpwYAAAA" # (Đây là mã rút gọn cho gọn code)
+# Dùng link Imgur ổn định cho Logo PPJ Group
+LOGO_PPJ = "https://imgur.com"
 
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
@@ -43,21 +43,21 @@ def parse_val(t):
         txt = re.sub(r'(cm|inch|in|mm|yds)$', '', txt)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match
+        v = match[0]
         if ' ' in v:
             p = v.split()
-            return float(p) + eval(p)
+            return float(p[0]) + eval(p[1])
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION =================
+# ================= 3. PDF EXTRACTION (PPJ & REITMANS) =================
 def extract_pdf_multi_size(file_content):
-    all_specs, img_bytes, is_reitmans = {}, None, False
+    all_specs, img_bytes, is_reitmants = {}, None, False
     try:
         txt_check = ""
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for p in pdf.pages[:1]: txt_check += (p.extract_text() or "").upper()
-        if "REITMAN" in txt_check: is_reitmans = True
+        if "REITMAN" in txt_check: is_reitmants = True
 
         doc = fitz.open(stream=file_content, filetype="pdf")
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
@@ -74,8 +74,8 @@ def extract_pdf_multi_size(file_content):
                     for r_idx in range(min(15, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         for i, v in enumerate(row):
-                            if is_reitmans and "POM NAME" in v: desc_col = i; break
-                            elif not is_reitmans and ("DESCRIPTION" in v or "POM NAME" in v): desc_col = i; break
+                            if is_reitmants and "POM NAME" in v: desc_col = i; break
+                            elif not is_reitmants and ("DESCRIPTION" in v or "POM NAME" in v): desc_col = i; break
                         if desc_col != -1: break
                     if desc_col == -1: continue
                     for r_idx in range(min(15, len(df))):
@@ -96,13 +96,13 @@ def extract_pdf_multi_size(file_content):
                             if temp_data:
                                 if s_name not in all_specs: all_specs[s_name] = {}
                                 all_specs[s_name].update(temp_data)
-        return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reitmans}
+        return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reitmants}
     except: return None
 
-# ================= 4. PPJ GROUP PRO UI =================
+# ================= 4. PPJ GROUP DASHBOARD =================
 with st.sidebar:
-    # HIỂN THỊ LOGO PPJ GROUP QUA LINK TRỰC TIẾP
-    st.image("https://ppj-group.com", width=220)
+    # HIỂN THỊ LOGO TRỰC TIẾP QUA LINK ỔN ĐỊNH
+    st.image(LOGO_PPJ, use_container_width=True)
     st.markdown("---")
     st.title("📂 MASTER REPOSITORY")
     
@@ -111,7 +111,7 @@ with st.sidebar:
         count = res_count.count or 0
     except:
         count = 0
-        st.error("⚠️ Connection Error. Restore Supabase Project.")
+        st.error("⚠️ Connection Error. Restore Project.")
 
     st.metric("Total Synchronized SKUs", f"{count} Models")
     
@@ -119,12 +119,13 @@ with st.sidebar:
     percent = min((used_mb / 1024) * 100, 100.0)
     st.write(f"💾 **Cloud Storage Status:** {used_mb:.1f}MB / 1GB")
     st.progress(percent / 100)
+    st.caption(f"Free space: {100-percent:.1f}%")
 
     st.divider()
     st.subheader("📥 Data Ingestion")
     new_files = st.file_uploader("Upload Tech-Packs (Bulk)", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
     if new_files and st.button("SYNCHRONIZE TO DATABASE", use_container_width=True):
-        with st.spinner("AI Syncing..."):
+        with st.spinner("AI Processing..."):
             for f in new_files:
                 c = f.read(); h = get_file_hash(c); data = extract_pdf_multi_size(c)
                 if data and data['all_specs']:
@@ -137,14 +138,13 @@ with st.sidebar:
         st.session_state['reset_key'] += 1
         st.rerun()
 
-# HEADER TRANG CHÍNH
+# HEADER TRANG CHÍNH CÓ LOGO
 h_col1, h_col2 = st.columns([1, 4])
 with h_col1:
-    # Dùng link logo từ PPJ web để đảm bảo chuẩn màu
-    st.image("https://ppj-group.com", width=120)
+    st.image(LOGO_PPJ, width=120)
 with h_col2:
     st.title("PPJ GROUP - AI SMART AUDITOR PRO")
-    st.caption("AI-Powered Quality Assurance Dashboard")
+    st.markdown("*AI-Powered Quality Assurance & Technical Audit Dashboard*")
 
 st.markdown("---")
 
