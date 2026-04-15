@@ -45,14 +45,29 @@ def calculate_spec_similarity(target_spec, db_spec):
 
 def parse_val(t):
     try:
+        if t is None: return 0
         txt = str(t).replace(',', '.').replace('"', '').strip().lower()
-        txt = re.sub(r'(cm|inch|in|mm)$', '', txt)
+        # Loại bỏ các đơn vị đo nếu có
+        txt = re.sub(r'(cm|inch|in|mm|yds)$', '', txt)
+        
+        if not txt or any(x in txt for x in ["date", "page", "total", "size"]): 
+            return 0
+            
+        # Tìm tất cả định dạng số: số thập phân, phân số, số nguyên
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0]
-        if ' ' in v: p = v.split(); return float(p[0]) + eval(p[1])
-        return eval(v) if '/' in v else float(v)
-    except: return 0
+        
+        v_str = match[0]
+        if ' ' in v_str: # Trường hợp "1 1/2"
+            parts = v_str.split()
+            return float(parts[0]) + eval(parts[1])
+        elif '/' in v_str: # Trường hợp "1/2"
+            return eval(v_str)
+        else: # Trường hợp "0.2500"
+            return float(v_str)
+    except:
+        return 0
+
 
 def get_vector(img_bytes):
     img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
