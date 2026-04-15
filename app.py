@@ -42,12 +42,10 @@ def get_image_vector(img_bytes):
 
 # ================= 3. FIX LỖI NHẬN DIỆN PDF =================
 def extract_pdf_multi_size(file):
-    all_specs = {}
+    all_specs, img_bytes = {}, None
     try:
-        file.seek(0)
-        pdf_content = file.read()
-        
-        # Lấy ảnh đại diện
+        file.seek(0); pdf_content = file.read()
+        # Lấy ảnh preview
         doc = fitz.open(stream=pdf_content, filetype="pdf")
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         doc.close()
@@ -59,38 +57,43 @@ def extract_pdf_multi_size(file):
                     df = pd.DataFrame(tb).fillna("")
                     if df.empty or len(df.columns) < 2: continue
                     
-                    # Nới lỏng bộ lọc để tìm cột POM và Size
-                    n_col = -1
+                    # --- TÌM CỘT DESCRIPTION VÀ CỘT SIZE ---
+                    desc_col = -1
                     size_cols = {}
                     
                     for r_idx in range(min(10, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         
-                        # Tìm cột tên thông số (POM)
-                        if n_col == -1:
-                            for i, v in enumerate(row):
-                                if any(x in v for x in ["POM", "DESCRIPTION", "THÔNG SỐ", "NỘI DUNG"]):
-                                    n_col = i; break
-                        
-                        # Tìm các cột Size
+                        # Ưu tiên cột DESCRIPTION (mô tả chi tiết)
                         for i, v in enumerate(row):
-                            if i == n_col or not v: continue
-                            if any(x in v for x in ["TOL", "+/-", "CODE", "NO."]): continue
-                            # Chấp nhận S, M, L hoặc số 28, 30, 32...
-                            if v.isdigit() or any(s == v for s in ["S","M","L","XL","2XL","3XL","XXL"]):
+                            if "DESCRIPTION" in v or "POM NAME" in v:
+                                desc_col = i
+                                break
+                        
+                        # Tìm các cột Size (S, M, L hoặc số)
+                        for i, v in enumerate(row):
+                            if i == desc_col or not v: continue
+                            if any(x in v for x in ["TOL", "+/-", "CODE", "DIM"]): continue
+                            if v.isdigit() or any(s == v for s in ["S","M","L","XL","2XL"]):
                                 size_cols[i] = v
+                        
+                        if desc_col != -1 and size_cols: break
                     
-                    # Ghi dữ liệu
-                    if n_col != -1 and size_cols:
+                    # --- QUÉT DỮ LIỆU ---
+                    if desc_col != -1:
                         for s_col, s_name in size_cols.items():
                             if s_name not in all_specs: all_specs[s_name] = {}
                             for d_idx in range(len(df)):
-                                pom = str(df.iloc[d_idx, n_col]).strip()
-                                if len(pom) > 2:
+                                # Lấy nội dung chi tiết ở cột Description
+                                full_desc = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
+                                # Loại bỏ các dòng tiêu đề rác
+                                if len(full_desc) > 3 and not full_desc.isupper():
                                     val = parse_val(df.iloc[d_idx, s_col])
-                                    if val > 0: all_specs[s_name][pom.upper()] = val
+                                    if val > 0:
+                                        all_specs[s_name][full_desc] = val
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
+
 
 # ================= 4. GIAO DIỆN =================
 with st.sidebar:
