@@ -5,30 +5,17 @@ from PIL import Image
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
-import os
 
 # ================= 1. CONFIGURATION =================
-# Link dự phòng nếu bạn chưa up file logo.png lên GitHub
-BACKUP_LOGO = "https://githubusercontent.com" 
-
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-# Cấu hình trang phải nằm ở dòng đầu tiên
-st.set_page_config(layout="wide", page_title="PPJ GROUP | AI Auditor Pro", page_icon="👔")
+st.set_page_config(layout="wide", page_title="PPJ AI Auditor", page_icon="👔")
 
 if 'reset_key' not in st.session_state:
     st.session_state['reset_key'] = 0
-
-# Hàm hiển thị Logo thông minh
-def display_logo(width=200):
-    if os.path.exists("logo.png"):
-        st.image("logo.png", width=width)
-    else:
-        # Nếu chưa có file logo.png trên GitHub, hiển thị chữ PPJ tạm thời
-        st.markdown(f"<h1 style='color: #1E3A8A;'>PPJ GROUP</h1>", unsafe_allow_html=True)
 
 # ================= 2. AI CORE ENGINE =================
 @st.cache_resource
@@ -62,12 +49,12 @@ def parse_val(t):
 
 # ================= 3. PDF EXTRACTION =================
 def extract_pdf_multi_size(file_content):
-    all_specs, img_bytes, is_reit = {}, None, False
+    all_specs, img_bytes, is_reitmants = {}, None, False
     try:
         txt_check = ""
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for p in pdf.pages[:1]: txt_check += (p.extract_text() or "").upper()
-        if "REITMAN" in txt_check: is_reit = True
+        if "REITMAN" in txt_check: is_reitmants = True
 
         doc = fitz.open(stream=file_content, filetype="pdf")
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
@@ -84,8 +71,8 @@ def extract_pdf_multi_size(file_content):
                     for r_idx in range(min(15, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         for i, v in enumerate(row):
-                            if is_reit and "POM NAME" in v: desc_col = i; break
-                            elif not is_reit and ("DESCRIPTION" in v or "POM NAME" in v): desc_col = i; break
+                            if is_reitmants and "POM NAME" in v: desc_col = i; break
+                            elif not is_reitmants and ("DESCRIPTION" in v or "POM NAME" in v): desc_col = i; break
                         if desc_col != -1: break
                     if desc_col == -1: continue
                     for r_idx in range(min(15, len(df))):
@@ -93,7 +80,7 @@ def extract_pdf_multi_size(file_content):
                         for i, v in enumerate(row):
                             if i == desc_col or not v: continue
                             if any(x in v for x in ["TOL", "GRADE", "CODE", "+/-"]): continue
-                            if len(v) <= 8 or v.isdigit() or v in ["XS","S","M","L","XL"]: size_cols[i] = v
+                            if len(v) <= 8 or v.isdigit(): size_cols[i] = v
                         if size_cols: break
                     if size_cols:
                         for s_col, s_name in size_cols.items():
@@ -106,18 +93,20 @@ def extract_pdf_multi_size(file_content):
                             if temp_data:
                                 if s_name not in all_specs: all_specs[s_name] = {}
                                 all_specs[s_name].update(temp_data)
-        return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reit}
+        return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reitmants}
     except: return None
 
-# ================= 4. UI PPJ GROUP =================
+# ================= 4. PREMIUM UI =================
 with st.sidebar:
-    display_logo(width=220)
+    # HIỂN THỊ LOGO CHỮ (Thay cho file ảnh bị lỗi)
+    st.markdown("<h2 style='color: #1E3A8A; margin-bottom: 0;'>PPJ GROUP</h2>", unsafe_allow_html=True)
+    st.caption("Boundless Solutions")
     st.markdown("---")
-    st.title("📂 MASTER REPOSITORY")
     
+    st.title("📂 MASTER REPOSITORY")
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
     count = res_count.count or 0
-    st.metric("Total Synchronized SKUs", f"{count} Models")
+    st.metric("Synchronized SKUs", f"{count} Models")
     
     used_mb = (count * 0.15)
     percent = min((used_mb / 1024) * 100, 100.0)
@@ -126,29 +115,23 @@ with st.sidebar:
 
     st.divider()
     st.subheader("📥 Data Ingestion")
-    new_files = st.file_uploader("Upload Tech-Packs (Bulk)", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
-    if new_files and st.button("SYNCHRONIZE DATABASE", use_container_width=True):
-        with st.spinner("AI Processing..."):
-            for f in new_files:
-                c = f.read(); h = get_file_hash(c); data = extract_pdf_multi_size(c)
-                if data and data['all_specs']:
-                    path = f"lib_{h}.png"
-                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
-                    supabase.table("ai_data").upsert({
-                        "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
-                        "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
-                    }).execute()
+    new_files = st.file_uploader("Upload Master Tech-Packs", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
+    if new_files and st.button("SYNCHRONIZE", use_container_width=True):
+        for f in new_files:
+            c = f.read(); h = get_file_hash(c); data = extract_pdf_multi_size(c)
+            if data and data['all_specs']:
+                path = f"lib_{h}.png"
+                supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
+                supabase.table("ai_data").upsert({
+                    "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
+                    "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                }).execute()
         st.session_state['reset_key'] += 1
         st.rerun()
 
-# Header chính
-h_col1, h_col2 = st.columns([1, 4])
-with h_col1:
-    display_logo(width=120)
-with h_col2:
-    st.title("AI SMART AUDITOR PRO")
-    st.markdown("*Premium Technical Audit System for PPJ Group*")
-
+# HEADER TRANG CHÍNH
+st.markdown("<h1 style='color: #1E3A8A; display: inline-block;'>PPJ GROUP</h1> <h1 style='display: inline-block; margin-left: 10px;'>AI SMART AUDITOR PRO</h1>", unsafe_allow_html=True)
+st.caption("Premium Technical Audit System for PPJ Group")
 st.markdown("---")
 
 file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf", key=f"audit_{st.session_state['reset_key']}")
@@ -164,7 +147,7 @@ if file_audit:
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
             
-            st.subheader(f"🎯 AI Best Matches")
+            st.subheader(f"🎯 AI Best Matches (Mode: {'REITMANS' if target['is_reit'] else 'General'})")
             cols = st.columns(4)
             with cols[0]:
                 st.image(target['img'], caption="SOURCE FILE", use_container_width=True)
@@ -192,16 +175,22 @@ if file_audit:
                 if rv == 0:
                     for k, val in ref_map.items():
                         if k_n in k or k in k_n: rv = val; break
-                report.append({"POM Description": d, "Audit": v, "Repo": rv, "Diff": round(v - rv, 3), "Status": "✅ PASS" if abs(v-rv) < 0.2 else "❌ FAIL"})
+                diff = round(v - rv, 3)
+                report.append({
+                    "POM Description": d, "Audit Value": v, "Repo Value": rv, 
+                    "Deviation": diff, "Status": "✅ PASS" if abs(v-rv) < 0.2 else "❌ FAIL"
+                })
             
-            st.table(pd.DataFrame(report))
+            df_rep = pd.DataFrame(report)
+            st.dataframe(df_rep, use_container_width=True, hide_index=True)
             
-            # Xuất Excel
             towrite = io.BytesIO()
-            pd.DataFrame(report).to_excel(towrite, index=False, engine='xlsxwriter')
-            st.download_button("📥 DOWNLOAD XLS", data=towrite.getvalue(), file_name=f"Audit_{file_audit.name}.xlsx")
-            
-            if st.button("CLEAR SESSION"):
-                st.session_state['reset_key'] += 1
-                if 'sel' in st.session_state: del st.session_state['sel']
-                st.rerun()
+            df_rep.to_excel(towrite, index=False, engine='xlsxwriter')
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button("📥 DOWNLOAD REPORT", data=towrite.getvalue(), file_name=f"PPJ_Audit_Report.xlsx", use_container_width=True)
+            with col2:
+                if st.button("RESET SESSION", use_container_width=True):
+                    st.session_state['reset_key'] += 1
+                    if 'sel' in st.session_state: del st.session_state['sel']
+                    st.rerun()
