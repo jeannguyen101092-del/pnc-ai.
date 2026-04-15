@@ -14,9 +14,13 @@ supabase = create_client(URL, KEY)
 
 st.set_page_config(layout="wide", page_title="PPJ AI Auditor", page_icon="👔")
 
-# Khởi tạo key quản lý việc reset uploader
-if 'reset_key' not in st.session_state:
-    st.session_state['reset_key'] = 0
+# Quản lý các key để reset giao diện
+if 'master_reset_key' not in st.session_state:
+    st.session_state['master_reset_key'] = 0
+if 'audit_reset_key' not in st.session_state:
+    st.session_state['audit_reset_key'] = 0
+if 'selected_sku' not in st.session_state:
+    st.session_state['selected_sku'] = None
 
 # ================= 2. AI CORE ENGINE =================
 @st.cache_resource
@@ -41,21 +45,21 @@ def parse_val(t):
         txt = re.sub(r'(cm|inch|in|mm|yds)$', '', txt)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match
+        v = match[0]
         if ' ' in v:
             p = v.split()
-            return float(p) + eval(p)
+            return float(p[0]) + eval(p[1])
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
 # ================= 3. PDF EXTRACTION =================
 def extract_pdf_multi_size(file_content):
-    all_specs, img_bytes, is_reitmants = {}, None, False
+    all_specs, img_bytes, is_reit = {}, None, False
     try:
         txt_check = ""
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for p in pdf.pages[:1]: txt_check += (p.extract_text() or "").upper()
-        if "REITMAN" in txt_check: is_reitmants = True
+        if "REITMAN" in txt_check: is_reit = True
 
         doc = fitz.open(stream=file_content, filetype="pdf")
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
@@ -72,8 +76,8 @@ def extract_pdf_multi_size(file_content):
                     for r_idx in range(min(15, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         for i, v in enumerate(row):
-                            if is_reitmants and "POM NAME" in v: desc_col = i; break
-                            elif not is_reitmants and ("DESCRIPTION" in v or "POM NAME" in v): desc_col = i; break
+                            if is_reit and "POM NAME" in v: desc_col = i; break
+                            elif not is_reit and ("DESCRIPTION" in v or "POM NAME" in v): desc_col = i; break
                         if desc_col != -1: break
                     if desc_col == -1: continue
                     for r_idx in range(min(15, len(df))):
@@ -94,7 +98,7 @@ def extract_pdf_multi_size(file_content):
                             if temp_data:
                                 if s_name not in all_specs: all_specs[s_name] = {}
                                 all_specs[s_name].update(temp_data)
-        return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reitmants}
+        return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reit}
     except: return None
 
 # ================= 4. PREMIUM UI =================
@@ -110,25 +114,21 @@ with st.sidebar:
     
     # Storage Analytics
     used_mb = (count * 0.15)
-    percent = min((used_mb / 1024) * 100, 100.0)
     st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1GB")
-    st.progress(percent / 100)
+    st.progress(min(used_mb/1024, 1.0))
 
     st.divider()
     st.subheader("📥 Data Ingestion")
-    # Gán key động để có thể reset sau khi nạp
-    new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
+    new_files = st.file_uploader("Upload Master Tech-Packs", accept_multiple_files=True, key=f"up_{st.session_state['master_reset_key']}")
     
     if new_files and st.button("SYNCHRONIZE", use_container_width=True):
-        new_count, dup_count = 0, 0
-        with st.spinner("Processing..."):
+        new_added, dup_skipped = 0, 0
+        with st.spinner("Processing AI..."):
             for f in new_files:
-                c = f.read()
-                h = get_file_hash(c)
+                c = f.read(); h = get_file_hash(c)
                 check = supabase.table("ai_data").select("id").eq("id", h).execute()
-                
                 if len(check.data) > 0:
-                    dup_count += 1
+                    dup_skipped += 1
                 else:
                     data = extract_pdf_multi_size(c)
                     if data and data['all_specs']:
@@ -138,49 +138,52 @@ with st.sidebar:
                             "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
                             "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                         }).execute()
-                        new_count += 1
+                        new_added += 1
             
-            # SAU KHI NẠP XONG: Tự động xóa file trên giao diện
-            st.session_state['reset_key'] += 1
-            st.toast(f"✅ Finished: {new_count} Added, {dup_count} Skipped.")
+            st.session_state['master_reset_key'] += 1 # Xóa file uploader sau khi nạp
+            st.toast(f"✅ Success: {new_added} Added, {dup_skipped} Duplicates skipped.")
             st.rerun()
 
-# HEADER
+# HEADER TRANG CHÍNH
 st.markdown("<h1 style='color: #1E3A8A; display: inline-block;'>PPJ GROUP</h1> <h1 style='display: inline-block; margin-left: 10px;'>AI SMART AUDITOR PRO</h1>", unsafe_allow_html=True)
-st.caption("Premium Technical Audit System for PPJ Group")
 st.markdown("---")
 
-file_audit = st.file_uploader("📤 Drag & Drop Audit Tech-Pack", type="pdf", key=f"audit_{st.session_state['reset_key']}")
+file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf", key=f"audit_{st.session_state['audit_reset_key']}")
 
 if file_audit:
     a_bytes = file_audit.read()
     target = extract_pdf_multi_size(a_bytes)
+    
     if target and target["all_specs"]:
         res = supabase.table("ai_data").select("*").execute()
         if res.data:
             df_db = pd.DataFrame(res.data)
             t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
-            df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
+            db_vecs = np.array([v for v in df_db['vector']])
+            df_db['sim'] = cosine_similarity(t_vec, db_vecs).flatten()
+            
+            # Lấy Top 3 mẫu giống nhất
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
             
             st.subheader(f"🎯 AI Best Matches")
             cols = st.columns(4)
-            with cols:
-                st.image(target['img'], caption="SOURCE FILE", use_container_width=True)
+            with cols[0]:
+                st.image(target['img'], caption="AUDIT FILE", use_container_width=True)
             
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 with cols[i+1]:
                     st.image(row['image_url'], caption=f"Match: {row['sim']:.1%}", use_container_width=True)
                     if st.button(f"SELECT MODEL {i+1}", key=f"btn_{idx}", use_container_width=True):
-                        st.session_state['sel'] = row.to_dict()
+                        st.session_state['selected_sku'] = row.to_dict()
 
-            best = st.session_state.get('sel', top_3.iloc.to_dict())
-            st.success(f"**REFERENCE SKU:** {best['file_name']}")
+            # Mẫu đang được chọn để đối soát (mặc định là Top 1)
+            best = st.session_state['selected_sku'] if st.session_state['selected_sku'] else top_3.iloc[0].to_dict()
+            st.success(f"**ACTIVE REFERENCE:** {best['file_name']}")
             
             st.divider()
             sel_size = st.selectbox("Select Target Size:", list(target['all_specs'].keys()))
             spec_audit = target['all_specs'][sel_size]
-            spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values()))
+            spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values())[0])
             
             def norm(x): return re.sub(r'[^a-z0-9]', '', str(x).lower())
             ref_map = {norm(k): v for k, v in spec_ref.items()}
@@ -191,19 +194,24 @@ if file_audit:
                 if rv == 0:
                     for k, val in ref_map.items():
                         if k_n in k or k in k_n: rv = val; break
-                diff = round(v - rv, 3)
-                report.append({"POM Description": d, "Audit": v, "Repo": rv, "Diff": diff, "Status": "✅ PASS" if abs(v-rv) < 0.2 else "❌ FAIL"})
+                report.append({
+                    "POM Description": d, "Audit Value": v, "Repo Value": rv, 
+                    "Deviation": round(v - rv, 3), "Status": "✅ PASS" if abs(v-rv) < 0.2 else "❌ FAIL"
+                })
             
-            st.table(pd.DataFrame(report))
+            df_rep = pd.DataFrame(report)
+            st.table(df_rep)
             
             towrite = io.BytesIO()
-            pd.DataFrame(report).to_excel(towrite, index=False, engine='xlsxwriter')
+            df_rep.to_excel(towrite, index=False, engine='xlsxwriter')
             
             c1, c2 = st.columns(2)
             with c1:
                 st.download_button("📥 DOWNLOAD REPORT", data=towrite.getvalue(), file_name=f"PPJ_Audit_Report.xlsx", use_container_width=True)
             with c2:
                 if st.button("RESET AUDIT", use_container_width=True):
-                    st.session_state['reset_key'] += 1
-                    if 'sel' in st.session_state: del st.session_state['sel']
+                    st.session_state['audit_reset_key'] += 1
+                    st.session_state['selected_sku'] = None
                     st.rerun()
+    else:
+        st.error("⚠️ Failed to extract measurement table. Please check PDF structure.")
