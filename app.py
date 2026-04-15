@@ -17,7 +17,7 @@ st.set_page_config(layout="wide", page_title="AI Fashion Auditor", page_icon="�
 if 'reset_key' not in st.session_state:
     st.session_state['reset_key'] = 0
 
-# ================= 2. HÀM AI & HỖ TRỢ =================
+# ================= 2. HÀM AI & BỘ NHỚ =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -47,19 +47,19 @@ def parse_val(t):
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. TRÍCH XUẤT PDF (TỐI ƯU CHO REITMANS) =================
+# ================= 3. TRÍCH XUẤT PDF (TỐI ƯU DUNG LƯỢNG ẢNH) =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes, is_reitmants = {}, None, False
     try:
-        # Nhận diện khách hàng REITMANS
         txt_check = ""
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
-            for p in pdf.pages[:1]: 
-                txt_check += (p.extract_text() or "").upper()
+            for p in pdf.pages[:1]: txt_check += (p.extract_text() or "").upper()
         if "REITMAN" in txt_check: is_reitmants = True
 
         doc = fitz.open(stream=file_content, filetype="pdf")
-        img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
+        # Tối ưu matrix (1.2) để ảnh vẫn rõ nhưng dung lượng cực nhẹ
+        pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
+        img_bytes = pix.tobytes("png")
         doc.close()
 
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
@@ -68,50 +68,32 @@ def extract_pdf_multi_size(file_content):
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
                     if df.empty or len(df.columns) < 2: continue
-
                     desc_col, size_cols = -1, {}
-                    # 1. Tìm cột tên (Description hoặc POM Name)
                     for r_idx in range(min(15, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         for i, v in enumerate(row):
-                            if is_reitmants:
-                                if "POM NAME" in v: desc_col = i; break
-                            else:
-                                if any(x in v for x in ["DESCRIPTION", "POM NAME", "SPEC NAME"]): 
-                                    desc_col = i; break
+                            if is_reitmants and "POM NAME" in v: desc_col = i; break
+                            elif not is_reitmants and ("DESCRIPTION" in v or "POM NAME" in v): desc_col = i; break
                         if desc_col != -1: break
-
                     if desc_col == -1: continue
-
-                    # 2. Tìm cột Size (Loại bỏ cột Tol/Dung sai)
                     for r_idx in range(min(15, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         for i, v in enumerate(row):
                             if i == desc_col or not v: continue
                             if any(x in v for x in ["TOL", "GRADE", "CODE", "+/-"]): continue
-                            # Size thường ngắn hoặc là số
-                            if len(v) <= 8 or v.isdigit() or v in ["XS","S","M","L","XL"]:
-                                size_cols[i] = v
+                            if len(v) <= 8 or v.isdigit(): size_cols[i] = v
                         if size_cols: break
-
-                    # 3. Trích xuất dữ liệu
                     if size_cols:
                         for s_col, s_name in size_cols.items():
-                            temp_data, vals = {}, []
+                            temp_data = {}
                             for d_idx in range(len(df)):
                                 pom_text = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
                                 if len(pom_text) < 3 or any(x in pom_text.upper() for x in ["DESCRIPTION", "POM NAME", "SIZE"]): continue
-                                
                                 val = parse_val(df.iloc[d_idx, s_col])
-                                if val > 0:
-                                    temp_data[pom_text] = val
-                                    vals.append(val)
-                            
-                            # Lưu nếu cột có dữ liệu thực tế
+                                if val > 0: temp_data[pom_text] = val
                             if temp_data:
                                 if s_name not in all_specs: all_specs[s_name] = {}
                                 all_specs[s_name].update(temp_data)
-        
         return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reitmants}
     except: return None
 
@@ -119,8 +101,20 @@ def extract_pdf_multi_size(file_content):
 with st.sidebar:
     st.header("🏢 QUẢN LÝ KHO")
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
-    st.metric("Số lượng mẫu trong kho", f"{res_count.count or 0} mẫu")
+    count = res_count.count or 0
+    st.metric("Số lượng mẫu thực tế", f"{count} mẫu")
     
+    # --- TÍNH TOÁN BỘ NHỚ ---
+    # Ước tính mỗi mẫu tốn ~150KB (Ảnh + Data)
+    used_mb = (count * 150) / 1024
+    percent = min(round((used_mb / 1024) * 100, 1), 100.0)
+    
+    st.write(f"📊 **Dung lượng đã dùng:** {used_mb:.1f} MB / 1024 MB")
+    st.progress(percent / 100)
+    if percent < 80: st.caption(f"✅ Kho còn trống {100-percent:.1f}%. Bạn có thể nạp thêm ~{int((1024-used_mb)/0.15)} mẫu.")
+    else: st.warning("⚠️ Kho sắp đầy, hãy cân nhắc xóa mẫu cũ!")
+
+    st.divider()
     new_files = st.file_uploader("Nạp mẫu mới", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
     if new_files and st.button("NẠP KHO"):
         for f in new_files:
@@ -133,7 +127,7 @@ with st.sidebar:
                     "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                 }).execute()
         st.session_state['reset_key'] += 1
-        st.success("Đã nạp xong!"); st.rerun()
+        st.rerun()
 
 st.title("🔍 AI SMART AUDITOR - V96 PRO")
 file_audit = st.file_uploader("📤 Upload PDF Audit", type="pdf", key=f"audit_{st.session_state['reset_key']}")
@@ -141,17 +135,15 @@ file_audit = st.file_uploader("📤 Upload PDF Audit", type="pdf", key=f"audit_{
 if file_audit:
     a_bytes = file_audit.read()
     target = extract_pdf_multi_size(a_bytes)
-    
     if target and target["all_specs"]:
         res = supabase.table("ai_data").select("*").execute()
         if res.data:
             df_db = pd.DataFrame(res.data)
             t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
-            
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
-            st.subheader(f"🎯 Kết quả (Loại file: {'REITMANS' if target['is_reit'] else 'Thường'})")
             
+            st.subheader(f"🎯 Kết quả (Loại file: {'REITMANS' if target['is_reit'] else 'Thường'})")
             cols = st.columns(4)
             cols[0].image(target['img'], caption="FILE ĐANG QUÉT")
             for i, (idx, row) in enumerate(top_3.iterrows()):
@@ -179,7 +171,6 @@ if file_audit:
             
             df_rep = pd.DataFrame(report)
             st.table(df_rep)
-            
             towrite = io.BytesIO()
             df_rep.to_excel(towrite, index=False, engine='xlsxwriter')
             st.download_button("📥 Xuất báo cáo Excel", data=towrite.getvalue(), file_name=f"Report_{file_audit.name}.xlsx")
@@ -188,5 +179,3 @@ if file_audit:
                 st.session_state['reset_key'] += 1
                 if 'sel' in st.session_state: del st.session_state['sel']
                 st.rerun()
-    else:
-        st.error("⚠️ Không tìm thấy bảng số đo. Hãy đảm bảo PDF có chứa bảng thông số Description/POM Name.")
