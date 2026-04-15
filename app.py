@@ -47,25 +47,24 @@ def parse_val(t):
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. TRÍCH XUẤT PDF (ƯU TIÊN POM NAME CHO REITMANS) =================
+# ================= 3. TRÍCH XUẤT PDF (FIX REITMANS & POM NAME) =================
 def extract_pdf_multi_size(file_content):
-    all_specs, img_bytes, is_reitmants = {}, None, False
+    all_specs, img_bytes, is_reitmans = {}, None, False
     try:
-        # 1. Nhận diện khách hàng qua text
+        # 1. Nhận diện REITMANS
         txt_all = ""
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for p in pdf.pages[:2]: 
                 txt_all += (p.extract_text() or "").upper()
-        
         if "REITMANS" in txt_all or "REITMANT" in txt_all:
-            is_reitmants = True
+            is_reitmans = True
 
-        # 2. Lấy ảnh đại diện
+        # 2. Lấy ảnh trang đầu
         doc = fitz.open(stream=file_content, filetype="pdf")
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         doc.close()
 
-        # 3. Quét bảng thông số
+        # 3. Xử lý bảng
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
@@ -74,13 +73,12 @@ def extract_pdf_multi_size(file_content):
                     if df.empty or len(df.columns) < 2: continue
 
                     desc_col, size_cols = -1, {}
-                    
-                    # TÌM CỘT TÊN THÔNG SỐ
+                    # Tìm tiêu đề cột tên thông số
                     for r_idx in range(min(12, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         for i, v in enumerate(row):
-                            # Nếu là Reitmans: ưu tiên "POM NAME", khách khác: ưu tiên "DESCRIPTION"
-                            if is_reitmants:
+                            # NẾU LÀ REITMANS THÌ BẮT BUỘC LẤY POM NAME (BỎ QUA POM CODE)
+                            if is_reitmans:
                                 if "POM NAME" in v: desc_col = i; break
                             else:
                                 if "DESCRIPTION" in v or "POM NAME" in v: desc_col = i; break
@@ -88,20 +86,20 @@ def extract_pdf_multi_size(file_content):
 
                     if desc_col == -1: continue
 
-                    # TÌM CỘT SIZE (CHẶN DUNG SAI)
+                    # Tìm các cột Size (Bỏ qua cột TOL - Dung sai)
                     header_row = [str(c).strip().upper() for c in df.iloc[0]]
                     for i, v in enumerate(header_row):
                         if i == desc_col or not v: continue
-                        if any(x in v for x in ["TOL", "+/-", "GRADE", "POM"]): continue
-                        if len(v) <= 6 or v.isdigit(): 
+                        if any(x in v for x in ["TOL", "+/-", "GRADE", "CODE", "POM"]): continue
+                        if v.isdigit() or len(v) <= 5 or v in ["XS","S","M","L","XL","2XL","3XL"]:
                             size_cols[i] = v
 
+                    # Lấy dữ liệu theo Size
                     if size_cols:
                         for s_col, s_name in size_cols.items():
                             valid_vals, temp_data = [], {}
                             for d_idx in range(len(df)):
                                 raw_txt = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
-                                # Bỏ qua hàng tiêu đề hoặc rỗng
                                 if len(raw_txt) < 3 or raw_txt.upper() in ["DESCRIPTION", "POM NAME"]: continue
                                 
                                 val = parse_val(df.iloc[d_idx, s_col])
@@ -109,29 +107,29 @@ def extract_pdf_multi_size(file_content):
                                     temp_data[raw_txt] = val
                                     valid_vals.append(val)
                             
-                            # Chặn dung sai (chỉ lấy nếu trung bình số đo > 1.0)
+                            # Chặn dung sai (chỉ lấy cột nếu trung bình số đo > 1.0)
                             if valid_vals and np.mean(valid_vals) > 1.0:
                                 if s_name not in all_specs: all_specs[s_name] = {}
                                 all_specs[s_name].update(temp_data)
         
-        return {"all_specs": all_specs, "img": img_bytes, "customer": "REITMANS" if is_reitmants else "NORMAL"}
+        return {"all_specs": all_specs, "img": img_bytes, "is_reitmans": is_reitmans}
     except: return None
 
 # ================= 4. GIAO DIỆN =================
 with st.sidebar:
     st.header("🏢 QUẢN LÝ KHO")
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
-    st.metric("Trong kho", f"{res_count.count or 0} mẫu")
+    st.metric("Số lượng mẫu trong kho", f"{res_count.count or 0} mẫu")
     
     new_files = st.file_uploader("Nạp mẫu mới", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
     if new_files and st.button("NẠP KHO"):
         for f in new_files:
-            c = f.read(); h = get_file_hash(c); data = extract_pdf_multi_size(c)
+            content = f.read(); f_hash = get_file_hash(content); data = extract_pdf_multi_size(content)
             if data and data['all_specs']:
-                path = f"lib_{h}.png"
+                path = f"lib_{f_hash}.png"
                 supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
                 supabase.table("ai_data").upsert({
-                    "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
+                    "id": f_hash, "file_name": f.name, "vector": get_image_vector(data['img']),
                     "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                 }).execute()
         st.session_state['reset_key'] += 1
@@ -141,8 +139,8 @@ st.title("🔍 AI SMART AUDITOR - V96 PRO")
 file_audit = st.file_uploader("📤 Upload PDF Audit", type="pdf", key=f"audit_{st.session_state['reset_key']}")
 
 if file_audit:
-    a_bytes = file_audit.read()
-    target = extract_pdf_multi_size(a_bytes)
+    a_content = file_audit.read()
+    target = extract_pdf_multi_size(a_content)
     
     if target and target["all_specs"]:
         res = supabase.table("ai_data").select("*").execute()
@@ -152,16 +150,17 @@ if file_audit:
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
-            st.subheader(f"🎯 Top 3 mẫu giống nhất (Phát hiện: {target['customer']})")
+            st.subheader(f"🎯 Kết quả tương đồng (Reitmans: {'Có' if target['is_reitmans'] else 'Không'})")
+            
             cols = st.columns(4)
-            cols[0].image(target['img'], caption="FILE HIỆN TẠI")
+            cols[0].image(target['img'], caption="FILE ĐANG QUÉT", use_container_width=True)
             for i, (idx, row) in enumerate(top_3.iterrows()):
-                cols[i+1].image(row['image_url'], caption=f"Top {i+1}: {row['sim']:.1%}")
+                cols[i+1].image(row['image_url'], caption=f"Top {i+1}: {row['sim']:.1%}", use_container_width=True)
                 if cols[i+1].button(f"Chọn mẫu {i+1}", key=f"btn_{idx}"):
                     st.session_state['sel_ref'] = row.to_dict()
 
             best = st.session_state.get('sel_ref', top_3.iloc[0].to_dict())
-            st.info(f"✅ Đối soát: **{best['file_name']}**")
+            st.info(f"✅ Đang đối soát với: **{best['file_name']}**")
             
             sel_size = st.selectbox("Chọn Size:", list(target['all_specs'].keys()))
             spec_audit = target['all_specs'][sel_size]
@@ -171,17 +170,18 @@ if file_audit:
             ref_map = {norm(k): v for k, v in spec_ref.items()}
             
             report = []
-            for desc, val in spec_audit.items():
-                k_n = norm(desc); rv = ref_map.get(k_n, 0)
+            for pom, val in spec_audit.items():
+                k_n = norm(pom); rv = ref_map.get(k_n, 0)
                 if rv == 0:
                     for k, v in ref_map.items():
                         if k_n in k or k in k_n: rv = v; break
                 diff = round(val - rv, 3)
-                report.append({"Thông số": desc, "Thực tế": val, "Mẫu kho": rv, "Lệch": diff, "Kết quả": "✅ OK" if abs(diff) < 0.2 else "❌ Lệch"})
+                report.append({"Thông số": pom, "Thực tế": val, "Mẫu kho": rv, "Lệch": diff, "Kết quả": "✅ OK" if abs(diff) < 0.2 else "❌ Lệch"})
             
             df_rep = pd.DataFrame(report)
             st.table(df_rep)
             
+            # Xuất Excel
             towrite = io.BytesIO()
             df_rep.to_excel(towrite, index=False, engine='xlsxwriter')
             st.download_button("📥 Xuất báo cáo Excel", data=towrite.getvalue(), file_name=f"Report_{file_audit.name}.xlsx")
@@ -191,4 +191,4 @@ if file_audit:
                 if 'sel_ref' in st.session_state: del st.session_state['sel_ref']
                 st.rerun()
     else:
-        st.error("⚠️ Không tìm thấy dữ liệu. Hãy kiểm tra PDF (có thể chỉ chứa dung sai).")
+        st.error("⚠️ Không tìm thấy bảng số đo. Hãy kiểm tra lại file PDF.")
