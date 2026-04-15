@@ -21,29 +21,61 @@ def load_model():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_model()
 
+# --- Cập nhật lại hàm classify để "tỉnh táo" hơn ---
 def classify_garment(specs_dict):
-    text = " ".join(specs_dict.keys()).upper()
-    if any(k in text for k in ["INSEAM", "OUTSEAM", "RISE", "HIP"]): return "👖 QUẦN / CHÂN VÁY"
-    if any(k in text for k in ["CHEST", "BUST", "SHOULDER", "SLEEVE"]): return "👕 ÁO / JACKET"
+    # Lấy toàn bộ tên thông số chuyển thành chữ hoa
+    all_poms = " ".join(specs_dict.keys()).upper()
+    
+    # 1. QUẦN: Nếu thấy bất kỳ chữ nào liên quan đến đáy hoặc ống quần
+    if any(k in all_poms for k in ["INSEAM", "OUTSEAM", "RISE", "LEG OPENING", "THIGH", "CROTCH"]):
+        return "👖 QUẦN"
+    
+    # 2. ÁO: Nếu thấy vòng ngực và có liên quan đến tay áo
+    if any(k in all_poms for k in ["BUST", "CHEST", "ARMHOLE", "SLEEVE", "SHOULDER"]):
+        return "👕 ÁO / JACKET"
+        
     return "👗 ĐẦM / KHÁC"
 
-def parse_val(t):
-    try:
-        if t is None or str(t).strip() == "": return 0
-        txt = str(t).replace(',', '.').replace('"', '').strip().lower()
-        match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
-        if not match: return 0
-        v_str = match[0]
-        if ' ' in v_str:
-            p = v_str.split()
-            return float(p[0]) + eval(p[1])
-        return float(eval(v_str)) if '/' in v_str else float(v_str)
-    except: return 0
+# --- Sửa đoạn hiển thị đối soát để tránh lỗi TypeError (Dòng 115-125) ---
+if file_audit:
+    target = extract_pdf_smart_scan(file_audit)
+    if target and target["all_specs"]:
+        # Lấy nhãn loại hàng từ size đầu tiên tìm thấy
+        first_size = list(target['all_specs'].keys())[0]
+        cat = classify_garment(target['all_specs'][first_size])
+        st.info(f"📍 AI Nhận diện: **{cat}**")
 
-def get_image_vector(img_bytes):
-    img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-    tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
-    with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
+        # ... (Phần tìm Top 3 giữ nguyên) ...
+
+        # ĐOẠN FIX LỖI: Kiểm tra dữ liệu trước khi map
+        sel_s = st.selectbox("Chọn Size:", list(target['all_specs'].keys()))
+        d_audit = target['all_specs'].get(sel_s, {})
+        
+        # Lấy dữ liệu mẫu trong thư viện
+        lib_specs_all = best.get('spec_json', {})
+        # Tìm size khớp, nếu không có lấy size đầu tiên có trong kho của mẫu đó
+        s_lib = sel_s if sel_s in lib_specs_all else (list(lib_specs_all.keys())[0] if lib_specs_all else None)
+        
+        if s_lib:
+            d_lib = lib_specs_all[s_lib]
+            report = []
+            for pom, val in d_audit.items():
+                # Dùng .get(pom, 0) để nếu mẫu kho thiếu thông số đó thì vẫn không bị lỗi crash
+                ref = d_lib.get(pom, 0) 
+                diff = round(val - ref, 4)
+                report.append({
+                    "Thông số": pom, 
+                    "Thực tế": val, 
+                    "Mẫu kho": ref if ref != 0 else "N/A", 
+                    "Lệch": diff if ref != 0 else 0,
+                    "Kết quả": "✅ OK" if (ref != 0 and abs(diff) <= 0.25) else "⚠️ Ko đối soát"
+                })
+            
+            df_rep = pd.DataFrame(report)
+            st.dataframe(df_rep, use_container_width=True, hide_index=True)
+        else:
+            st.error("Mẫu trong kho không có dữ liệu size để đối soát.")
+
 
 # ================= 3. HÀM QUÉT PDF THÔNG MINH (CHỈ QUÉT TRANG POM) =================
 def extract_pdf_smart_scan(file):
