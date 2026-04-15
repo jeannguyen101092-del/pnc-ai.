@@ -3,9 +3,9 @@ pandas
 numpy
 torch
 torchvision
-scikit-learn
-pdfplumber
-pymupdf
 Pillow
+PyMuPDF
+pdfplumber
 supabase
-sentence-transformers
+rapidfuzz
+xlsxwriter
