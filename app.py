@@ -6,18 +6,18 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
-# ================= 1. CẤU HÌNH =================
-URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
-KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
+# ================= 1. CONFIGURATION =================
+URL = "https://supabase.co"
+KEY = "YOUR_SUPABASE_KEY" 
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor", page_icon="👖")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor Pro", page_icon="👔")
 
 if 'reset_key' not in st.session_state:
     st.session_state['reset_key'] = 0
 
-# ================= 2. HÀM AI & BỘ NHỚ =================
+# ================= 2. AI CORE ENGINE =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -47,7 +47,7 @@ def parse_val(t):
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. TRÍCH XUẤT PDF (TỐI ƯU DUNG LƯỢNG ẢNH) =================
+# ================= 3. PDF EXTRACTION LOGIC =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes, is_reitmants = {}, None, False
     try:
@@ -57,7 +57,6 @@ def extract_pdf_multi_size(file_content):
         if "REITMAN" in txt_check: is_reitmants = True
 
         doc = fitz.open(stream=file_content, filetype="pdf")
-        # Tối ưu matrix (1.2) để ảnh vẫn rõ nhưng dung lượng cực nhẹ
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
         img_bytes = pix.tobytes("png")
         doc.close()
@@ -97,40 +96,42 @@ def extract_pdf_multi_size(file_content):
         return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reitmants}
     except: return None
 
-# ================= 4. GIAO DIỆN =================
+# ================= 4. PREMIUM UI =================
 with st.sidebar:
-    st.header("🏢 QUẢN LÝ KHO")
+    st.title("📂 MASTER DATA")
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
     count = res_count.count or 0
-    st.metric("Số lượng mẫu thực tế", f"{count} mẫu")
+    st.metric("Total Models in Repo", f"{count} SKUs")
     
-    # --- TÍNH TOÁN BỘ NHỚ ---
-    # Ước tính mỗi mẫu tốn ~150KB (Ảnh + Data)
-    used_mb = (count * 150) / 1024
-    percent = min(round((used_mb / 1024) * 100, 1), 100.0)
-    
-    st.write(f"📊 **Dung lượng đã dùng:** {used_mb:.1f} MB / 1024 MB")
+    # Storage Analytics
+    used_mb = (count * 0.15)
+    percent = min((used_mb / 1024) * 100, 100.0)
+    st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1GB")
     st.progress(percent / 100)
-    if percent < 80: st.caption(f"✅ Kho còn trống {100-percent:.1f}%. Bạn có thể nạp thêm ~{int((1024-used_mb)/0.15)} mẫu.")
-    else: st.warning("⚠️ Kho sắp đầy, hãy cân nhắc xóa mẫu cũ!")
+    st.caption(f"Free space: {100-percent:.1f}% | Est. capacity: +{int((1024-used_mb)/0.15)} SKUs")
 
     st.divider()
-    new_files = st.file_uploader("Nạp mẫu mới", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
-    if new_files and st.button("NẠP KHO"):
-        for f in new_files:
-            c = f.read(); h = get_file_hash(c); data = extract_pdf_multi_size(c)
-            if data and data['all_specs']:
-                path = f"lib_{h}.png"
-                supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
-                supabase.table("ai_data").upsert({
-                    "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
-                    "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
-                }).execute()
+    st.subheader("📥 Data Ingestion")
+    new_files = st.file_uploader("Upload Tech-Packs (Bulk)", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
+    if new_files and st.button("SYNCHRONIZE TO REPO", use_container_width=True):
+        with st.spinner("Processing AI Vectors..."):
+            for f in new_files:
+                c = f.read(); h = get_file_hash(c); data = extract_pdf_multi_size(c)
+                if data and data['all_specs']:
+                    path = f"lib_{h}.png"
+                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
+                    supabase.table("ai_data").upsert({
+                        "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
+                        "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                    }).execute()
         st.session_state['reset_key'] += 1
+        st.success("Database Updated!")
         st.rerun()
 
-st.title("🔍 AI SMART AUDITOR - V96 PRO")
-file_audit = st.file_uploader("📤 Upload PDF Audit", type="pdf", key=f"audit_{st.session_state['reset_key']}")
+st.title("🔍 AI SMART AUDITOR - PREMIUM V96")
+st.markdown("---")
+
+file_audit = st.file_uploader("📤 Drag & Drop Audit Tech-Pack", type="pdf", key=f"audit_{st.session_state['reset_key']}")
 
 if file_audit:
     a_bytes = file_audit.read()
@@ -143,18 +144,27 @@ if file_audit:
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
             
-            st.subheader(f"🎯 Kết quả (Loại file: {'REITMANS' if target['is_reit'] else 'Thường'})")
+            st.subheader(f"🎯 Smart Matching Results (Detected: {'REITMANS' if target['is_reit'] else 'General'})")
+            
             cols = st.columns(4)
-            cols[0].image(target['img'], caption="FILE ĐANG QUÉT")
+            with cols[0]:
+                st.image(target['img'], caption="CURRENT AUDIT FILE", use_container_width=True)
+            
             for i, (idx, row) in enumerate(top_3.iterrows()):
-                cols[i+1].image(row['image_url'], caption=f"Top {i+1}: {row['sim']:.1%}")
-                if cols[i+1].button(f"Chọn mẫu {i+1}", key=f"b_{idx}"):
-                    st.session_state['sel'] = row.to_dict()
+                with cols[i+1]:
+                    st.image(row['image_url'], caption=f"Match: {row['sim']:.1%}", use_container_width=True)
+                    if st.button(f"SELECT TOP {i+1}", key=f"btn_{idx}", use_container_width=True):
+                        st.session_state['sel'] = row.to_dict()
 
             best = st.session_state.get('sel', top_3.iloc[0].to_dict())
-            st.info(f"Đang đối soát: **{best['file_name']}**")
+            st.success(f"**Reference Active:** {best['file_name']}")
             
-            sel_size = st.selectbox("Chọn Size:", list(target['all_specs'].keys()))
+            # Comparison Workspace
+            st.divider()
+            c1, c2 = st.columns([1, 4])
+            with c1:
+                sel_size = st.selectbox("Select Target Size:", list(target['all_specs'].keys()))
+            
             spec_audit = target['all_specs'][sel_size]
             spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values())[0])
             
@@ -167,15 +177,27 @@ if file_audit:
                 if rv == 0:
                     for k, val in ref_map.items():
                         if k_n in k or k in k_n: rv = val; break
-                report.append({"Thông số": d, "Thực tế": v, "Mẫu kho": rv, "Lệch": round(v - rv, 3), "Kết quả": "✅ OK" if abs(v-rv) < 0.2 else "❌ Lệch"})
+                diff = round(v - rv, 3)
+                report.append({
+                    "POM Description": d, 
+                    "Audit Value": v, 
+                    "Repo Value": rv, 
+                    "Deviation": diff, 
+                    "Status": "✅ PASS" if abs(v-rv) < 0.2 else "❌ FAIL"
+                })
             
             df_rep = pd.DataFrame(report)
-            st.table(df_rep)
+            st.dataframe(df_rep, use_container_width=True, hide_index=True)
+            
+            # Export Operations
             towrite = io.BytesIO()
             df_rep.to_excel(towrite, index=False, engine='xlsxwriter')
-            st.download_button("📥 Xuất báo cáo Excel", data=towrite.getvalue(), file_name=f"Report_{file_audit.name}.xlsx")
             
-            if st.button("Làm mới phiên quét"):
-                st.session_state['reset_key'] += 1
-                if 'sel' in st.session_state: del st.session_state['sel']
-                st.rerun()
+            col_ex1, col_ex2 = st.columns(2)
+            with col_ex1:
+                st.download_button("📥 DOWNLOAD XLS REPORT", data=towrite.getvalue(), file_name=f"Audit_Report_{file_audit.name}.xlsx", use_container_width=True)
+            with col_ex2:
+                if st.button("CLEAR SESSION", use_container_width=True):
+                    st.session_state['reset_key'] += 1
+                    if 'sel' in st.session_state: del st.session_state['sel']
+                    st.rerun()
