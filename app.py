@@ -46,7 +46,7 @@ def extract_pdf_multi_size(file):
     try:
         file.seek(0); pdf_content = file.read()
 
-        # ===== Detect CUSTOMER (Reimant hay không) =====
+        # ===== Detect CUSTOMER =====
         txt_all = ""
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for p in pdf.pages[:2]:
@@ -59,10 +59,11 @@ def extract_pdf_multi_size(file):
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         doc.close()
 
-        # ===== Read table =====
+        # ===== Read ALL tables =====
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
+
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
                     if df.empty or len(df.columns) < 2:
@@ -71,20 +72,17 @@ def extract_pdf_multi_size(file):
                     desc_col = -1
                     size_cols = {}
 
-                    # ===== Detect header =====
+                    # ===== Scan header trong bảng này =====
                     for r_idx in range(min(10, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
 
                         for i, v in enumerate(row):
-                            # ===== KEY FIX =====
                             if customer == "REIMANT":
                                 if "POM NAME" in v:
                                     desc_col = i
-                                    break
                             else:
                                 if "DESCRIPTION" in v or "POM" in v:
                                     desc_col = i
-                                    break
 
                         for i, v in enumerate(row):
                             if i == desc_col or not v:
@@ -94,11 +92,10 @@ def extract_pdf_multi_size(file):
                             if v.isdigit() or v in ["XS","S","M","L","XL","2XL","3XL"]:
                                 size_cols[i] = v
 
-                        if desc_col != -1 and size_cols:
-                            break
+                    # ❗ KHÔNG break nữa → giữ để quét hết bảng
 
-                    # ===== Extract data =====
-                    if desc_col != -1:
+                    # ===== Extract toàn bộ dòng =====
+                    if desc_col != -1 and size_cols:
                         for s_col, s_name in size_cols.items():
                             if s_name not in all_specs:
                                 all_specs[s_name] = {}
@@ -106,16 +103,12 @@ def extract_pdf_multi_size(file):
                             for d_idx in range(len(df)):
                                 raw_desc = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
 
-                                # ===== CLEAN TEXT =====
-                                desc = re.sub(r'^\d+[\.\-\)]*\s*', '', raw_desc)  # bỏ STT
+                                desc = re.sub(r'^\d+[\.\-\)]*\s*', '', raw_desc)
                                 desc = re.sub(r'\s+', ' ', desc).strip()
 
-                                # bỏ dòng header / rác
                                 if len(desc) < 3:
                                     continue
                                 if desc.upper() in ["DESCRIPTION", "POM NAME"]:
-                                    continue
-                                if desc.isupper() and len(desc.split()) < 3:
                                     continue
 
                                 val = parse_val(df.iloc[d_idx, s_col])
