@@ -63,57 +63,67 @@ def get_image_vector(img_bytes):
     with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
 
 # ================= 3. TRÍCH XUẤT PDF =================
-def extract_pdf_multi_size(file):
+def extract_pdf_smart_scan(file):
     all_specs, img_bytes = {}, None
     try:
         file.seek(0); pdf_content = file.read()
         doc = fitz.open(stream=pdf_content, filetype="pdf")
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
-        # Kiểm tra xem có phải hàng Reitmans không qua text trong trang đầu
-        is_reitmans = "REITMANS" in doc.load_page(0).get_text().upper()
+        
+        # 1. TÌM TRANG THÔNG SỐ (Bất kể tên là gì)
+        target_pages = []
+        for i in range(len(doc)):
+            text = doc[i].get_text().upper()
+            # Danh sách từ khóa mở rộng (Càng nhiều càng tốt)
+            keywords = ["POM", "MEASUREMENT", "SPEC", "DIMENSION", "SIZE CHART", "TOLERANCE", "WAIST", "INSEAM"]
+            if any(k in text for k in keywords):
+                target_pages.append(i)
         doc.close()
 
+        # 2. QUÉT NHANH
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
-            for page in pdf.pages:
-                tables = page.extract_tables()
+            for p_idx in target_pages:
+                page = pdf.pages[p_idx]
+                # Cấu hình quét bảng linh hoạt cho cả bảng có khung và không khung
+                tables = page.extract_tables(table_settings={
+                    "vertical_strategy": "text", 
+                    "horizontal_strategy": "text",
+                    "snap_tolerance": 5, # Tăng độ nhạy để gom các chữ gần nhau
+                })
+                
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
-                    if df.empty or len(df.columns) < 2: continue
+                    if df.empty or len(df.columns) < 3: continue
                     
+                    # Tự động nhận diện cột Tên thông số và cột Size
                     desc_col, size_cols = -1, {}
-                    for r_idx in range(min(15, len(df))): # Quét sâu hơn 1 chút để tìm header
+                    for r_idx in range(min(15, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         
-                        # --- CHỖ NÀY QUAN TRỌNG: ƯU TIÊN POM NAME CHO REITMANS ---
                         for i, v in enumerate(row):
-                            if "POM NAME" in v: # Ưu tiên hàng đầu
-                                desc_col = i
-                                break
-                            if desc_col == -1 and ("DESCRIPTION" in v or "POM" == v): 
-                                desc_col = i
+                            # Tìm cột chứa tên vị trí đo
+                            if any(x in v for x in ["POM", "DESCRIPTION", "NAME", "POSITION"]):
+                                desc_col = i; break
                         
-                        # Tìm các cột Size (24, 25, 26... hoặc S, M, L)
                         for i, v in enumerate(row):
                             if i == desc_col or not v: continue
-                            if any(x in v for x in ["TOL", "+/-", "CODE", "PLACEMENT"]): continue
-                            # Reitmans thường dùng size số: 24, 26, 28...
-                            if v.isdigit() or any(s == v for s in ["S","M","L","XL","2XL"]):
-                                size_cols[i] = v
-                        
+                            # Tìm các cột Size (Số hoặc Chữ)
+                            if v.isdigit() or v in ["XS","S","M","L","XL","XXL","3XL"]:
+                                if not any(x in v for x in ["TOL", "+/-", "DATE"]):
+                                    size_cols[i] = v
                         if desc_col != -1 and size_cols: break
                     
                     if desc_col != -1:
                         for s_col, s_name in size_cols.items():
                             if s_name not in all_specs: all_specs[s_name] = {}
                             for d_idx in range(len(df)):
-                                # Lấy nội dung ở cột POM NAME / Description
-                                full_desc = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
-                                
-                                # Loại bỏ dòng trống hoặc dòng hướng dẫn (Ref:, Related:, Master:)
-                                if len(full_desc) > 3 and not any(k in full_desc.upper() for k in ["REF:", "MASTER:", "RELATED:", "POM NAME"]):
+                                pom = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
+                                # Chỉ lấy các dòng có tên thực tế, bỏ qua dòng tiêu đề HOA TOÀN BỘ của khách
+                                if len(pom) > 3 and not (pom.isupper() and len(pom) > 25):
                                     val = parse_val(df.iloc[d_idx, s_col])
                                     if val > 0:
-                                        all_specs[s_name][full_desc.upper()] = val
+                                        all_specs[s_name][pom.upper()] = val
+                                        
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
