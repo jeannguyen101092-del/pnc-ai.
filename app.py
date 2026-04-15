@@ -15,7 +15,15 @@ supabase = create_client(URL, KEY)
 
 st.set_page_config(layout="wide", page_title="AI Fashion Auditor V96 Gold", page_icon="👖")
 
-# ================= 2. HÀM AI & XỬ LÝ SỐ ĐO SIÊU CHÍNH XÁC =================
+# CSS làm đẹp giao diện
+st.markdown("""
+    <style>
+    .stMetric { background-color: #ffffff; padding: 15px; border: 1px solid #e6e9ef; border-radius: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
+    thead th { background-color: #f8f9fa !important; color: #333 !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# ================= 2. MODEL AI & XỬ LÝ SỐ ĐO =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -23,7 +31,6 @@ def load_model():
 model_ai = load_model()
 
 def parse_val(t):
-    """Đọc đúng số lẻ như 0.2500 hoặc 40.7500"""
     try:
         if t is None or str(t).strip() == "": return 0
         txt = str(t).replace(',', '.').replace('"', '').strip().lower()
@@ -36,13 +43,13 @@ def parse_val(t):
         return eval(v_str) if '/' in v_str else float(v_str)
     except: return 0
 
-def get_vector(img_bytes):
+def get_image_vector(img_bytes):
     img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
     tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), 
                              transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
     with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().tolist()
 
-# ================= 3. LOGIC QUÉT BẢNG: ƯU TIÊN TÊN VỊ TRÍ (DESCRIPTION) =================
+# ================= 3. QUÉT PDF: ƯU TIÊN TÊN VỊ TRÍ (CHỮ) =================
 def extract_pdf_multi_size(file):
     all_specs, img_bytes, customer = {}, None, "UNKNOWN"
     try:
@@ -59,18 +66,15 @@ def extract_pdf_multi_size(file):
                     if df.empty or len(df.columns) < 2: continue
                     
                     n_col, size_cols = -1, {}
-                    # Bước 1: Dò tìm cột Tên vị trí (Chỉ lấy cột có chữ)
                     for r_idx in range(min(15, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         if n_col == -1:
                             for i, v in enumerate(row):
-                                if any(x in v for x in ["DESCRIPTION", "POSITION", "POM NAME", "MEASUREMENT NAME"]):
-                                    # Kiểm tra xem cột này có chứa chữ ở dòng dưới không
+                                if any(x in v for x in ["DESCRIPTION", "POSITION", "POM NAME", "POINT OF"]):
                                     test_val = str(df.iloc[min(r_idx+1, len(df)-1), i])
                                     if not test_val.replace('.','').isdigit():
                                         n_col = i; break
                         
-                        # Bước 2: Tìm cột Size (Loại bỏ cột No., Tol.)
                         for i, v in enumerate(row):
                             if i == n_col or not v: continue
                             if any(x in v for x in ["TOL", "+/-", "NO.", "STT"]): continue
@@ -78,20 +82,47 @@ def extract_pdf_multi_size(file):
                                 size_cols[i] = v
                         if n_col != -1 and size_cols: break
                     
-                    # Bước 3: Đổ dữ liệu (Bỏ qua mã số, chỉ lấy tên vị trí bằng chữ)
                     if n_col != -1:
                         for s_col, s_name in size_cols.items():
                             if s_name not in all_specs: all_specs[s_name] = {}
                             for d_idx in range(len(df)):
                                 pom_raw = str(df.iloc[d_idx, n_col]).replace('\n',' ').strip()
-                                # Chỉ lấy nếu tên vị trí chứa ít nhất 1 ký tự chữ cái (loại bỏ mã W001...)
                                 if len(pom_raw) > 2 and re.search('[a-zA-Z]', pom_raw):
                                     val = parse_val(df.iloc[d_idx, s_col])
                                     if val > 0: all_specs[s_name][pom_raw.upper()] = val
         return {"all_specs": all_specs, "img": img_bytes, "customer": customer}
     except: return None
 
-# ================= 4. GIAO DIỆN CHÍNH & ĐỐI SOÁT =================
+# ================= 4. SIDEBAR QUẢN LÝ KHO =================
+with st.sidebar:
+    st.header("🏢 QUẢN LÝ KHO MẪU")
+    # Hiển thị số lượng trong kho
+    try:
+        res_count = supabase.table("ai_data").select("id", count="exact").execute()
+        st.metric("Tổng số file trong kho", f"{res_count.count or 0} mẫu")
+    except:
+        st.write("Đang kết nối database...")
+    
+    st.divider()
+    st.subheader("🚀 Nạp mẫu mới")
+    new_files = st.file_uploader("Upload Techpack gốc", accept_multiple_files=True)
+    
+    if new_files and st.button("XÁC NHẬN NẠP KHO"):
+        for f in new_files:
+            data = extract_pdf_multi_size(f)
+            if data and data['all_specs']:
+                vec = get_image_vector(data['img'])
+                path = f"lib_{re.sub(r'[^a-zA-Z0-9]', '_', f.name)}.png"
+                supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
+                supabase.table("ai_data").insert({
+                    "file_name": f.name, "vector": vec, 
+                    "spec_json": data['all_specs'],
+                    "image_url": supabase.storage.from_(BUCKET).get_public_url(path),
+                    "customer_name": data['customer']
+                }).execute()
+        st.success("Đã nạp kho thành công!"); st.rerun()
+
+# ================= 5. ĐỐI SOÁT CHI TIẾT =================
 st.title("🔍 AI SMART AUDITOR - V96 GOLD")
 file_audit = st.file_uploader("📤 Upload file PDF Audit", type="pdf")
 
@@ -100,45 +131,40 @@ if file_audit:
         target = extract_pdf_multi_size(file_audit)
     
     if target and target["all_specs"]:
-        # 1. Tìm mẫu khớp nhất
         res = supabase.table("ai_data").select("*").execute()
         if res.data:
             df_db = pd.DataFrame(res.data)
-            t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
+            t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             best = df_db.sort_values('sim', ascending=False).iloc[0]
             
-            # 2. Hiển thị ảnh & Thông tin
             st.image([target['img'], best['image_url']], width=350, caption=["Audit Hiện Tại", f"Mẫu Gốc Khớp {best['sim']*100:.1f}%"])
             
-            # 3. Đối soát chi tiết (SMART MATCHING)
             st.divider()
             audit_all, db_all = target['all_specs'], best['spec_json']
             sel_size = st.selectbox("Chọn Size đối soát:", list(audit_all.keys()))
             
             if sel_size in audit_all:
                 spec_audit = audit_all[sel_size]
-                # So khớp size mờ để lấy dữ liệu từ DB
-                sz_match = process.extractOne(sel_size, db_all.keys(), scorer=fuzz.Ratio)
-                spec_ref = db_all.get(sz_match[0], {}) if sz_match else {}
+                # Fix lấy tên size khớp nhất
+                sz_match_res = process.extractOne(sel_size, db_all.keys(), scorer=fuzz.Ratio)
+                db_sz_key = sz_match_res[0] if sz_match_res else None
+                spec_ref = db_all.get(db_sz_key, {}) if db_sz_key else {}
                 
                 report = []
                 for pom_audit, v_audit in spec_audit.items():
-                    # So khớp Tên Vị Trí mờ (Waist Band vs Waistband)
-                    match_res = process.extractOne(pom_audit, spec_ref.keys(), scorer=fuzz.TokenSortRatio)
-                    v_ref = spec_ref.get(match_res[0], 0) if match_res and match_res[1] > 80 else 0
+                    # Fix lấy tên POM khớp nhất
+                    pm_match_res = process.extractOne(pom_audit, spec_ref.keys(), scorer=fuzz.TokenSortRatio)
+                    db_pm_key = pm_match_res[0] if pm_match_res and pm_match_res[1] > 80 else None
+                    v_ref = spec_ref.get(db_pm_key, 0) if db_pm_key else 0
                     
                     diff = round(v_audit - v_ref, 4)
                     status = "✅ OK" if abs(diff) < 0.0001 else f"❌ LỆCH ({diff:+.4f})"
-                    
                     report.append({"Vị trí (POM)": pom_audit, "Audit": v_audit, "Gốc": v_ref, "Lệch": diff, "Kết quả": status})
                 
                 st.table(pd.DataFrame(report))
                 
-                # --- XUẤT EXCEL ---
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     pd.DataFrame(report).to_excel(writer, index=False, sheet_name='Audit')
                 st.download_button("📥 TẢI BÁO CÁO EXCEL", output.getvalue(), f"Audit_{sel_size}.xlsx")
-    else:
-        st.error("Không tìm thấy bảng thông số trong PDF này. Vui lòng kiểm tra lại trang bảng biểu.")
