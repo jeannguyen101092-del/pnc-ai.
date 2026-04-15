@@ -40,13 +40,12 @@ def get_image_vector(img_bytes):
     tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
     with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
 
-# ================= 3. FIX LỖI NHẬN DIỆN PDF =================
+# ================= 3. FIX PDF =================
 def extract_pdf_multi_size(file):
     all_specs, img_bytes, customer = {}, None, "UNKNOWN"
     try:
         file.seek(0); pdf_content = file.read()
 
-        # ===== Detect CUSTOMER =====
         txt_all = ""
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for p in pdf.pages[:2]:
@@ -54,16 +53,13 @@ def extract_pdf_multi_size(file):
         if "REIMANT" in txt_all.upper():
             customer = "REIMANT"
 
-        # ===== Lấy ảnh =====
         doc = fitz.open(stream=pdf_content, filetype="pdf")
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
         doc.close()
 
-        # ===== Read ALL tables =====
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
-
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
                     if df.empty or len(df.columns) < 2:
@@ -72,7 +68,6 @@ def extract_pdf_multi_size(file):
                     desc_col = -1
                     size_cols = {}
 
-                    # ===== Scan header trong bảng này =====
                     for r_idx in range(min(10, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
 
@@ -92,9 +87,6 @@ def extract_pdf_multi_size(file):
                             if v.isdigit() or v in ["XS","S","M","L","XL","2XL","3XL"]:
                                 size_cols[i] = v
 
-                    # ❗ KHÔNG break nữa → giữ để quét hết bảng
-
-                    # ===== Extract toàn bộ dòng =====
                     if desc_col != -1 and size_cols:
                         for s_col, s_name in size_cols.items():
                             if s_name not in all_specs:
@@ -122,10 +114,9 @@ def extract_pdf_multi_size(file):
         return None
 
 
-# ================= 4. GIAO DIỆN =================
+# ================= 4. UI =================
 with st.sidebar:
     st.header("🏢 QUẢN LÝ KHO")
-    # Hiển thị số lượng mẫu hiện có
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
     count = res_count.count if res_count.count else 0
     st.metric("Số lượng mẫu trong kho", f"{count} mẫu")
@@ -138,8 +129,10 @@ with st.sidebar:
                 path = f"lib_{re.sub(r'\W+', '', f.name)}.png"
                 supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
                 supabase.table("ai_data").insert({
-                    "file_name": f.name, "vector": get_image_vector(data['img']),
-                    "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                    "file_name": f.name,
+                    "vector": get_image_vector(data['img']),
+                    "spec_json": data['all_specs'],
+                    "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                 }).execute()
         st.success("Đã nạp!"); st.rerun()
 
@@ -149,7 +142,6 @@ file_audit = st.file_uploader("📤 Upload PDF Audit", type="pdf")
 if file_audit:
     target = extract_pdf_multi_size(file_audit)
     if target and target["all_specs"]:
-        # So sánh với DB
         res = supabase.table("ai_data").select("*").execute()
         if res.data:
             df_db = pd.DataFrame(res.data)
@@ -157,58 +149,52 @@ if file_audit:
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             best = df_db.sort_values('sim', ascending=False).iloc[0]
             
-            # Hiển thị ảnh
             c1, c2 = st.columns(2)
             c1.image(target['img'], caption="File Hiện Tại", width=300)
             c2.image(best['image_url'], caption=f"Mẫu Khớp Nhất (Sim: {best['sim']:.1%})", width=300)
             
-            # Đối soát
             sel_size = st.selectbox("Chọn Size:", list(target['all_specs'].keys()))
             spec_audit = target['all_specs'][sel_size]
             spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values())[0])
             
             report = []
-          # ===== normalize key =====
-def norm_key(x):
-    x = str(x).lower().strip()
-    x = re.sub(r'\(.*?\)', '', x)
-    x = re.sub(r'[^a-z0-9 ]', '', x)
-    x = re.sub(r'\s+', ' ', x)
-    return x
 
-# build map normalized cho DB
-ref_map = {norm_key(k): v for k, v in spec_ref.items()}
+            # ===== normalize =====
+            def norm_key(x):
+                x = str(x).lower().strip()
+                x = re.sub(r'\(.*?\)', '', x)
+                x = re.sub(r'[^a-z0-9 ]', '', x)
+                x = re.sub(r'\s+', ' ', x)
+                return x
 
-# ===== loop compare =====
-for pom, val in spec_audit.items():
-    k_norm = norm_key(pom)
+            ref_map = {norm_key(k): v for k, v in spec_ref.items()}
 
-    ref_val = ref_map.get(k_norm, 0)
+            for pom, val in spec_audit.items():
+                k_norm = norm_key(pom)
 
-    # fuzzy match nhẹ
-    if ref_val == 0:
-        for k, v in ref_map.items():
-            if k_norm in k or k in k_norm:
-                ref_val = v
-                break
+                ref_val = ref_map.get(k_norm, 0)
 
-    diff = round(val - ref_val, 3)
+                if ref_val == 0:
+                    for k, v in ref_map.items():
+                        if k_norm in k or k in k_norm:
+                            ref_val = v
+                            break
 
-    report.append({
-        "Thông số": pom,
-        "Thực tế": val,
-        "Mẫu kho": ref_val,
-        "Lệch": diff,
-        "Kết quả": "✅ OK" if abs(diff) < 0.2 else "❌ Lệch"
-    })
+                diff = round(val - ref_val, 3)
+
+                report.append({
+                    "Thông số": pom,
+                    "Thực tế": val,
+                    "Mẫu kho": ref_val,
+                    "Lệch": diff,
+                    "Kết quả": "✅ OK" if abs(diff) < 0.2 else "❌ Lệch"
+                })
             
             df_rep = pd.DataFrame(report)
             st.table(df_rep)
             
-            # Nút xuất Excel
             towrite = io.BytesIO()
             df_rep.to_excel(towrite, index=False, engine='xlsxwriter')
-            st.download_button(label="📥 Xuất báo cáo Excel", data=towrite.getvalue(), file_name="report_audit.xlsx")
+            st.download_button("📥 Xuất báo cáo Excel", data=towrite.getvalue(), file_name="report_audit.xlsx")
     else:
-        st.warning("⚠️ Không tìm thấy bảng thông số. Hãy kiểm tra lại cấu hình cột trong file PDF.")
-
+        st.warning("⚠️ Không tìm thấy bảng thông số.")
