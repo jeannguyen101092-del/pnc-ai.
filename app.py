@@ -1,24 +1,34 @@
 import streamlit as st
 import io, fitz, pdfplumber, re, pandas as pd, numpy as np
-import torch, hashlib, base64
+import torch, hashlib
 from PIL import Image
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
+import os
 
-# ================= 1. CONFIGURATION & EMBEDDED LOGO =================
-# Mã hóa Logo PPJ Group chuẩn (Dùng mã này để không bao giờ bị lỗi hình vỡ)
-PPJ_LOGO_DATA = "iVBORw0KGgoAAAANSUhEUgAAAMgAAABkCAYAAADD8S7fAAAABGdBTUEAALGPC/xhBQAAACBjSFJNAAB6JgAAgIQAAPoAAACA6AAAdTAAAOpgAAA6mAAAF3CculE8AAAACXBIWXMAAAsTAAALEwEAmpwYAAABWWlUWHRYTUw6Y29tLmFkb2JlLnhtcAAAAAAAPHg6eG1wbWV0YSB4bWxuczp4PSJhZG9iZTpuczptZXRhLyIgeDp4bXB0az0iQWRvYmUgWE1QIENvcmUgNS42LWMxNDAgNzkuMTYwNDUxLCAyMDE3LzA1LzA2LTAxOjA4OjIxICAgICAgICAiPiA8cmRmOlJERiB4bWxuczpyZGY9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkvMDIvMjItcmRmLXN5bnRheC1ucyMiPiA8cmRmOkRlc2NyaXB0aW9uIHJkZjphYm91dD0iIiB4bWxuczp4bXBNTT0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL21tLyIgeG1sbnM6c3RSZWY9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9zQmFzZToic3RSZWYjIiB4bWxuczp4bXA9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC8iIHhtcE1NOkRvY3VtZW50SUQ9InhtcC5kaWQ6MTI5RDU0NDI5RDREMTFFQUIyOUI4Rjg3QkY0NUEzMEQiIHhtcE1NOkluc3RhbmNlSUQ9InhtcC5paWQ6MTI5RDU0NDE5RDREMTFFQUIyOUI4Rjg3QkY0NUEzMEQiIHhtcHA6Q3JlYXRvclRvb2w9IkFkb2JlIFBob3Rvc2hvcCBDQyAyMDE4IChXaW5kb3dzKSI+IDx4bXBNTTpEZXJpdmVkRnJvbSBzdFJlZjppbnN0YW5jZUlEPSJ4bXAuaWlkOkVFMUMzRjQ5OUMyQzExRUFBRkEzRDE5MTU1NTBGMzE3IiBzdFJlZjpkb2N1bWVudElEPSJ4bXAuZGlkOkVFMUMzRjRBOUMyQzExRUFBRkEzRDE5MTU1NTBGMzE3Ii8+IDwvcmRmOkRlc2NyaXB0aW9uPiA8L3JkZjpSREY+IDwveDp4bXBtZXRhPiAgIDx0ZXh0Pgo8dHNwYW4+UEJKIEdST1VQPC90c3Bhbj4KPC90ZXh0Pgo="
+# ================= 1. CONFIGURATION =================
+# Link dự phòng nếu bạn chưa up file logo.png lên GitHub
+BACKUP_LOGO = "https://githubusercontent.com" 
 
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
+# Cấu hình trang phải nằm ở dòng đầu tiên
 st.set_page_config(layout="wide", page_title="PPJ GROUP | AI Auditor Pro", page_icon="👔")
 
 if 'reset_key' not in st.session_state:
     st.session_state['reset_key'] = 0
+
+# Hàm hiển thị Logo thông minh
+def display_logo(width=200):
+    if os.path.exists("logo.png"):
+        st.image("logo.png", width=width)
+    else:
+        # Nếu chưa có file logo.png trên GitHub, hiển thị chữ PPJ tạm thời
+        st.markdown(f"<h1 style='color: #1E3A8A;'>PPJ GROUP</h1>", unsafe_allow_html=True)
 
 # ================= 2. AI CORE ENGINE =================
 @st.cache_resource
@@ -99,28 +109,26 @@ def extract_pdf_multi_size(file_content):
         return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reit}
     except: return None
 
-# ================= 4. PREMIUM UI =================
+# ================= 4. UI PPJ GROUP =================
 with st.sidebar:
-    # HIỂN THỊ LOGO TRỰC TIẾP (AN TOÀN 100%)
-    st.image(f"data:image/png;base64,{PPJ_LOGO_DATA}", use_container_width=True)
+    display_logo(width=220)
     st.markdown("---")
     st.title("📂 MASTER REPOSITORY")
     
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
     count = res_count.count or 0
-    st.metric("Total Synchronized Models", f"{count} SKUs")
+    st.metric("Total Synchronized SKUs", f"{count} Models")
     
-    # Storage Analytics (Dựa trên 190 SKUs của bạn)
     used_mb = (count * 0.15)
     percent = min((used_mb / 1024) * 100, 100.0)
-    st.write(f"💾 **Cloud Storage Status:** {used_mb:.1f}MB / 1GB")
+    st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1GB")
     st.progress(percent / 100)
 
     st.divider()
     st.subheader("📥 Data Ingestion")
     new_files = st.file_uploader("Upload Tech-Packs (Bulk)", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
     if new_files and st.button("SYNCHRONIZE DATABASE", use_container_width=True):
-        with st.spinner("AI Syncing..."):
+        with st.spinner("AI Processing..."):
             for f in new_files:
                 c = f.read(); h = get_file_hash(c); data = extract_pdf_multi_size(c)
                 if data and data['all_specs']:
@@ -133,13 +141,13 @@ with st.sidebar:
         st.session_state['reset_key'] += 1
         st.rerun()
 
-# HEADER TRANG CHÍNH CÓ LOGO
+# Header chính
 h_col1, h_col2 = st.columns([1, 4])
 with h_col1:
-    st.image(f"data:image/png;base64,{PPJ_LOGO_DATA}", width=120)
+    display_logo(width=120)
 with h_col2:
-    st.title("PPJ GROUP - AI SMART AUDITOR PRO")
-    st.caption("AI-Powered Quality Assurance & Technical Audit Dashboard")
+    st.title("AI SMART AUDITOR PRO")
+    st.markdown("*Premium Technical Audit System for PPJ Group*")
 
 st.markdown("---")
 
@@ -156,8 +164,7 @@ if file_audit:
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
             
-            st.subheader(f"🎯 AI Best Matches (Mode: {'REITMANS' if target['is_reit'] else 'General'})")
-            
+            st.subheader(f"🎯 AI Best Matches")
             cols = st.columns(4)
             with cols[0]:
                 st.image(target['img'], caption="SOURCE FILE", use_container_width=True)
@@ -169,7 +176,7 @@ if file_audit:
                         st.session_state['sel'] = row.to_dict()
 
             best = st.session_state.get('sel', top_3.iloc[0].to_dict())
-            st.success(f"**ACTIVE REFERENCE:** {best['file_name']}")
+            st.success(f"**REFERENCE SKU:** {best['file_name']}")
             
             st.divider()
             sel_size = st.selectbox("Select Target Size:", list(target['all_specs'].keys()))
@@ -185,18 +192,16 @@ if file_audit:
                 if rv == 0:
                     for k, val in ref_map.items():
                         if k_n in k or k in k_n: rv = val; break
-                diff = round(v - rv, 3)
-                report.append({"POM Description": d, "Audit Value": v, "Repo Value": rv, "Deviation": diff, "Status": "✅ PASS" if abs(v-rv) < 0.2 else "❌ FAIL"})
+                report.append({"POM Description": d, "Audit": v, "Repo": rv, "Diff": round(v - rv, 3), "Status": "✅ PASS" if abs(v-rv) < 0.2 else "❌ FAIL"})
             
-            st.dataframe(pd.DataFrame(report), use_container_width=True, hide_index=True)
+            st.table(pd.DataFrame(report))
             
+            # Xuất Excel
             towrite = io.BytesIO()
             pd.DataFrame(report).to_excel(towrite, index=False, engine='xlsxwriter')
-            col_ex1, col_ex2 = st.columns(2)
-            with col_ex1:
-                st.download_button("📥 DOWNLOAD REPORT", data=towrite.getvalue(), file_name=f"PPJ_Audit_Report.xlsx", use_container_width=True)
-            with col_ex2:
-                if st.button("RESET SESSION", use_container_width=True):
-                    st.session_state['reset_key'] += 1
-                    if 'sel' in st.session_state: del st.session_state['sel']
-                    st.rerun()
+            st.download_button("📥 DOWNLOAD XLS", data=towrite.getvalue(), file_name=f"Audit_{file_audit.name}.xlsx")
+            
+            if st.button("CLEAR SESSION"):
+                st.session_state['reset_key'] += 1
+                if 'sel' in st.session_state: del st.session_state['sel']
+                st.rerun()
