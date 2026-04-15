@@ -1,15 +1,16 @@
 import streamlit as st
 import io, fitz, pdfplumber, re, pandas as pd, numpy as np
-import torch, hashlib
+import torch, hashlib, base64
 from PIL import Image
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
-# ================= 1. CONFIGURATION =================
-# MÃ HÓA LOGO PPJ GROUP TRỰC TIẾP (BASE64) - ĐẢM BẢO HIỂN THỊ 100%
-PPJ_LOGO_BASE64 = "https://imgur.com" 
+# ================= 1. CONFIGURATION & LOGO =================
+# Đây là nơi dán đoạn mã Base64 để hiện Logo PPJ Group
+PPJ_LOGO_B64 = "iVBORw0KGgoAAAANSUhEUgAAAMgAAABkCAYAAADD8S7fAAAABGdBTUEAALGPC/xhBQAAACBjSFJNAAB6JgAAgIQAAPoAAACA6AAAdTAAAOpgAAA6mAAAF3CculE8AAAACXBIWXMAAAsTAAALEwEAmpwYAAABWWlUWHRYTUw6Y29tLmFkb2JlLnhtcAAAAAAAPHg6eG1wbWV0YSB4bWxuczp4PSJhZG9iZTpuczptZXRhLyIgeDp4bXB0az0iQWRvYmUgWE1QIENvcmUgNS42LWMxNDAgNzkuMTYwNDUxLCAyMDE3LzA1LzA2LTAxOjA4OjIxICAgICAgICAiPiA8cmRmOlJERiB4bWxuczpyZGY9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkvMDIvMjItcmRmLXN5bnRheC1ucyMiPiA8cmRmOkRlc2NyaXB0aW9uIHJkZjphYm91dD0iIiB4bWxuczp4bXBNTT0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL21tLyIgeG1sbnM6c3RSZWY9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9zQmFzZToic3RSZWYjIiB4bWxuczp4bXA9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC8iIHhtcE1NOkRvY3VtZW50SUQ9InhtcC5kaWQ6MTI5RDU0NDI5RDREMTFFQUIyOUI4Rjg3QkY0NUEzMEQiIHhtcE1NOkluc3RhbmNlSUQ9InhtcC5paWQ6MTI5RDU0NDE5RDREMTFFQUIyOUI4Rjg3QkY0NUEzMEQiIHhtcHA6Q3JlYXRvclRvb2w9IkFkb2JlIFBob3Rvc2hvcCBDQyAyMDE4IChXaW5kb3dzKSI+IDx4bXBNTTpEZXJpdmVkRnJvbSBzdFJlZjppbnN0YW5jZUlEPSJ4bXAuaWlkOkVFMUMzRjQ5OUMyQzExRUFBRkEzRDE5MTU1NTBGMzE3IiBzdFJlZjpkb2N1bWVudElEPSJ4bXAuZGlkOkVFMUMzRjRBOUMyQzExRUFBRkEzRDE5MTU1NTBGMzE3Ii8+IDwvcmRmOkRlc2NyaXB0aW9uPiA8L3JkZjpSREY+IDwveDp4bXBtZXRhPiAgIDx0ZXh0Pgo8dHNwYW4+UEJKIEdST1VQPC90c3Bhbj4KPC90ZXh0Pgo=" 
 
+# Cấu hình Supabase
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
@@ -52,12 +53,12 @@ def parse_val(t):
 
 # ================= 3. PDF EXTRACTION LOGIC =================
 def extract_pdf_multi_size(file_content):
-    all_specs, img_bytes, is_reitmants = {}, None, False
+    all_specs, img_bytes, is_reit = {}, None, False
     try:
         txt_check = ""
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for p in pdf.pages[:1]: txt_check += (p.extract_text() or "").upper()
-        if "REITMAN" in txt_check: is_reitmants = True
+        if "REITMAN" in txt_check: is_reit = True
 
         doc = fitz.open(stream=file_content, filetype="pdf")
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
@@ -74,8 +75,8 @@ def extract_pdf_multi_size(file_content):
                     for r_idx in range(min(15, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         for i, v in enumerate(row):
-                            if is_reitmants and "POM NAME" in v: desc_col = i; break
-                            elif not is_reitmants and ("DESCRIPTION" in v or "POM NAME" in v): desc_col = i; break
+                            if is_reit and "POM NAME" in v: desc_col = i; break
+                            elif not is_reit and ("DESCRIPTION" in v or "POM NAME" in v): desc_col = i; break
                         if desc_col != -1: break
                     if desc_col == -1: continue
                     for r_idx in range(min(15, len(df))):
@@ -96,13 +97,13 @@ def extract_pdf_multi_size(file_content):
                             if temp_data:
                                 if s_name not in all_specs: all_specs[s_name] = {}
                                 all_specs[s_name].update(temp_data)
-        return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reitmants}
+        return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reit}
     except: return None
 
 # ================= 4. PREMIUM UI =================
 with st.sidebar:
-    # HIỂN THỊ LOGO TRỰC TIẾP QUA LINK ỔN ĐỊNH
-    st.image(PPJ_LOGO_BASE64, use_container_width=True)
+    # Hiển thị Logo PPJ Group từ mã nhúng Base64
+    st.markdown(f'<div style="text-align: center;"><img src="data:image/png;base64,{PPJ_LOGO_B64}" width="200"></div>', unsafe_allow_html=True)
     st.markdown("---")
     st.title("📂 MASTER REPOSITORY")
     
@@ -111,14 +112,13 @@ with st.sidebar:
         count = res_count.count or 0
     except:
         count = 0
-        st.error("⚠️ Database Connection Error.")
+        st.error("⚠️ Connection Error. Please check Supabase project.")
 
-    st.metric("Total Synchronized SKUs", f"{count} Models")
+    st.metric("Total Synchronized Models", f"{count} SKUs")
     
-    # Storage Analytics
     used_mb = (count * 0.15)
     percent = min((used_mb / 1024) * 100, 100.0)
-    st.write(f"💾 **Cloud Storage Status:** {used_mb:.1f}MB / 1GB")
+    st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1GB")
     st.progress(percent / 100)
     st.caption(f"Capacity: +{int((1024-used_mb)/0.15)} more SKUs")
 
@@ -126,7 +126,7 @@ with st.sidebar:
     st.subheader("📥 Data Ingestion")
     new_files = st.file_uploader("Upload Tech-Packs (Bulk)", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
     if new_files and st.button("SYNCHRONIZE TO DATABASE", use_container_width=True):
-        with st.spinner("AI Processing..."):
+        with st.spinner("AI Syncing..."):
             for f in new_files:
                 c = f.read(); h = get_file_hash(c); data = extract_pdf_multi_size(c)
                 if data and data['all_specs']:
@@ -140,13 +140,13 @@ with st.sidebar:
         st.success("Database Updated!")
         st.rerun()
 
-# HEADER TRANG CHÍNH CÓ LOGO
-head_col1, head_col2 = st.columns([1, 5])
-with head_col1:
-    st.image(PPJ_LOGO_BASE64, width=100)
-with head_col2:
+# Header trang chính có Logo
+h_col1, h_col2 = st.columns([1, 4])
+with h_col1:
+    st.markdown(f'<img src="data:image/png;base64,{PPJ_LOGO_B64}" width="120">', unsafe_allow_html=True)
+with h_col2:
     st.title("PPJ GROUP - AI SMART AUDITOR PRO")
-    st.caption("AI-Powered Quality Assurance & Technical Audit Dashboard")
+    st.markdown("*AI-Powered Quality Assurance & Technical Audit Dashboard*")
 
 st.markdown("---")
 
@@ -180,7 +180,6 @@ if file_audit:
             
             st.divider()
             sel_size = st.selectbox("Select Target Size:", list(target['all_specs'].keys()))
-            
             spec_audit = target['all_specs'][sel_size]
             spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values())[0])
             
@@ -197,7 +196,7 @@ if file_audit:
                 report.append({"POM Description": d, "Audit Value": v, "Repo Value": rv, "Deviation": diff, "Status": "✅ PASS" if abs(v-rv) < 0.2 else "❌ FAIL"})
             
             df_rep = pd.DataFrame(report)
-            st.dataframe(df_rep, use_container_width=True, hide_index=True)
+            st.table(df_rep)
             
             towrite = io.BytesIO()
             df_rep.to_excel(towrite, index=False, engine='xlsxwriter')
