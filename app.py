@@ -23,14 +23,23 @@ def load_model():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_model()
 
-def classify_garment(specs_dict):
-    """Phân loại thông minh dựa trên từ khóa trong bảng POM"""
-    text = " ".join(specs_dict.keys()).upper()
-    # Ưu tiên nhận diện Quần/Váy dựa trên các vị trí đo đặc thù
-    if any(k in text for k in ["INSEAM", "OUTSEAM", "RISE", "LEG OPENING", "THIGH", "CROTCH"]):
+def classify_garment(specs_dict, file_name=""):
+    # Gộp tất cả thông số và tên file để quét từ khóa
+    text_content = (" ".join(specs_dict.keys()) + " " + file_name).upper()
+    
+    # 1. QUẦN: Quét cực kỹ các từ khóa đặc thù
+    pant_keywords = [
+        "INSEAM", "OUTSEAM", "RISE", "LEG OPENING", "THIGH", 
+        "CROTCH", "KNEE", "WAISTBAND", "PANT", "TROUSER", "SHORT"
+    ]
+    if any(k in text_content for k in pant_keywords):
         return "👖 QUẦN / CHÂN VÁY"
-    if any(k in text for k in ["CHEST", "BUST", "SHOULDER", "SLEEVE", "ARMHOLE"]):
+    
+    # 2. ÁO: 
+    top_keywords = ["BUST", "CHEST", "SHOULDER", "SLEEVE", "ARMHOLE", "NECK", "JACKET", "SHIRT"]
+    if any(k in text_content for k in top_keywords):
         return "👕 ÁO / JACKET"
+        
     return "👗 ĐẦM / KHÁC"
 
 def parse_val(t):
