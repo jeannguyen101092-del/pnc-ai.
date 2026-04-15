@@ -28,17 +28,72 @@ st.markdown("""
 
 # ================= 2. CÔNG CỤ NHẬN DIỆN THÔNG MINH =================
 @st.cache_resource
-def load_model():
-    model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-    return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
-model_ai = load_model()
-
 def smart_detect_category(text, filename=""):
     t = (str(text) + " " + str(filename)).upper()
-    keywords = {"VÁY": ["SKIRT","DRESS"], "QUẦN": ["INSEAM","THIGH","PANT","JEAN"], "ÁO": ["CHEST","BUST","SLEEVE","SHIRT"]}
-    scores = {cat: sum(1 for k in keys if k in t) for cat, keys in keywords.items()}
+
+    # --- CLEAN TEXT ---
+    t = re.sub(r"[^A-Z0-9 ]", " ", t)
+
+    # --- KEYWORDS MỞ RỘNG ---
+    keywords = {
+        "VÁY": [
+            "SKIRT", "DRESS", "GOWN", "FROCK",
+            "MINI SKIRT", "MAXI SKIRT", "ONE PIECE", "ONEPIECE",
+            "VAY", "DAM"
+        ],
+        "QUẦN": [
+            "PANT", "PANTS", "JEAN", "JEANS", "TROUSER", "TROUSERS",
+            "SHORT", "SHORTS", "JOGGER", "LEGGING",
+            "INSEAM", "OUTSEAM", "THIGH", "KNEE", "LEG OPENING",
+            "WAIST", "HIP", "RISE",
+            "QUAN"
+        ],
+        "ÁO": [
+            "SHIRT", "TSHIRT", "T-SHIRT", "TEE",
+            "JACKET", "COAT", "HOODIE", "SWEATER",
+            "BLAZER", "POLO", "TOP",
+            "CHEST", "BUST", "SLEEVE", "SHOULDER",
+            "LENGTH", "CUFF", "COLLAR",
+            "AO"
+        ]
+    }
+
+    # --- WEIGHT (ưu tiên từ khóa quan trọng) ---
+    strong_keywords = {
+        "QUẦN": ["INSEAM", "OUTSEAM", "THIGH", "RISE"],
+        "ÁO": ["CHEST", "BUST", "SLEEVE"],
+        "VÁY": ["DRESS", "SKIRT"]
+    }
+
+    scores = {cat: 0 for cat in keywords}
+
+    # --- TÍNH ĐIỂM ---
+    for cat, keys in keywords.items():
+        for k in keys:
+            if k in t:
+                scores[cat] += 1
+
+    # --- BONUS ĐIỂM KEY QUAN TRỌNG ---
+    for cat, keys in strong_keywords.items():
+        for k in keys:
+            if k in t:
+                scores[cat] += 2
+
+    # --- LOGIC ƯU TIÊN NGỮ CẢNH ---
+    # nếu có nhiều từ đo size đặc trưng → override
+    if any(x in t for x in ["INSEAM", "THIGH", "LEG OPENING"]):
+        return "QUẦN"
+    if any(x in t for x in ["CHEST", "BUST", "SLEEVE"]):
+        return "ÁO"
+
+    # --- CHỌN KẾT QUẢ ---
     detected = max(scores, key=scores.get)
-    return detected if scores[detected] > 0 else "KHÁC"
+
+    # --- FALLBACK THÔNG MINH ---
+    if scores[detected] == 0:
+        if "SET" in t or "SUIT" in t:
+            return "BỘ"
+        return "KHÁC"
 
 def parse_val_universal(t):
     try:
@@ -58,46 +113,147 @@ def get_image_vector(img_bytes):
     with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
 
 # ================= 3. TRÍCH XUẤT ĐA SIZE (THE PRO SCANNER) =================
-def extract_pdf_v114(file):
+import re, io, fitz, pdfplumber, pandas as pd
+
+# ================== 1. NHẬN DIỆN BRAND ==================
+def detect_brand(text):
+    t = text.upper()
+    brands = {
+        "LEVI": ["LEVI", "LS&CO"],
+        "NIKE": ["NIKE"],
+        "ADIDAS": ["ADIDAS"],
+        "UNIQLO": ["UNIQLO"],
+        "H&M": ["H&M", "HM"],
+        "ZARA": ["ZARA"],
+    }
+    for b, keys in brands.items():
+        if any(k in t for k in keys):
+            return b
+    return "GENERIC"
+
+
+# ================== 2. CHUẨN HOÁ POM ==================
+def normalize_pom(pom):
+    p = pom.upper().strip()
+
+    mapping = {
+        "WAIST": ["WAIST", "WAISTBAND"],
+        "HIP": ["HIP", "SEAT"],
+        "THIGH": ["THIGH"],
+        "INSEAM": ["INSEAM"],
+        "OUTSEAM": ["OUTSEAM"],
+        "LEG OPENING": ["LEG OPENING", "LEG OPEN"],
+        "FRONT RISE": ["FRONT RISE"],
+        "BACK RISE": ["BACK RISE"],
+        "CHEST": ["CHEST", "BUST"],
+        "LENGTH": ["LENGTH", "BODY LENGTH"],
+        "SLEEVE": ["SLEEVE", "SLEEVE LENGTH"],
+        "SHOULDER": ["SHOULDER"],
+    }
+
+    for std, keys in mapping.items():
+        if any(k in p for k in keys):
+            return std
+    return p
+
+
+# ================== 3. PARSE SIZE ==================
+def clean_size(val):
+    v = str(val).upper().strip()
+    v = re.sub(r"SIZE|-", "", v).strip()
+    if len(v) <= 6:
+        return v
+    return None
+
+
+# ================== 4. TÌM HEADER THÔNG MINH ==================
+def detect_structure(df):
+    n_col = -1
+    size_cols = {}
+
+    for r_idx, row in df.iterrows():
+        row_up = [str(c).upper().strip() for c in row]
+
+        # tìm cột POM
+        for i, v in enumerate(row_up):
+            if any(x in v for x in ["POM", "DESCRIPTION", "SPEC", "MEASUREMENT"]):
+                n_col = i
+                break
+
+        # tìm size
+        for i, v in enumerate(row_up):
+            if i == n_col:
+                continue
+            s = clean_size(v)
+            if s:
+                size_cols[i] = s
+
+        if n_col != -1 and size_cols:
+            return n_col, size_cols
+
+    return -1, {}
+
+
+# ================== 5. CORE EXTRACT ==================
+def extract_pdf_v2(file):
     all_specs, img_bytes, full_text_list = {}, None, []
+
     try:
-        file.seek(0); pdf_content = file.read()
+        file.seek(0)
+        pdf_content = file.read()
+
+        # --- READ PDF ---
         doc = fitz.open(stream=pdf_content, filetype="pdf")
         img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
-        for page in doc: full_text_list.append(str(page.get_text() or ""))
+        for page in doc:
+            full_text_list.append(str(page.get_text() or ""))
         doc.close()
-        full_text = " ".join(full_text_list)
-        category = smart_detect_category(full_text, file.name)
 
+        full_text = " ".join(full_text_list)
+
+        # --- DETECT ---
+        category = smart_detect_category(full_text, file.name)
+        brand = detect_brand(full_text)
+
+        # --- PARSE TABLE ---
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
+
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
-                    n_col, size_cols = -1, {}
-                    for r_idx, row in df.head(15).iterrows():
-                        row_up = [str(c).upper().strip() for c in row]
-                        for i, v in enumerate(row_up):
-                            if any(x in v for x in ["POM DESCRIPTION", "DESCRIPTION", "SPECIFICATION", "POM NAME"]): n_col = i; break
-                        for i, v in enumerate(row_up):
-                            if i == n_col: continue
-                            cl = v.replace("SIZE", "").replace("-", "").strip()
-                            if 0 < len(cl) < 7: # Chấp nhận size số 1, 2, 3 hoặc 28, 30...
-                                size_cols[i] = cl
-                        if n_col != -1 and size_cols: break
-                    
-                    if n_col != -1 and size_cols:
-                        for s_col, s_name in size_cols.items():
-                            if s_name not in all_specs: all_specs[s_name] = {}
-                            for d_idx in range(len(df)):
-                                raw_pom = str(df.iloc[d_idx, n_col]).replace('\n', ' ').strip().upper()
-                                pom_clean = re.sub(r'^[A-Z0-9\.]+\s+', '', raw_pom) # Xóa mã C111, 4.04...
-                                val = parse_val_universal(df.iloc[d_idx, s_col])
-                                if len(pom_clean) > 4 and val > 0 and "DESCRIPTION" not in pom_clean:
-                                    all_specs[s_name][pom_clean] = val
-                if all_specs: break 
-        return {"all_specs": all_specs, "img": img_bytes, "category": category}
-    except Exception: return None
+
+                    n_col, size_cols = detect_structure(df)
+                    if n_col == -1:
+                        continue
+
+                    for s_col, s_name in size_cols.items():
+                        if s_name not in all_specs:
+                            all_specs[s_name] = {}
+
+                        for r in range(len(df)):
+                            raw_pom = str(df.iloc[r, n_col]).strip()
+                            raw_pom = re.sub(r'^[A-Z0-9\.]+\s+', '', raw_pom)
+
+                            pom = normalize_pom(raw_pom)
+                            val = parse_val_universal(df.iloc[r, s_col])
+
+                            if len(pom) > 2 and val > 0:
+                                all_specs[s_name][pom] = val
+
+                if all_specs:
+                    break
+
+        return {
+            "all_specs": all_specs,
+            "img": img_bytes,
+            "category": category,
+            "brand": brand
+        }
+
+    except Exception as e:
+        print("ERROR:", e)
+        return None
 
 # ================= 4. SIDEBAR - QUẢN LÝ KHO =================
 with st.sidebar:
