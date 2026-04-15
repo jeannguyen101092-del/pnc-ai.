@@ -28,26 +28,26 @@ def get_file_hash(file_bytes):
     return hashlib.md5(file_bytes).hexdigest()
 
 def parse_val(t):
-    """Hàm giải mã số đo PDF - Đã cải tiến để tránh lấy nhầm sai số nhỏ"""
     try:
         if t is None or str(t).strip() == "": return 0
         txt = str(t).replace(',', '.').replace('"', '').strip().lower()
-        # Loại bỏ các đơn vị
         txt = re.sub(r'(cm|inch|in|mm|yds|tol)$', '', txt)
-        # Tìm số thập phân hoặc phân số (vd: 1 1/2)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        
         v_str = match[0]
         if ' ' in v_str:
             p = v_str.split()
-            val = float(p[0]) + eval(p[1])
-        else:
-            val = float(eval(v_str)) if '/' in v_str else float(v_str)
-        return val
+            return float(p[0]) + eval(p[1])
+        return float(eval(v_str)) if '/' in v_str else float(v_str)
     except: return 0
 
-# ================= 3. TRÍCH XUẤT PDF (FIXED LOGIC) =================
+def get_image_vector(img_bytes):
+    img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
+    tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
+    with torch.no_grad(): 
+        return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
+
+# ================= 3. TRÍCH XUẤT PDF =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes, customer = {}, None, "UNKNOWN"
     try:
@@ -68,25 +68,17 @@ def extract_pdf_multi_size(file_content):
                     if df.empty or len(df.columns) < 2: continue
 
                     desc_col, size_cols = -1, {}
-                    # 1. Tìm tiêu đề cột
                     for r_idx in range(min(12, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
-                        
-                        # Xác định cột tên thông số
                         for i, v in enumerate(row):
                             if (customer == "REIMANT" and "POM NAME" in v) or ("DESCRIPTION" in v or "POM" in v):
                                 desc_col = i
-                        
-                        # Xác định các cột Size (Bỏ qua cột Tolerance/Sai số)
                         for i, v in enumerate(row):
                             if i == desc_col or not v: continue
-                            # CHẶN CỘT SAI SỐ (Lỗi bạn đang gặp nằm ở đây)
-                            if any(x in v for x in ["TOL", "+/-", "MIN", "MAX", "GRADE", "CODE"]): continue
-                            
-                            if v.isdigit() or v in ["XS","S","M","L","XL","2XL","3XL","4XL"] or len(v) <= 3:
+                            if any(x in v for x in ["TOL", "+/-", "MIN", "MAX", "GRADE"]): continue
+                            if v.isdigit() or v in ["XS","S","M","L","XL","2XL","3XL"]:
                                 size_cols[i] = v
 
-                    # 2. Lấy dữ liệu
                     if desc_col != -1 and size_cols:
                         for s_col, s_name in size_cols.items():
                             if s_name not in all_specs: all_specs[s_name] = {}
@@ -94,17 +86,13 @@ def extract_pdf_multi_size(file_content):
                                 raw_desc = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
                                 desc = re.sub(r'^\d+[\.\-\)]*\s*', '', raw_desc)
                                 desc = re.sub(r'\s+', ' ', desc).strip()
-                                
-                                if len(desc) < 3 or desc.upper() in ["DESCRIPTION", "POM NAME", "SIZE"]: continue
-                                
+                                if len(desc) < 3 or desc.upper() in ["DESCRIPTION", "POM NAME"]: continue
                                 val = parse_val(df.iloc[d_idx, s_col])
-                                # Chỉ lấy nếu giá trị có ý nghĩa (tránh các con số 0.125 của sai số nếu có thể)
-                                if val > 0:
-                                    all_specs[s_name][desc] = val
+                                if val > 0: all_specs[s_name][desc] = val
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
-# ================= 4. GIAO DIỆN =================
+# ================= 4. UI =================
 with st.sidebar:
     st.header("🏢 QUẢN LÝ KHO")
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
@@ -116,7 +104,7 @@ with st.sidebar:
             content = f.read()
             f_hash = get_file_hash(content)
             data = extract_pdf_multi_size(content)
-            if data and data['all_specs']:
+            if data:
                 path = f"lib_{f_hash}.png"
                 supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
                 supabase.table("ai_data").upsert({
@@ -124,7 +112,7 @@ with st.sidebar:
                     "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                 }).execute()
         st.session_state['reset_key'] += 1
-        st.success("Đã cập nhật kho!"); st.rerun()
+        st.success("Đã nạp!"); st.rerun()
 
 st.title("🔍 AI SMART AUDITOR - V96 PRO")
 file_audit = st.file_uploader("📤 Upload PDF Audit", type="pdf", key=f"audit_{st.session_state['reset_key']}")
@@ -133,6 +121,7 @@ if file_audit:
     audit_content = file_audit.read()
     target = extract_pdf_multi_size(audit_content)
     
+    # FIX LỖI TRONG ẢNH: Kiểm tra target có tồn tại không
     if target and target["all_specs"]:
         res = supabase.table("ai_data").select("*").execute()
         if res.data:
@@ -151,14 +140,10 @@ if file_audit:
                     st.session_state['selected_model'] = row.to_dict()
 
             best = st.session_state.get('selected_model', top_3.iloc[0].to_dict())
-            st.info(f"✅ Đối soát với: **{best['file_name']}**")
+            st.write(f"✅ Đang đối soát với: **{best['file_name']}**")
             
-            # Chọn Size
-            available_sizes = list(target['all_specs'].keys())
-            sel_size = st.selectbox("Chọn Size:", available_sizes)
-            
+            sel_size = st.selectbox("Chọn Size:", list(target['all_specs'].keys()))
             spec_audit = target['all_specs'][sel_size]
-            # Lấy size tương ứng trong kho, nếu không có lấy size đầu tiên
             spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values())[0])
             
             def norm(x): return re.sub(r'[^a-z0-9]', '', str(x).lower())
@@ -166,29 +151,22 @@ if file_audit:
             
             report = []
             for pom, val in spec_audit.items():
-                k_n = norm(pom)
-                rv = ref_map.get(k_n, 0)
+                k_n = norm(pom); rv = ref_map.get(k_n, 0)
                 if rv == 0:
                     for k, v in ref_map.items():
                         if k_n in k or k in k_n: rv = v; break
-                
-                diff = round(val - rv, 4)
-                report.append({
-                    "Thông số": pom, 
-                    "Thực tế": val, 
-                    "Mẫu kho": rv, 
-                    "Lệch": diff, 
-                    "Kết quả": "✅ OK" if abs(diff) < 0.0001 else "❌ Lệch"
-                })
+                diff = round(val - rv, 3)
+                report.append({"Thông số": pom, "Thực tế": val, "Mẫu kho": rv, "Lệch": diff, "Kết quả": "✅ OK" if abs(diff) < 0.2 else "❌ Lệch"})
             
             df_rep = pd.DataFrame(report)
             st.table(df_rep)
             
-            # Xuất Excel
             towrite = io.BytesIO()
             df_rep.to_excel(towrite, index=False, engine='xlsxwriter')
             st.download_button("📥 Xuất báo cáo Excel", data=towrite.getvalue(), file_name=f"Report_{file_audit.name}.xlsx")
             
-            if st.button("Xóa phiên làm việc"):
+            if st.button("Xóa và Quét file mới"):
                 st.session_state['reset_key'] += 1
                 st.rerun()
+    else:
+        st.error("⚠️ Không thể trích xuất thông số từ file PDF này. Vui lòng kiểm tra lại định dạng file.")
