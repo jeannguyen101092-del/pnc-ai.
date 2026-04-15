@@ -15,7 +15,7 @@ supabase = create_client(URL, KEY)
 
 st.set_page_config(layout="wide", page_title="AI Fashion Auditor V96 Gold", page_icon="👖")
 
-# CSS làm đẹp giao diện
+# CSS làm đẹp giao diện như trong ảnh của bạn
 st.markdown("""
     <style>
     .stMetric { background-color: #ffffff; padding: 15px; border: 1px solid #e6e9ef; border-radius: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
@@ -49,7 +49,7 @@ def get_image_vector(img_bytes):
                              transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
     with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().tolist()
 
-# ================= 3. QUÉT PDF: LẤY TÊN VỊ TRÍ (POM CHỮ) =================
+# ================= 3. QUÉT PDF: CHỈ LẤY TÊN VỊ TRÍ (POM CHỮ) =================
 def extract_pdf_multi_size(file):
     all_specs, img_bytes, customer = {}, None, "UNKNOWN"
     try:
@@ -70,8 +70,8 @@ def extract_pdf_multi_size(file):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         if n_col == -1:
                             for i, v in enumerate(row):
+                                # Loại bỏ "MEASUREMENT" để không lấy nhầm cột số đo làm tên POM
                                 if any(x in v for x in ["DESCRIPTION", "POSITION", "POM NAME", "POINT OF"]):
-                                    # Kiểm tra dòng dưới phải là chữ mới lấy cột này làm POM
                                     test_val = str(df.iloc[min(r_idx+1, len(df)-1), i])
                                     if not test_val.replace('.','').isdigit():
                                         n_col = i; break
@@ -114,7 +114,7 @@ with st.sidebar:
                     "file_name": f.name, "vector": get_image_vector(data['img']),
                     "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                 }).execute()
-        st.success("Đã nạp kho!"); st.rerun()
+        st.success("Đã nạp kho thành công!"); st.rerun()
 
 # ================= 5. ĐỐI SOÁT CHI TIẾT (FIXED ERROR) =================
 st.title("🔍 AI SMART AUDITOR - V96 GOLD")
@@ -138,15 +138,15 @@ if file_audit:
             audit_all, db_all = target['all_specs'], best['spec_json']
             sel_size = st.selectbox("Chọn Size đối soát:", list(audit_all.keys()))
             
-            # --- FIX LỖI ATTRIBUTEERROR TẠI ĐÂY ---
-            # Lấy giá trị đầu tiên của Tuple từ kết quả extractOne
+            # --- FIX LỖI TẠI ĐÂY ---
+            # Lấy tên Size khớp nhất (truy xuất phần tử đầu tiên của tuple an toàn)
             sz_res = process.extractOne(sel_size, list(db_all.keys()), scorer=fuzz.Ratio)
-            db_sz_key = sz_res[0] if sz_res else None
+            db_sz_key = sz_res[0] if sz_res and sz_res[1] > 60 else None
             spec_ref = db_all.get(db_sz_key, {}) if db_sz_key else {}
             
             report = []
             for pom_audit, v_audit in audit_all[sel_size].items():
-                # Lấy giá trị đầu tiên của Tuple cho POM
+                # Tương tự cho tên POM
                 pm_res = process.extractOne(pom_audit, list(spec_ref.keys()), scorer=fuzz.TokenSortRatio)
                 db_pm_key = pm_res[0] if pm_res and pm_res[1] > 80 else None
                 v_ref = spec_ref.get(db_pm_key, 0) if db_pm_key else 0
