@@ -181,35 +181,51 @@ if file_audit:
             with c2: 
                 st.image(best['image_url'], caption=f"Mẫu gốc khớp {best['sim_score']*100:.1f}%", use_container_width=True)
 
-            # 3. Đối soát Size
-            st.divider()
-            st.subheader("📊 Kết quả đối soát chi tiết")
+           # 3. Đối soát Size
+st.divider()
+st.subheader("📊 Kết quả đối soát chi tiết")
+
+# Lấy danh sách size từ cả 2 nguồn để đối chiếu
+audit_specs = target['all_specs']
+db_specs = best.get('spec_json', {})
+
+audit_sizes = list(audit_specs.keys())
+if audit_sizes:
+    sel_size = st.selectbox("Chọn Size để xem chi tiết:", audit_sizes)
+    
+    # Kiểm tra an toàn xem size có tồn tại trong DB không
+    if sel_size in db_specs:
+        spec_audit = audit_specs[sel_size]
+        spec_ref = db_specs[sel_size]
+        
+        compare_data = []
+        # Duyệt qua các POM của file Audit
+        for pom, val_audit in spec_audit.items():
+            val_ref = spec_ref.get(pom, 0) # Nếu không có POM này trong DB thì mặc định là 0
+            diff = val_audit - val_ref
             
-            audit_sizes = list(target['all_specs'].keys())
-            db_specs = best['spec_json']
+            # Tính toán trạng thái
+            if val_ref == 0:
+                status = "❓ THIẾU TRONG GỐC"
+            else:
+                status = "✅ KHỚP" if abs(diff) < 0.126 else f"❌ LỆCH ({diff:+.2f})"
             
-            # Cho người dùng chọn size muốn xem đối soát
-            sel_size = st.selectbox("Chọn Size để xem chi tiết:", audit_sizes)
-            
-            if sel_size in db_specs:
-                spec_audit = target['all_specs'][sel_size]
-                spec_ref = db_specs[sel_size]
-                
-                compare_data = []
-                for pom, val_audit in spec_audit.items():
-                    # Tìm POM tương ứng trong gốc (fuzzy match đơn giản bằng cách so chuỗi)
-                    val_ref = spec_ref.get(pom, 0)
-                    diff = val_audit - val_ref
-                    status = "✅ KHỚP" if abs(diff) < 0.126 else f"❌ LỆCH ({diff:+.2f})"
-                    compare_data.append({
-                        "POM Name": pom,
-                        "Bản Audit": val_audit,
-                        "Mẫu Gốc": val_ref,
-                        "Chênh lệch": diff,
-                        "Trạng thái": status
-                    })
-                
-                df_compare = pd.DataFrame(compare_data)
+            compare_data.append({
+                "POM Name": pom,
+                "Bản Audit": val_audit,
+                "Mẫu Gốc": val_ref,
+                "Chênh lệch": diff,
+                "Trạng thái": status
+            })
+        
+        if compare_data:
+            df_compare = pd.DataFrame(compare_data)
+            st.table(df_compare)
+        else:
+            st.warning("Không có dữ liệu POM để hiển thị.")
+    else:
+        st.error(f"Cảnh báo: Size '{sel_size}' có trong file Audit nhưng KHÔNG tìm thấy trong file Gốc trên hệ thống.")
+
                 
                 # Highlight các dòng bị lệch
                 def highlight_diff(row):
