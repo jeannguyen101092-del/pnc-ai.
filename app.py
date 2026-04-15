@@ -7,12 +7,15 @@ from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
 # ================= 1. CONFIGURATION =================
+# Đường dẫn logo PPJ Group
+LOGO_URL = "https://ppj-group.com" 
+
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor Pro", page_icon="👔")
+st.set_page_config(layout="wide", page_title="PPJ GROUP | AI Auditor Pro", page_icon="👔")
 
 if 'reset_key' not in st.session_state:
     st.session_state['reset_key'] = 0
@@ -40,14 +43,14 @@ def parse_val(t):
         txt = re.sub(r'(cm|inch|in|mm|yds)$', '', txt)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0]
+        v = match
         if ' ' in v:
             p = v.split()
-            return float(p[0]) + eval(p[1])
+            return float(p) + eval(p)
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION LOGIC =================
+# ================= 3. PDF EXTRACTION (PPJ & REITMANS COMPATIBLE) =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes, is_reitmants = {}, None, False
     try:
@@ -96,25 +99,34 @@ def extract_pdf_multi_size(file_content):
         return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reitmants}
     except: return None
 
-# ================= 4. PREMIUM UI =================
+# ================= 4. PPJ GROUP PREMIUM UI =================
 with st.sidebar:
-    st.title("📂 MASTER DATA")
-    res_count = supabase.table("ai_data").select("id", count="exact").execute()
-    count = res_count.count or 0
-    st.metric("Total Models in Repo", f"{count} SKUs")
+    # HIỂN THỊ LOGO PPJ GROUP
+    st.image(LOGO_URL, use_container_width=True)
+    st.markdown("---")
+    st.title("📂 MASTER REPOSITORY")
+    
+    try:
+        res_count = supabase.table("ai_data").select("id", count="exact").execute()
+        count = res_count.count or 0
+    except:
+        count = 0
+        st.error("⚠️ Database Connection Lost. Please Restore Supabase Project.")
+
+    st.metric("Total Synchronized SKUs", f"{count} Models")
     
     # Storage Analytics
     used_mb = (count * 0.15)
     percent = min((used_mb / 1024) * 100, 100.0)
-    st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1GB")
+    st.write(f"💾 **Cloud Storage Status:** {used_mb:.1f}MB / 1GB")
     st.progress(percent / 100)
-    st.caption(f"Free space: {100-percent:.1f}% | Est. capacity: +{int((1024-used_mb)/0.15)} SKUs")
+    st.caption(f"Estimated capacity: +{int((1024-used_mb)/0.15)} more SKUs")
 
     st.divider()
     st.subheader("📥 Data Ingestion")
-    new_files = st.file_uploader("Upload Tech-Packs (Bulk)", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
-    if new_files and st.button("SYNCHRONIZE TO REPO", use_container_width=True):
-        with st.spinner("Processing AI Vectors..."):
+    new_files = st.file_uploader("Upload Master Tech-Packs", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
+    if new_files and st.button("SYNCHRONIZE TO DATABASE", use_container_width=True):
+        with st.spinner("AI Processing..."):
             for f in new_files:
                 c = f.read(); h = get_file_hash(c); data = extract_pdf_multi_size(c)
                 if data and data['all_specs']:
@@ -125,13 +137,20 @@ with st.sidebar:
                         "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                     }).execute()
         st.session_state['reset_key'] += 1
-        st.success("Database Updated!")
+        st.success("Synchronization Complete!")
         st.rerun()
 
-st.title("🔍 AI SMART AUDITOR - PREMIUM V96")
+# HEADER TRANG CHÍNH
+head_col1, head_col2 = st.columns([1, 5])
+with head_col1:
+    st.image(LOGO_URL, width=120)
+with head_col2:
+    st.title("PPJ GROUP - AI SMART AUDITOR PRO")
+    st.caption("AI-Powered Quality Assurance & Technical Audit Dashboard")
+
 st.markdown("---")
 
-file_audit = st.file_uploader("📤 Drag & Drop Audit Tech-Pack", type="pdf", key=f"audit_{st.session_state['reset_key']}")
+file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf", key=f"audit_{st.session_state['reset_key']}")
 
 if file_audit:
     a_bytes = file_audit.read()
@@ -144,26 +163,24 @@ if file_audit:
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
             
-            st.subheader(f"🎯 Smart Matching Results (Detected: {'REITMANS' if target['is_reit'] else 'General'})")
+            st.subheader(f"🎯 AI Best Matches (System: {'REITMANS Mode' if target['is_reit'] else 'General Mode'})")
             
             cols = st.columns(4)
             with cols[0]:
-                st.image(target['img'], caption="CURRENT AUDIT FILE", use_container_width=True)
+                st.image(target['img'], caption="SOURCE FILE (AUDIT)", use_container_width=True)
             
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 with cols[i+1]:
-                    st.image(row['image_url'], caption=f"Match: {row['sim']:.1%}", use_container_width=True)
-                    if st.button(f"SELECT TOP {i+1}", key=f"btn_{idx}", use_container_width=True):
+                    st.image(row['image_url'], caption=f"Match Score: {row['sim']:.1%}", use_container_width=True)
+                    if st.button(f"SELECT MODEL {i+1}", key=f"btn_{idx}", use_container_width=True):
                         st.session_state['sel'] = row.to_dict()
 
             best = st.session_state.get('sel', top_3.iloc[0].to_dict())
-            st.success(f"**Reference Active:** {best['file_name']}")
+            st.success(f"**ACTIVE REFERENCE:** {best['file_name']}")
             
-            # Comparison Workspace
+            # Workspace
             st.divider()
-            c1, c2 = st.columns([1, 4])
-            with c1:
-                sel_size = st.selectbox("Select Target Size:", list(target['all_specs'].keys()))
+            sel_size = st.selectbox("Select Target Size:", list(target['all_specs'].keys()))
             
             spec_audit = target['all_specs'][sel_size]
             spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values())[0])
@@ -179,25 +196,21 @@ if file_audit:
                         if k_n in k or k in k_n: rv = val; break
                 diff = round(v - rv, 3)
                 report.append({
-                    "POM Description": d, 
-                    "Audit Value": v, 
-                    "Repo Value": rv, 
-                    "Deviation": diff, 
-                    "Status": "✅ PASS" if abs(v-rv) < 0.2 else "❌ FAIL"
+                    "POM Description": d, "Audit Value": v, "Repo Value": rv, 
+                    "Deviation": diff, "Status": "✅ PASS" if abs(v-rv) < 0.2 else "❌ FAIL"
                 })
             
             df_rep = pd.DataFrame(report)
             st.dataframe(df_rep, use_container_width=True, hide_index=True)
             
-            # Export Operations
+            # Export
             towrite = io.BytesIO()
             df_rep.to_excel(towrite, index=False, engine='xlsxwriter')
-            
             col_ex1, col_ex2 = st.columns(2)
             with col_ex1:
-                st.download_button("📥 DOWNLOAD XLS REPORT", data=towrite.getvalue(), file_name=f"Audit_Report_{file_audit.name}.xlsx", use_container_width=True)
+                st.download_button("📥 EXPORT TO EXCEL", data=towrite.getvalue(), file_name=f"PPJ_Audit_{file_audit.name}.xlsx", use_container_width=True)
             with col_ex2:
-                if st.button("CLEAR SESSION", use_container_width=True):
+                if st.button("RESET SESSION", use_container_width=True):
                     st.session_state['reset_key'] += 1
                     if 'sel' in st.session_state: del st.session_state['sel']
                     st.rerun()
