@@ -6,27 +6,25 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
-# ================= 1. CẤU HÌNH HỆ THỐNG =================
+# ================= 1. CẤU HÌNH & KẾT NỐI =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="AI Fashion Auditor Pro", page_icon="🏢")
+st.set_page_config(layout="wide", page_title="AI Fashion Auditor Gold", page_icon="👖")
 
-if 'up_key' not in st.session_state: 
-    st.session_state.up_key = 0
-
+# CSS làm đẹp giao diện
 st.markdown("""
     <style>
-    .report-card { background-color: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 5px solid #007bff; }
+    .stMetric { background-color: #ffffff; padding: 15px; border: 1px solid #e6e9ef; border-radius: 10px; }
     .status-khop { color: #28a745; font-weight: bold; }
     .status-lech { color: #dc3545; font-weight: bold; }
-    .stMetric { background-color: white; border: 1px solid #ddd; padding: 10px; border-radius: 10px; }
+    thead th { background-color: #f8f9fa !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# ================= 2. MODEL AI & UTILS =================
+# ================= 2. HÀM AI & XỬ LÝ DỮ LIỆU =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -37,21 +35,15 @@ def parse_val(t):
     try:
         if not t: return 0
         txt = str(t).replace(',', '.').replace('"', '').strip().lower()
-        # Loại bỏ các đơn vị đo lường dính liền
-        txt = re.sub(r'(cm|inch|in|mm|yds|gr)$', '', txt)
-        if not txt or any(x in txt for x in ["date", "page", "total"]): return 0
-        
-        # Xử lý phân số (ví dụ 1 1/2 hoặc 1/2)
+        txt = re.sub(r'(cm|inch|in|mm)$', '', txt)
+        if len(txt) > 10 or not txt or any(x in txt for x in ["date", "page", "total"]): return 0
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
         v_str = match[0]
         if ' ' in v_str:
-            parts = v_str.split()
-            val = float(parts[0]) + eval(parts[1])
-        elif '/' in v_str:
-            val = eval(v_str)
-        else:
-            val = float(v_str)
+            p = v_str.split(); val = float(p[0]) + eval(p[1])
+        elif '/' in v_str: val = eval(v_str)
+        else: val = float(v_str)
         return val if val <= 300 else 0
     except: return 0
 
@@ -60,27 +52,18 @@ def get_image_vector(img_bytes):
     tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
     with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
 
-def extract_customer_name(text):
-    patterns = [r"(?i)CUSTOMER[:\s]+([^\n]+)", r"(?i)BUYER[:\s]+([^\n]+)", r"(?i)KHÁCH HÀNG[:\s]+([^\n]+)"]
-    for p in patterns:
-        match = re.search(p, text)
-        if match: return match.group(1).strip().upper()
-    return "UNKNOWN"
-
-# ================= 3. CORE: QUÉT ĐA SIZE & BẢNG THÔNG SỐ =================
+# ================= 3. QUÉT PDF ĐA SIZE (CHỐNG NHẦM CỘT) =================
 def extract_pdf_multi_size(file):
     all_specs = {}
-    img_bytes = None
-    customer = "UNKNOWN"
-    
     try:
-        file.seek(0)
-        pdf_content = file.read()
-        # Lấy ảnh preview trang 1
+        file.seek(0); pdf_content = file.read()
         doc = fitz.open(stream=pdf_content, filetype="pdf")
-        img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2)).tobytes("png")
-        full_text = " ".join([page.get_text() for page in doc])
-        customer = extract_customer_name(full_text)
+        img_bytes = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")
+        
+        # Tìm tên khách hàng
+        full_text = " ".join([p.get_text() for p in doc])
+        cust_match = re.search(r"(?i)(CUSTOMER|BUYER|CLIENT)[:\s]+([^\n]+)", full_text)
+        customer = cust_match.group(2).strip().upper() if cust_match else "UNKNOWN"
         doc.close()
 
         with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
@@ -88,157 +71,110 @@ def extract_pdf_multi_size(file):
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
-                    if df.empty or len(df.columns) < 2: continue
+                    if df.empty or len(df.columns) < 3: continue
                     
-                    n_col = -1 # Cột chứa tên POM
-                    size_cols = {} # Index cột : Tên Size
-                    
-                    # Quét 10 dòng đầu để tìm header
-                    for r_idx in range(min(10, len(df))):
+                    n_col, size_cols = -1, {}
+                    for r_idx in range(min(15, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
-                        
-                        # 1. Tìm cột POM
+                        # Tìm cột POM
                         if n_col == -1:
                             for i, v in enumerate(row):
-                                if any(x in v for x in ["DESCRIPTION", "POM", "MEASUREMENT", "POSITION"]):
-                                    n_col = i; break
-                        
-                        # 2. Tìm các cột Size (S, M, L... hoặc số 30, 32...)
+                                if any(x in v for x in ["DESCRIPTION", "POM", "MEASUREMENT"]): n_col = i; break
+                        # Tìm cột Size (Loại bỏ cột No, Tolerance)
                         for i, v in enumerate(row):
                             if i == n_col or not v: continue
-                            # Loại trừ cột Dung sai (Tolerance)
-                            if any(tol in v for tol in ["TOL", "+/-", "DUNG SAI", "GRAD"]): continue
-                            
-                            is_size = (v.isdigit() or any(s == v for s in ["XXS","XS","S","M","L","XL","XXL","3XL"]))
-                            if is_size and len(v) < 10:
+                            if any(x in v for x in ["TOL", "+/-", "NO.", "STT", "SIZE"]): continue
+                            if v.isdigit() or any(s == v for s in ["XXS","XS","S","M","L","XL","XXL","3XL"]):
                                 size_cols[i] = v
-                                
                         if n_col != -1 and size_cols: break
                     
-                    # 3. Trích xuất dữ liệu nếu đã thấy Header
-                    if n_col != -1 and size_cols:
+                    if n_col != -1:
                         for s_col, s_name in size_cols.items():
                             if s_name not in all_specs: all_specs[s_name] = {}
                             for d_idx in range(len(df)):
-                                pom = str(df.iloc[d_idx, n_col]).replace('\n', ' ').strip().upper()
+                                pom = str(df.iloc[d_idx, n_col]).replace('\n',' ').strip().upper()
                                 val = parse_val(df.iloc[d_idx, s_col])
-                                if len(pom) > 3 and val > 0 and "SIZE" not in pom:
-                                    all_specs[s_name][pom] = val
+                                if len(pom) > 3 and val > 0: all_specs[s_name][pom] = val
         return {"all_specs": all_specs, "img": img_bytes, "customer": customer}
     except Exception as e:
-        st.error(f"Lỗi quét PDF: {e}")
-        return None
+        st.error(f"Lỗi: {e}"); return None
 
-# ================= 4. GIAO DIỆN CHÍNH =================
+# ================= 4. SIDEBAR QUẢN LÝ =================
 with st.sidebar:
     st.header("🏢 KHO MẪU HỆ THỐNG")
+    if st.button("Làm mới kho"): st.rerun()
     try:
-        count_res = supabase.table("ai_data").select("id", count="exact").execute()
-        st.metric("Tổng mẫu lưu trữ", f"{count_res.count or 0} Items")
-    except: st.write("Đang kết nối...")
+        res_count = supabase.table("ai_data").select("id", count="exact").execute()
+        st.metric("Tổng mẫu", f"{res_count.count or 0}")
+    except: pass
     
     st.divider()
-    st.subheader("🚀 Nạp mẫu mới")
-    new_files = st.file_uploader("Upload Techpacks", accept_multiple_files=True, key=f"up_{st.session_state.up_key}")
-    
-    if new_files and st.button("XÁC NHẬN NẠP KHO"):
+    new_files = st.file_uploader("Nạp Techpack mới", accept_multiple_files=True)
+    if new_files and st.button("XÁC NHẬN NẠP"):
         for f in new_files:
             data = extract_pdf_multi_size(f)
             if data and data['all_specs']:
-                vec = get_image_vector(data['img'])
-                path = f"lib_{re.sub(r'\W+', '_', f.name)}.png"
+                path = f"lib_{re.sub(r'\W+', '', f.name)}.png"
                 supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
                 supabase.table("ai_data").insert({
-                    "file_name": f.name, "vector": vec, "spec_json": data['all_specs'],
-                    "image_url": supabase.storage.from_(BUCKET).get_public_url(path),
+                    "file_name": f.name, "vector": get_image_vector(data['img']),
+                    "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path),
                     "customer_name": data['customer']
                 }).execute()
-        st.success("Đã nạp thành công!"); st.session_state.up_key += 1; st.rerun()
+        st.success("Đã nạp kho!"); st.rerun()
 
-st.title("🔍 AI SMART AUDITOR - ĐỐI SOÁT THÔNG SỐ TỰ ĐỘNG")
-
-file_audit = st.file_uploader("📤 Upload file PDF Audit (File cần kiểm tra)", type="pdf")
+# ================= 5. LUỒNG ĐỐI SOÁT & XUẤT EXCEL =================
+st.title("🔍 AI SMART AUDITOR - V96 PRO")
+file_audit = st.file_uploader("📤 Upload file PDF Audit", type="pdf")
 
 if file_audit:
-    with st.spinner("Đang trích xuất dữ liệu Audit..."):
+    with st.spinner("AI đang phân tích..."):
         target = extract_pdf_multi_size(file_audit)
     
     if target and target["all_specs"]:
-        # 1. Tìm mẫu khớp nhất trong kho bằng AI
         res = supabase.table("ai_data").select("*").execute()
         if res.data:
             df_db = pd.DataFrame(res.data)
-            target_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
-            db_vecs = np.array([v for v in df_db['vector']])
+            t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
+            df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
+            best = df_db.sort_values('sim', ascending=False).iloc[0]
             
-            df_db['sim_score'] = cosine_similarity(target_vec, db_vecs).flatten()
-            best = df_db.sort_values('sim_score', ascending=False).iloc[0]
-            
-            # 2. Hiển thị thông tin chung
+            # Hiển thị ảnh so sánh
             c1, c2 = st.columns(2)
-            with c1: 
-                st.image(target['img'], caption="Ảnh từ file Audit", use_container_width=True)
-            with c2: 
-                st.image(best['image_url'], caption=f"Mẫu gốc khớp {best['sim_score']*100:.1f}%", use_container_width=True)
+            c1.image(target['img'], caption="Bản Audit", use_container_width=True)
+            c2.image(best['image_url'], caption=f"Mẫu Gốc (Khớp {best['sim']*100:.1f}%)", use_container_width=True)
 
-           # 3. Đối soát Size
-st.divider()
-st.subheader("📊 Kết quả đối soát chi tiết")
-
-# Lấy danh sách size từ cả 2 nguồn để đối chiếu
-audit_specs = target['all_specs']
-db_specs = best.get('spec_json', {})
-
-audit_sizes = list(audit_specs.keys())
-if audit_sizes:
-    sel_size = st.selectbox("Chọn Size để xem chi tiết:", audit_sizes)
-    
-    # Kiểm tra an toàn xem size có tồn tại trong DB không
-    if sel_size in db_specs:
-        spec_audit = audit_specs[sel_size]
-        spec_ref = db_specs[sel_size]
-        
-        compare_data = []
-        # Duyệt qua các POM của file Audit
-        for pom, val_audit in spec_audit.items():
-            val_ref = spec_ref.get(pom, 0) # Nếu không có POM này trong DB thì mặc định là 0
-            diff = val_audit - val_ref
+            # Đối soát chi tiết
+            st.divider()
+            audit_specs = target['all_specs']
+            db_specs = best['spec_json']
             
-            # Tính toán trạng thái
-            if val_ref == 0:
-                status = "❓ THIẾU TRONG GỐC"
-            else:
-                status = "✅ KHỚP" if abs(diff) < 0.126 else f"❌ LỆCH ({diff:+.2f})"
+            sel_size = st.selectbox("Chọn Size đối soát:", list(audit_specs.keys()))
             
-            compare_data.append({
-                "POM Name": pom,
-                "Bản Audit": val_audit,
-                "Mẫu Gốc": val_ref,
-                "Chênh lệch": diff,
-                "Trạng thái": status
-            })
-        
-        if compare_data:
-            df_compare = pd.DataFrame(compare_data)
-            st.table(df_compare)
-        else:
-            st.warning("Không có dữ liệu POM để hiển thị.")
-    else:
-        st.error(f"Cảnh báo: Size '{sel_size}' có trong file Audit nhưng KHÔNG tìm thấy trong file Gốc trên hệ thống.")
-
+            if sel_size in db_specs:
+                spec_audit, spec_ref = audit_specs[sel_size], db_specs[sel_size]
+                rows = []
+                for pom, v_audit in spec_audit.items():
+                    v_ref = spec_ref.get(pom, 0)
+                    diff = round(v_audit - v_ref, 3)
+                    status = "✅ KHỚP" if abs(diff) < 0.126 else f"❌ LỆCH ({diff})"
+                    rows.append({"POM": pom, "Audit": v_audit, "Gốc": v_ref, "Lệch": diff, "Kết quả": status})
                 
-                # Highlight các dòng bị lệch
-                def highlight_diff(row):
-                    return ['background-color: #ffcccc' if "❌" in str(row['Trạng thái']) else '' for _ in row]
+                df_res = pd.DataFrame(rows)
+                st.dataframe(df_res, use_container_width=True)
                 
-                st.table(df_compare.style.apply(highlight_diff, axis=1))
+                # --- CHỨC NĂNG XUẤT EXCEL ---
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    df_res.to_excel(writer, index=False, sheet_name='Audit_Report')
                 
-                # Thống kê nhanh
-                total = len(df_compare)
-                pass_count = len(df_compare[df_compare['Trạng thái'] == "✅ KHỚP"])
-                st.metric("Tỷ lệ đạt chuẩn", f"{(pass_count/total)*100:.1f}%", f"{pass_count}/{total} POMs")
+                st.download_button(
+                    label="📥 TẢI BÁO CÁO EXCEL",
+                    data=output.getvalue(),
+                    file_name=f"Audit_{best['file_name']}_{sel_size}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
             else:
-                st.warning(f"Size '{sel_size}' không tìm thấy trong dữ liệu mẫu gốc. Vui lòng kiểm tra lại bảng Size.")
+                st.error(f"Size {sel_size} không có trong mẫu gốc!")
     else:
-        st.error("Không tìm thấy bảng thông số trong file PDF. Hãy đảm bảo PDF có bảng dạng cột Size rõ ràng.")
-
+        st.warning("Không tìm thấy bảng thông số. Hãy kiểm tra lại định dạng PDF.")
