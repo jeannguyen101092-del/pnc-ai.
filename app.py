@@ -14,6 +14,7 @@ supabase = create_client(URL, KEY)
 
 st.set_page_config(layout="wide", page_title="PPJ AI Auditor", page_icon="👔")
 
+# Khởi tạo key quản lý việc reset uploader
 if 'reset_key' not in st.session_state:
     st.session_state['reset_key'] = 0
 
@@ -40,10 +41,10 @@ def parse_val(t):
         txt = re.sub(r'(cm|inch|in|mm|yds)$', '', txt)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0]
+        v = match
         if ' ' in v:
             p = v.split()
-            return float(p[0]) + eval(p[1])
+            return float(p) + eval(p)
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
@@ -107,6 +108,7 @@ with st.sidebar:
     count = res_count.count or 0
     st.metric("Synchronized SKUs", f"{count} Models")
     
+    # Storage Analytics
     used_mb = (count * 0.15)
     percent = min((used_mb / 1024) * 100, 100.0)
     st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1GB")
@@ -114,23 +116,19 @@ with st.sidebar:
 
     st.divider()
     st.subheader("📥 Data Ingestion")
-    new_files = st.file_uploader("Upload Master Tech-Packs", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
+    # Gán key động để có thể reset sau khi nạp
+    new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
     
     if new_files and st.button("SYNCHRONIZE", use_container_width=True):
-        new_count = 0
-        dup_count = 0
-        
-        with st.spinner("Analyzing Skus..."):
+        new_count, dup_count = 0, 0
+        with st.spinner("Processing..."):
             for f in new_files:
                 c = f.read()
                 h = get_file_hash(c)
-                
-                # Kiểm tra xem ID này đã có trong database chưa
                 check = supabase.table("ai_data").select("id").eq("id", h).execute()
                 
                 if len(check.data) > 0:
                     dup_count += 1
-                    st.info(f"⚠️ SKIPPED: '{f.name}' already exists in Repository.")
                 else:
                     data = extract_pdf_multi_size(c)
                     if data and data['all_specs']:
@@ -141,12 +139,10 @@ with st.sidebar:
                             "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                         }).execute()
                         new_count += 1
-                        st.success(f"✅ ADDED: '{f.name}' successfully.")
             
-        st.divider()
-        st.write(f"🏁 **Process Finished:** {new_count} Added, {dup_count} Duplicates skipped.")
-        if st.button("Refresh Dashboard"):
+            # SAU KHI NẠP XONG: Tự động xóa file trên giao diện
             st.session_state['reset_key'] += 1
+            st.toast(f"✅ Finished: {new_count} Added, {dup_count} Skipped.")
             st.rerun()
 
 # HEADER
@@ -154,7 +150,7 @@ st.markdown("<h1 style='color: #1E3A8A; display: inline-block;'>PPJ GROUP</h1> <
 st.caption("Premium Technical Audit System for PPJ Group")
 st.markdown("---")
 
-file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf", key=f"audit_{st.session_state['reset_key']}")
+file_audit = st.file_uploader("📤 Drag & Drop Audit Tech-Pack", type="pdf", key=f"audit_{st.session_state['reset_key']}")
 
 if file_audit:
     a_bytes = file_audit.read()
@@ -169,7 +165,7 @@ if file_audit:
             
             st.subheader(f"🎯 AI Best Matches")
             cols = st.columns(4)
-            with cols[0]:
+            with cols:
                 st.image(target['img'], caption="SOURCE FILE", use_container_width=True)
             
             for i, (idx, row) in enumerate(top_3.iterrows()):
@@ -178,13 +174,13 @@ if file_audit:
                     if st.button(f"SELECT MODEL {i+1}", key=f"btn_{idx}", use_container_width=True):
                         st.session_state['sel'] = row.to_dict()
 
-            best = st.session_state.get('sel', top_3.iloc[0].to_dict())
+            best = st.session_state.get('sel', top_3.iloc.to_dict())
             st.success(f"**REFERENCE SKU:** {best['file_name']}")
             
             st.divider()
             sel_size = st.selectbox("Select Target Size:", list(target['all_specs'].keys()))
             spec_audit = target['all_specs'][sel_size]
-            spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values())[0])
+            spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values()))
             
             def norm(x): return re.sub(r'[^a-z0-9]', '', str(x).lower())
             ref_map = {norm(k): v for k, v in spec_ref.items()}
@@ -196,12 +192,10 @@ if file_audit:
                     for k, val in ref_map.items():
                         if k_n in k or k in k_n: rv = val; break
                 diff = round(v - rv, 3)
-                report.append({
-                    "POM Description": d, "Audit": v, "Repo": rv, 
-                    "Diff": diff, "Status": "✅ PASS" if abs(v-rv) < 0.2 else "❌ FAIL"
-                })
+                report.append({"POM Description": d, "Audit": v, "Repo": rv, "Diff": diff, "Status": "✅ PASS" if abs(v-rv) < 0.2 else "❌ FAIL"})
             
             st.table(pd.DataFrame(report))
+            
             towrite = io.BytesIO()
             pd.DataFrame(report).to_excel(towrite, index=False, engine='xlsxwriter')
             
@@ -209,7 +203,7 @@ if file_audit:
             with c1:
                 st.download_button("📥 DOWNLOAD REPORT", data=towrite.getvalue(), file_name=f"PPJ_Audit_Report.xlsx", use_container_width=True)
             with c2:
-                if st.button("RESET SESSION", use_container_width=True):
+                if st.button("RESET AUDIT", use_container_width=True):
                     st.session_state['reset_key'] += 1
                     if 'sel' in st.session_state: del st.session_state['sel']
                     st.rerun()
