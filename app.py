@@ -88,29 +88,52 @@ def extract_pdf_multi_size(file):
     except: return None
 
 # ================= 4. GIAO DIỆN CHÍNH =================
+# --- Thêm biến vào đầu chương trình để quản lý việc reset file ---
+if 'file_uploader_key' not in st.session_state:
+    st.session_state['file_uploader_key'] = 0
+
 with st.sidebar:
     st.header("🏢 KHO MẪU")
+    # Hiển thị số lượng mẫu
     res_count = supabase.table("ai_data").select("id", "file_name", count="exact").execute()
     count = res_count.count if res_count.count else 0
     existing_files = [item['file_name'] for item in res_count.data] if res_count.data else []
     st.metric("Tổng tồn kho", f"{count} mẫu")
     
-    new_files = st.file_uploader("Nạp mẫu mới", accept_multiple_files=True)
+    # Sử dụng key động để reset file uploader
+    new_files = st.file_uploader(
+        "Nạp mẫu mới", 
+        accept_multiple_files=True, 
+        key=str(st.session_state['file_uploader_key'])
+    )
+
     if new_files and st.button("NẠP KHO"):
+        process_count = 0
         for f in new_files:
             if f.name in existing_files:
                 st.warning(f"⚠️ Bỏ qua: {f.name} đã tồn tại.")
                 continue
+            
             data = extract_pdf_multi_size(f)
             if data:
                 path = f"lib_{re.sub(r'\W+', '', f.name)}.png"
+                # Upload ảnh và dữ liệu lên Supabase
                 supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
                 supabase.table("ai_data").insert({
-                    "file_name": f.name, "vector": get_image_vector(data['img']),
-                    "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                    "file_name": f.name, 
+                    "vector": get_image_vector(data['img']),
+                    "spec_json": data['all_specs'], 
+                    "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                 }).execute()
-                st.info(f"✅ Đã thêm: {f.name}")
-        st.rerun()
+                process_count += 1
+        
+        if process_count > 0:
+            st.success(f"✅ Đã nạp thành công {process_count} mẫu!")
+            
+            # --- ĐÂY LÀ PHẦN QUAN TRỌNG ĐỂ XÓA FILE ---
+            st.session_state['file_uploader_key'] += 1 # Thay đổi key để Streamlit vẽ lại uploader trống
+            st.rerun() # Load lại trang để xóa sạch danh sách file cũ
+
 
 st.title("🔍 AI SMART AUDITOR - V96 PRO")
 file_audit = st.file_uploader("📤 Upload PDF Audit", type="pdf")
