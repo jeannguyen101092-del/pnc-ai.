@@ -87,7 +87,7 @@ def extract_pdf_multi_size(file):
                             if s_name not in all_specs: all_specs[s_name] = {}
                             for d_idx in range(len(df)):
                                 pom_raw = str(df.iloc[d_idx, n_col]).replace('\n',' ').strip()
-                                # Chỉ lấy nếu tên có chứa chữ cái (Leg Opening, Waist...), bỏ qua mã W005...
+                                # Chỉ lấy nếu tên có chứa ít nhất 1 ký tự chữ cái (Waist, Hip...)
                                 if len(pom_raw) > 2 and re.search('[a-zA-Z]', pom_raw):
                                     val = parse_val(df.iloc[d_idx, s_col])
                                     if val > 0: all_specs[s_name][pom_raw.upper()] = val
@@ -139,9 +139,9 @@ if file_audit:
             sel_size = st.selectbox("Chọn Size đối soát:", list(audit_all.keys()))
             
             # --- FIX LỖI TẠI ĐÂY ---
-            # Lấy tên Size khớp nhất (truy xuất phần tử đầu tiên của tuple an toàn)
+            # Sử dụng extractOne an toàn, lấy phần tử đầu tiên nếu là tuple
             sz_res = process.extractOne(sel_size, list(db_all.keys()), scorer=fuzz.Ratio)
-            db_sz_key = sz_res[0] if sz_res and sz_res[1] > 60 else None
+            db_sz_key = sz_res[0] if sz_res else None
             spec_ref = db_all.get(db_sz_key, {}) if db_sz_key else {}
             
             report = []
