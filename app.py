@@ -1,48 +1,46 @@
 import streamlit as st
 import io, fitz, pdfplumber, re, pandas as pd, numpy as np
-import torch, hashlib
+import torch, hashlib, base64, difflib
 from PIL import Image
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
-# ================= 1. CONFIGURATION =================
+# ================= 1. CONFIGURATION & LOGO =================
+# Mã hóa Logo PPJ Group chuẩn (Nhúng trực tiếp)
+PPJ_LOGO_B64 = "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"
+
+# Supabase Auth
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-st.set_page_config(layout="wide", page_title="PPJ AI Auditor", page_icon="👔")
+st.set_page_config(layout="wide", page_title="PPJ Auditor Pro", page_icon="👔")
 
-# Quản lý các key để reset giao diện
-if 'master_reset_key' not in st.session_state:
-    st.session_state['master_reset_key'] = 0
-if 'audit_reset_key' not in st.session_state:
-    st.session_state['audit_reset_key'] = 0
-if 'selected_sku' not in st.session_state:
-    st.session_state['selected_sku'] = None
+# Quản lý reset uploader
+if 'master_key' not in st.session_state: st.session_state['master_key'] = 0
+if 'audit_key' not in st.session_state: st.session_state['audit_key'] = 0
+if 'selected_sku' not in st.session_state: st.session_state['selected_sku'] = None
 
-# ================= 2. AI CORE ENGINE =================
+# ================= 2. AI CORE & UTILS =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_model()
 
-def get_file_hash(file_bytes):
-    return hashlib.md5(file_bytes).hexdigest()
+def get_file_hash(file_bytes): return hashlib.md5(file_bytes).hexdigest()
 
 def get_image_vector(img_bytes):
     img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
     tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
-    with torch.no_grad(): 
-        return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
+    with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
 
 def parse_val(t):
     try:
         if not t or str(t).strip() == "": return 0
         txt = str(t).replace(',', '.').replace('"', '').strip().lower()
-        txt = re.sub(r'(cm|inch|in|mm|yds)$', '', txt)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
         v = match[0]
@@ -52,14 +50,14 @@ def parse_val(t):
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION =================
+# ================= 3. PDF LOGIC (STRICT & SMART) =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes, is_reit = {}, None, False
     try:
-        txt_check = ""
+        txt_all = ""
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
-            for p in pdf.pages[:1]: txt_check += (p.extract_text() or "").upper()
-        if "REITMAN" in txt_check: is_reit = True
+            for p in pdf.pages[:2]: txt_all += (p.extract_text() or "").upper()
+        if "REITMAN" in txt_all: is_reit = True
 
         doc = fitz.open(stream=file_content, filetype="pdf")
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
@@ -98,86 +96,81 @@ def extract_pdf_multi_size(file_content):
                             if temp_data:
                                 if s_name not in all_specs: all_specs[s_name] = {}
                                 all_specs[s_name].update(temp_data)
+        
+        # LOẠI BỎ FILE LỖI (Thiếu hình hoặc thiếu số đo)
+        if not all_specs or img_bytes is None: return None
         return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reit}
     except: return None
 
-# ================= 4. PREMIUM UI =================
+# --- FUZZY MATCHING FUNCTION ---
+def smart_match(query, choices):
+    query_norm = re.sub(r'[^a-z0-9]', '', query.lower())
+    best_m, max_s = None, 0
+    for c in choices:
+        c_norm = re.sub(r'[^a-z0-9]', '', c.lower())
+        if query_norm == c_norm: return c
+        score = difflib.SequenceMatcher(None, query_norm, c_norm).ratio()
+        if score > max_s: max_s = score; best_m = c
+    return best_m if max_s > 0.6 else None
+
+# ================= 4. UI =================
 with st.sidebar:
-    st.markdown("<h2 style='color: #1E3A8A; margin-bottom: 0;'>PPJ GROUP</h2>", unsafe_allow_html=True)
-    st.caption("Boundless Solutions")
+    st.image(f"data:image/png;base64,{PPJ_LOGO_B64}", use_container_width=True)
     st.markdown("---")
-    
-    st.title("📂 MASTER REPOSITORY")
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
     count = res_count.count or 0
-    st.metric("Synchronized SKUs", f"{count} Models")
+    st.title("📂 MASTER REPO")
+    st.metric("Total Active SKUs", f"{count}")
     
-    # Storage Analytics
     used_mb = (count * 0.15)
-    st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1GB")
+    st.write(f"💾 Cloud: {used_mb:.1f}MB / 1GB")
     st.progress(min(used_mb/1024, 1.0))
 
     st.divider()
-    st.subheader("📥 Data Ingestion")
-    new_files = st.file_uploader("Upload Master Tech-Packs", accept_multiple_files=True, key=f"up_{st.session_state['master_reset_key']}")
-    
-    if new_files and st.button("SYNCHRONIZE", use_container_width=True):
-        new_added, dup_skipped = 0, 0
-        with st.spinner("Processing AI..."):
-            for f in new_files:
-                c = f.read(); h = get_file_hash(c)
-                check = supabase.table("ai_data").select("id").eq("id", h).execute()
-                if len(check.data) > 0:
-                    dup_skipped += 1
-                else:
-                    data = extract_pdf_multi_size(c)
-                    if data and data['all_specs']:
-                        path = f"lib_{h}.png"
-                        supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
-                        supabase.table("ai_data").insert({
-                            "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
-                            "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
-                        }).execute()
-                        new_added += 1
-            
-            st.session_state['master_reset_key'] += 1 # Xóa file uploader sau khi nạp
-            st.toast(f"✅ Success: {new_added} Added, {dup_skipped} Duplicates skipped.")
-            st.rerun()
+    new_files = st.file_uploader("📥 Synchronize SKUs", accept_multiple_files=True, key=f"up_{st.session_state['master_key']}")
+    if new_files and st.button("EXECUTE SYNC", use_container_width=True):
+        added, skipped = 0, 0
+        for f in new_files:
+            c = f.read(); h = get_file_hash(c)
+            check = supabase.table("ai_data").select("id").eq("id", h).execute()
+            if check.data: skipped += 1; continue
+            data = extract_pdf_multi_size(c)
+            if data:
+                path = f"lib_{h}.png"
+                supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
+                supabase.table("ai_data").insert({"id": h, "file_name": f.name, "vector": get_image_vector(data['img']), "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)}).execute()
+                added += 1
+        st.session_state['master_key'] += 1
+        st.toast(f"✅ Added {added}, Skipped {skipped}"); st.rerun()
 
-# HEADER TRANG CHÍNH
-st.markdown("<h1 style='color: #1E3A8A; display: inline-block;'>PPJ GROUP</h1> <h1 style='display: inline-block; margin-left: 10px;'>AI SMART AUDITOR PRO</h1>", unsafe_allow_html=True)
+# HEADER
+st.markdown(f'<img src="data:image/png;base64,{PPJ_LOGO_B64}" width="150">', unsafe_allow_html=True)
+st.title("AI SMART AUDITOR PRO - V96")
+st.caption("Premium Technical Audit System for PPJ Group")
 st.markdown("---")
 
-file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf", key=f"audit_{st.session_state['audit_reset_key']}")
+file_audit = st.file_uploader("📤 Upload Audit Tech-Pack", type="pdf", key=f"audit_{st.session_state['audit_key']}")
 
 if file_audit:
     a_bytes = file_audit.read()
     target = extract_pdf_multi_size(a_bytes)
-    
-    if target and target["all_specs"]:
+    if target:
         res = supabase.table("ai_data").select("*").execute()
         if res.data:
             df_db = pd.DataFrame(res.data)
             t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
-            db_vecs = np.array([v for v in df_db['vector']])
-            df_db['sim'] = cosine_similarity(t_vec, db_vecs).flatten()
-            
-            # Lấy Top 3 mẫu giống nhất
+            df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
             
-            st.subheader(f"🎯 AI Best Matches")
+            st.subheader(f"🎯 Best Matches Found (Mode: {'REITMANS' if target['is_reit'] else 'General'})")
             cols = st.columns(4)
-            with cols[0]:
-                st.image(target['img'], caption="AUDIT FILE", use_container_width=True)
-            
+            cols[0].image(target['img'], caption="CURRENT FILE", use_container_width=True)
             for i, (idx, row) in enumerate(top_3.iterrows()):
-                with cols[i+1]:
-                    st.image(row['image_url'], caption=f"Match: {row['sim']:.1%}", use_container_width=True)
-                    if st.button(f"SELECT MODEL {i+1}", key=f"btn_{idx}", use_container_width=True):
-                        st.session_state['selected_sku'] = row.to_dict()
+                cols[i+1].image(row['image_url'], caption=f"Match: {row['sim']:.1%}", use_container_width=True)
+                if cols[i+1].button(f"SELECT MODEL {i+1}", key=f"btn_{idx}"):
+                    st.session_state['selected_sku'] = row.to_dict()
 
-            # Mẫu đang được chọn để đối soát (mặc định là Top 1)
-            best = st.session_state['selected_sku'] if st.session_state['selected_sku'] else top_3.iloc[0].to_dict()
+            best = st.session_state['selected_sku'] or top_3.iloc[0].to_dict()
             st.success(f"**ACTIVE REFERENCE:** {best['file_name']}")
             
             st.divider()
@@ -185,33 +178,23 @@ if file_audit:
             spec_audit = target['all_specs'][sel_size]
             spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values())[0])
             
-            def norm(x): return re.sub(r'[^a-z0-9]', '', str(x).lower())
-            ref_map = {norm(k): v for k, v in spec_ref.items()}
-            
+            # --- SMART COMPARING LOGIC ---
             report = []
+            repo_choices = list(spec_ref.keys())
             for d, v in spec_audit.items():
-                k_n = norm(d); rv = ref_map.get(k_n, 0)
-                if rv == 0:
-                    for k, val in ref_map.items():
-                        if k_n in k or k in k_n: rv = val; break
-                report.append({
-                    "POM Description": d, "Audit Value": v, "Repo Value": rv, 
-                    "Deviation": round(v - rv, 3), "Status": "✅ PASS" if abs(v-rv) < 0.2 else "❌ FAIL"
-                })
+                matched_name = smart_match(d, repo_choices)
+                rv = spec_ref[matched_name] if matched_name else 0
+                diff = round(v - rv, 3)
+                status = "✅ PASS" if (rv > 0 and abs(diff) < 0.2) else "❌ FAIL"
+                report.append({"POM Description": d, "Audit": v, "Repo": rv, "Diff": diff, "Status": status})
             
             df_rep = pd.DataFrame(report)
-            st.table(df_rep)
+            st.table(df_rep.style.applymap(lambda x: 'color: red' if "FAIL" in str(x) else '', subset=['Status']))
             
             towrite = io.BytesIO()
             df_rep.to_excel(towrite, index=False, engine='xlsxwriter')
-            
-            c1, c2 = st.columns(2)
-            with c1:
-                st.download_button("📥 DOWNLOAD REPORT", data=towrite.getvalue(), file_name=f"PPJ_Audit_Report.xlsx", use_container_width=True)
-            with c2:
-                if st.button("RESET AUDIT", use_container_width=True):
-                    st.session_state['audit_reset_key'] += 1
-                    st.session_state['selected_sku'] = None
-                    st.rerun()
-    else:
-        st.error("⚠️ Failed to extract measurement table. Please check PDF structure.")
+            col1, col2 = st.columns(2)
+            col1.download_button("📥 DOWNLOAD XLS REPORT", data=towrite.getvalue(), file_name=f"Audit_{file_audit.name}.xlsx", use_container_width=True)
+            if col2.button("RESET SESSION", use_container_width=True):
+                st.session_state['audit_key'] += 1; st.session_state['selected_sku'] = None; st.rerun()
+    else: st.error("⚠️ Invalid File: No image or measurement data found.")
