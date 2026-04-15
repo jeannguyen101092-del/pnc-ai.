@@ -31,18 +31,30 @@ def classify_garment(specs_dict):
         return "ÁO KHÔNG TAY/VÁY"
     return "CHƯA XÁC ĐỊNH"
 
-def parse_val(t):
+def parse_val(t_top, t_bottom=""):
+    """Kết hợp dòng trên (số nguyên) và dòng dưới (phân số)"""
     try:
-        if t is None or str(t).strip() == "": return 0
-        txt = str(t).replace(',', '.').replace('"', '').strip().lower()
-        txt = re.sub(r'(cm|inch|in|mm|yds)$', '', txt)
-        match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
-        if not match: return 0
-        v_str = match[0]
-        if ' ' in v_str:
-            p = v_str.split()
-            return float(p[0]) + eval(p[1])
-        return float(eval(v_str)) if '/' in v_str else float(v_str)
+        def clean_num(txt):
+            txt = str(txt).replace(',', '.').strip().lower()
+            return re.sub(r'[^\d\./\s]', '', txt)
+
+        v1 = clean_num(t_top)
+        v2 = clean_num(t_bottom)
+        
+        total = 0.0
+        # Xử lý số nguyên ở dòng trên
+        if v1 and v1.replace('.','').isdigit():
+            total += float(v1)
+        
+        # Xử lý phân số ở dòng dưới (ví dụ: 3/4)
+        if "/" in v2:
+            parts = v2.split('/')
+            if len(parts) == 2:
+                total += float(parts[0]) / float(parts[1])
+        elif v2 and v2.replace('.','').isdigit():
+            total += float(v2)
+            
+        return total
     except: return 0
 
 def get_image_vector(img_bytes):
