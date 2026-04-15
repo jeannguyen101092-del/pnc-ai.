@@ -1,14 +1,14 @@
 import streamlit as st
 import io, fitz, pdfplumber, re, pandas as pd, numpy as np
-import torch, hashlib
+import torch, hashlib, base64
 from PIL import Image
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
 # ================= 1. CONFIGURATION =================
-# Dùng link ảnh khác ổn định hơn để tránh lỗi "k ra" logo
-LOGO_URL = "https://imgur.com" 
+# Mã hóa Logo PPJ Group để nhúng trực tiếp (Không lo lỗi link)
+PPJ_LOGO_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAZAAAABkCAYAAAC02766AAAACXBIWXMAAAsTAAALEwEAmpwYAAAA" # (Đây là mã rút gọn cho gọn code)
 
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
@@ -101,8 +101,8 @@ def extract_pdf_multi_size(file_content):
 
 # ================= 4. PPJ GROUP PRO UI =================
 with st.sidebar:
-    # HIỂN THỊ LOGO TRONG SIDEBAR VỚI ĐƯỜNG LINK DỰ PHÒNG
-    st.image(LOGO_URL, width=200)
+    # HIỂN THỊ LOGO PPJ GROUP QUA LINK TRỰC TIẾP
+    st.image("https://ppj-group.com", width=220)
     st.markdown("---")
     st.title("📂 MASTER REPOSITORY")
     
@@ -137,10 +137,11 @@ with st.sidebar:
         st.session_state['reset_key'] += 1
         st.rerun()
 
-# HEADER TRANG CHÍNH CÓ LOGO
-h_col1, h_col2 = st.columns([1, 5])
+# HEADER TRANG CHÍNH
+h_col1, h_col2 = st.columns([1, 4])
 with h_col1:
-    st.image(LOGO_URL, width=100)
+    # Dùng link logo từ PPJ web để đảm bảo chuẩn màu
+    st.image("https://ppj-group.com", width=120)
 with h_col2:
     st.title("PPJ GROUP - AI SMART AUDITOR PRO")
     st.caption("AI-Powered Quality Assurance Dashboard")
@@ -190,10 +191,7 @@ if file_audit:
                     for k, val in ref_map.items():
                         if k_n in k or k in k_n: rv = val; break
                 diff = round(v - rv, 3)
-                report.append({
-                    "POM Description": d, "Audit Value": v, "Repo Value": rv, 
-                    "Deviation": diff, "Status": "✅ PASS" if abs(v-rv) < 0.2 else "❌ FAIL"
-                })
+                report.append({"POM Description": d, "Audit Value": v, "Repo Value": rv, "Deviation": diff, "Status": "✅ PASS" if abs(v-rv) < 0.2 else "❌ FAIL"})
             
             df_rep = pd.DataFrame(report)
             st.dataframe(df_rep, use_container_width=True, hide_index=True)
