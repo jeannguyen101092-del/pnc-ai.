@@ -20,6 +20,7 @@ st.markdown("""
     <style>
     .stMetric { background-color: #ffffff; padding: 15px; border: 1px solid #e6e9ef; border-radius: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
     thead th { background-color: #f8f9fa !important; color: #333 !important; }
+    .error-box { color: #dc3545; background-color: #f8d7da; padding: 10px; border-radius: 5px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -87,6 +88,7 @@ def extract_pdf_multi_size(file):
                             if s_name not in all_specs: all_specs[s_name] = {}
                             for d_idx in range(len(df)):
                                 pom_raw = str(df.iloc[d_idx, n_col]).replace('\n',' ').strip()
+                                # Chỉ lấy POM nếu có chứa chữ cái (loại bỏ mã số)
                                 if len(pom_raw) > 2 and re.search('[a-zA-Z]', pom_raw):
                                     val = parse_val(df.iloc[d_idx, s_col])
                                     if val > 0: all_specs[s_name][pom_raw.upper()] = val
@@ -96,15 +98,12 @@ def extract_pdf_multi_size(file):
 # ================= 4. SIDEBAR QUẢN LÝ KHO =================
 with st.sidebar:
     st.header("🏢 QUẢN LÝ KHO MẪU")
-    # Hiển thị số lượng trong kho
     try:
         res_count = supabase.table("ai_data").select("id", count="exact").execute()
         st.metric("Tổng số file trong kho", f"{res_count.count or 0} mẫu")
-    except:
-        st.write("Đang kết nối database...")
+    except: st.write("Đang kết nối database...")
     
     st.divider()
-    st.subheader("🚀 Nạp mẫu mới")
     new_files = st.file_uploader("Upload Techpack gốc", accept_multiple_files=True)
     
     if new_files and st.button("XÁC NHẬN NẠP KHO"):
@@ -115,14 +114,12 @@ with st.sidebar:
                 path = f"lib_{re.sub(r'[^a-zA-Z0-9]', '_', f.name)}.png"
                 supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
                 supabase.table("ai_data").insert({
-                    "file_name": f.name, "vector": vec, 
-                    "spec_json": data['all_specs'],
-                    "image_url": supabase.storage.from_(BUCKET).get_public_url(path),
-                    "customer_name": data['customer']
+                    "file_name": f.name, "vector": vec, "spec_json": data['all_specs'],
+                    "image_url": supabase.storage.from_(BUCKET).get_public_url(path), "customer_name": data['customer']
                 }).execute()
         st.success("Đã nạp kho thành công!"); st.rerun()
 
-# ================= 5. ĐỐI SOÁT CHI TIẾT =================
+# ================= 5. ĐỐI SOÁT CHI TIẾT (FIXED ATTRIBUTEERROR) =================
 st.title("🔍 AI SMART AUDITOR - V96 GOLD")
 file_audit = st.file_uploader("📤 Upload file PDF Audit", type="pdf")
 
@@ -144,27 +141,30 @@ if file_audit:
             audit_all, db_all = target['all_specs'], best['spec_json']
             sel_size = st.selectbox("Chọn Size đối soát:", list(audit_all.keys()))
             
-            if sel_size in audit_all:
-                spec_audit = audit_all[sel_size]
-                # Fix lấy tên size khớp nhất
-                sz_match_res = process.extractOne(sel_size, db_all.keys(), scorer=fuzz.Ratio)
-                db_sz_key = sz_match_res[0] if sz_match_res else None
-                spec_ref = db_all.get(db_sz_key, {}) if db_sz_key else {}
+            # --- FIX LOGIC SO KHỚP MỜ ---
+            spec_audit = audit_all[sel_size]
+            
+            # Sử dụng extractOne an toàn (không dùng index trực tiếp)
+            sz_match = process.extractOne(sel_size, list(db_all.keys()), scorer=fuzz.Ratio)
+            db_sz_key = sz_match[0] if sz_match and sz_match[1] > 60 else None
+            spec_ref = db_all.get(db_sz_key, {}) if db_sz_key else {}
+            
+            report = []
+            for pom_audit, v_audit in spec_audit.items():
+                pm_match = process.extractOne(pom_audit, list(spec_ref.keys()), scorer=fuzz.TokenSortRatio)
+                db_pm_key = pm_match[0] if pm_match and pm_match[1] > 80 else None
+                v_ref = spec_ref.get(db_pm_key, 0) if db_pm_key else 0
                 
-                report = []
-                for pom_audit, v_audit in spec_audit.items():
-                    # Fix lấy tên POM khớp nhất
-                    pm_match_res = process.extractOne(pom_audit, spec_ref.keys(), scorer=fuzz.TokenSortRatio)
-                    db_pm_key = pm_match_res[0] if pm_match_res and pm_match_res[1] > 80 else None
-                    v_ref = spec_ref.get(db_pm_key, 0) if db_pm_key else 0
-                    
-                    diff = round(v_audit - v_ref, 4)
-                    status = "✅ OK" if abs(diff) < 0.0001 else f"❌ LỆCH ({diff:+.4f})"
-                    report.append({"Vị trí (POM)": pom_audit, "Audit": v_audit, "Gốc": v_ref, "Lệch": diff, "Kết quả": status})
-                
-                st.table(pd.DataFrame(report))
-                
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    pd.DataFrame(report).to_excel(writer, index=False, sheet_name='Audit')
-                st.download_button("📥 TẢI BÁO CÁO EXCEL", output.getvalue(), f"Audit_{sel_size}.xlsx")
+                diff = round(v_audit - v_ref, 4)
+                status = "✅ OK" if abs(diff) < 0.0001 else f"❌ LỆCH ({diff:+.4f})"
+                report.append({"Vị trí (POM)": pom_audit, "Audit": v_audit, "Gốc": v_ref, "Lệch": diff, "Kết quả": status})
+            
+            st.table(pd.DataFrame(report))
+            
+            # Xuất Excel
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                pd.DataFrame(report).to_excel(writer, index=False, sheet_name='Audit')
+            st.download_button("📥 TẢI BÁO CÁO EXCEL", output.getvalue(), f"Audit_{sel_size}.xlsx")
+    else:
+        st.error("Không quét được bảng thông số. Hãy kiểm tra lại file PDF.")
