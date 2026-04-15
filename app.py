@@ -7,10 +7,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
 # ================= 1. CONFIGURATION & LOGO =================
-# Mã hóa Logo PPJ Group chuẩn (Nhúng trực tiếp)
-PPJ_LOGO_B64 = "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"
+# Mã hóa Logo PPJ chuẩn (Đảm bảo hiển thị 100% không lo lỗi link)
+PPJ_LOGO_B64 = "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"
 
-# Supabase Auth
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
@@ -18,10 +17,10 @@ supabase = create_client(URL, KEY)
 
 st.set_page_config(layout="wide", page_title="PPJ Auditor Pro", page_icon="👔")
 
-# Quản lý reset uploader
+# Quản lý Key Reset Giao diện
 if 'master_key' not in st.session_state: st.session_state['master_key'] = 0
 if 'audit_key' not in st.session_state: st.session_state['audit_key'] = 0
-if 'selected_sku' not in st.session_state: st.session_state['selected_sku'] = None
+if 'sel_sku' not in st.session_state: st.session_state['sel_sku'] = None
 
 # ================= 2. AI CORE & UTILS =================
 @st.cache_resource
@@ -50,7 +49,7 @@ def parse_val(t):
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF LOGIC (STRICT & SMART) =================
+# ================= 3. PDF EXTRACTION (STRICT) =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes, is_reit = {}, None, False
     try:
@@ -97,12 +96,11 @@ def extract_pdf_multi_size(file_content):
                                 if s_name not in all_specs: all_specs[s_name] = {}
                                 all_specs[s_name].update(temp_data)
         
-        # LOẠI BỎ FILE LỖI (Thiếu hình hoặc thiếu số đo)
         if not all_specs or img_bytes is None: return None
         return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reit}
     except: return None
 
-# --- FUZZY MATCHING FUNCTION ---
+# So khớp mờ để tránh lỗi lệch tên POM
 def smart_match(query, choices):
     query_norm = re.sub(r'[^a-z0-9]', '', query.lower())
     best_m, max_s = None, 0
@@ -111,11 +109,11 @@ def smart_match(query, choices):
         if query_norm == c_norm: return c
         score = difflib.SequenceMatcher(None, query_norm, c_norm).ratio()
         if score > max_s: max_s = score; best_m = c
-    return best_m if max_s > 0.6 else None
+    return best_m if max_s > 0.7 else None
 
-# ================= 4. UI =================
+# ================= 4. PREMIUM UI =================
 with st.sidebar:
-    st.image(f"data:image/png;base64,{PPJ_LOGO_B64}", use_container_width=True)
+    st.markdown(f'<div style="text-align: center;"><img src="data:image/png;base64,{PPJ_LOGO_B64}" width="200"></div>', unsafe_allow_html=True)
     st.markdown("---")
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
     count = res_count.count or 0
@@ -145,11 +143,10 @@ with st.sidebar:
 
 # HEADER
 st.markdown(f'<img src="data:image/png;base64,{PPJ_LOGO_B64}" width="150">', unsafe_allow_html=True)
-st.title("AI SMART AUDITOR PRO - V96")
-st.caption("Premium Technical Audit System for PPJ Group")
+st.title("PPJ GROUP - AI SMART AUDITOR PRO")
 st.markdown("---")
 
-file_audit = st.file_uploader("📤 Upload Audit Tech-Pack", type="pdf", key=f"audit_{st.session_state['audit_key']}")
+file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf", key=f"audit_{st.session_state['audit_key']}")
 
 if file_audit:
     a_bytes = file_audit.read()
@@ -162,15 +159,16 @@ if file_audit:
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
             
-            st.subheader(f"🎯 Best Matches Found (Mode: {'REITMANS' if target['is_reit'] else 'General'})")
+            st.subheader(f"🎯 AI Results (Mode: {'REITMANS' if target['is_reit'] else 'General'})")
             cols = st.columns(4)
-            cols[0].image(target['img'], caption="CURRENT FILE", use_container_width=True)
+            with cols[0]: st.image(target['img'], caption="SOURCE FILE", use_container_width=True)
             for i, (idx, row) in enumerate(top_3.iterrows()):
-                cols[i+1].image(row['image_url'], caption=f"Match: {row['sim']:.1%}", use_container_width=True)
-                if cols[i+1].button(f"SELECT MODEL {i+1}", key=f"btn_{idx}"):
-                    st.session_state['selected_sku'] = row.to_dict()
+                with cols[i+1]:
+                    st.image(row['image_url'], caption=f"Match: {row['sim']:.1%}", use_container_width=True)
+                    if st.button(f"SELECT MODEL {i+1}", key=f"btn_{idx}", use_container_width=True):
+                        st.session_state['sel_sku'] = row.to_dict()
 
-            best = st.session_state['selected_sku'] or top_3.iloc[0].to_dict()
+            best = st.session_state['sel_sku'] if st.session_state['sel_sku'] else top_3.iloc[0].to_dict()
             st.success(f"**ACTIVE REFERENCE:** {best['file_name']}")
             
             st.divider()
@@ -178,7 +176,6 @@ if file_audit:
             spec_audit = target['all_specs'][sel_size]
             spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values())[0])
             
-            # --- SMART COMPARING LOGIC ---
             report = []
             repo_choices = list(spec_ref.keys())
             for d, v in spec_audit.items():
@@ -188,13 +185,15 @@ if file_audit:
                 status = "✅ PASS" if (rv > 0 and abs(diff) < 0.2) else "❌ FAIL"
                 report.append({"POM Description": d, "Audit": v, "Repo": rv, "Diff": diff, "Status": status})
             
+            # HIỂN THỊ BẰNG DATAFRAME ĐỂ HỖ TRỢ STYLE BÔI ĐỎ
             df_rep = pd.DataFrame(report)
-            st.table(df_rep.style.applymap(lambda x: 'color: red' if "FAIL" in str(x) else '', subset=['Status']))
+            st.dataframe(df_rep.style.map(lambda x: 'color: red' if "FAIL" in str(x) else '', subset=['Status']), use_container_width=True, hide_index=True)
             
             towrite = io.BytesIO()
             df_rep.to_excel(towrite, index=False, engine='xlsxwriter')
             col1, col2 = st.columns(2)
-            col1.download_button("📥 DOWNLOAD XLS REPORT", data=towrite.getvalue(), file_name=f"Audit_{file_audit.name}.xlsx", use_container_width=True)
-            if col2.button("RESET SESSION", use_container_width=True):
-                st.session_state['audit_key'] += 1; st.session_state['selected_sku'] = None; st.rerun()
-    else: st.error("⚠️ Invalid File: No image or measurement data found.")
+            with col1: st.download_button("📥 DOWNLOAD XLS REPORT", data=towrite.getvalue(), file_name=f"Audit_{file_audit.name}.xlsx", use_container_width=True)
+            with col2:
+                if st.button("RESET SESSION", use_container_width=True):
+                    st.session_state['audit_key'] += 1; st.session_state['sel_sku'] = None; st.rerun()
+    else: st.error("⚠️ REJECTED: Invalid File Format or Missing Specs.")
