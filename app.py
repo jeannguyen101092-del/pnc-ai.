@@ -36,34 +36,35 @@ def get_image_vector(img_bytes):
     tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
     with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
 
+# ================= 2. AI CORE ENGINE (CẬP NHẬT) =================
 def parse_val(t):
     try:
-        if not t or str(t).strip() == "": return 0
+        if t is None: return 0
+        # Xử lý các trường hợp số nằm trong chuỗi phức tạp
         txt = str(t).replace(',', '.').replace('"', '').strip().lower()
-        txt = re.sub(r'(cm|inch|in|mm|yds)$', '', txt)
+        # Loại bỏ đơn vị
+        txt = re.sub(r'(cm|inch|in|mm|yds|tol|grade)$', '', txt)
+        # Tìm tất cả các cụm số, phân số (ví dụ: 1 1/2 hoặc 15.5)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
         v = match[0]
-        if ' ' in v:
+        if ' ' in v: # Xử lý hỗn số: 1 1/2 -> 1.5
             p = v.split()
             return float(p[0]) + eval(p[1])
-        return float(eval(v)) if '/' in v else float(v)
+        if '/' in v: # Xử lý phân số: 1/2 -> 0.5
+            return float(eval(v))
+        return float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION (FULL SPECS + SKETCH DETECTOR) =================
+# ================= 3. PDF EXTRACTION (CẬP NHẬT LOGIC TÌM CỘT) =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes, is_reit = {}, None, False
     try:
-        txt_check = ""
-        with pdfplumber.open(io.BytesIO(file_content)) as pdf:
-            for p in pdf.pages[:1]: txt_check += (p.extract_text() or "").upper()
-        if "REITMAN" in txt_check: is_reit = True
-
-        # --- DÒ TÌM HÌNH VẼ SKETCH ---
+        # 1. Trích xuất ảnh (giữ nguyên logic dò Sketch của bạn)
         doc = fitz.open(stream=file_content, filetype="pdf")
         page = doc.load_page(0)
-        try:
-            paths = page.get_drawings()
+        paths = page.get_drawings()
+        if paths:
             bboxes = [p["rect"] for p in paths if p["rect"].width < page.rect.width * 0.9]
             if bboxes:
                 x0, y0 = min([b.x0 for b in bboxes]), min([b.y0 for b in bboxes])
@@ -71,45 +72,58 @@ def extract_pdf_multi_size(file_content):
                 crop = fitz.Rect(max(0, x0-30), max(0, y0-30), min(page.rect.width, x1+30), min(page.rect.height, y1+30))
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=crop)
             else: pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-        except: pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
+        else: pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
         img_bytes = pix.tobytes("png")
         doc.close()
 
-        # --- QUÉT TOÀN BỘ TRANG ĐỂ LẤY FULL THÔNG SỐ ---
+        # 2. TRÍCH XUẤT THÔNG SỐ - MỞ RỘNG TỪ KHÓA TÌM CỘT
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
                     if df.empty or len(df.columns) < 2: continue
+                    
                     desc_col, size_cols = -1, {}
+                    # Tìm cột Description (mở rộng thêm từ khóa)
                     for r_idx in range(min(15, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         for i, v in enumerate(row):
-                            if (is_reit and "POM NAME" in v) or (not is_reit and ("DESCRIPTION" in v or "POM NAME" in v)):
+                            if any(x in v for x in ["DESCRIPTION", "POM NAME", "MEASUREMENT", "POINT"]):
                                 desc_col = i; break
                         if desc_col != -1: break
+                    
                     if desc_col == -1: continue
+                    
+                    # Tìm các cột Size (XS, S, M, L, XL hoặc số 28, 30, 32...)
                     for r_idx in range(min(15, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         for i, v in enumerate(row):
                             if i == desc_col or not v: continue
-                            if any(x in v for x in ["TOL", "GRADE", "CODE", "+/-"]): continue
-                            if len(v) <= 8 or v.isdigit() or v in ["XS","S","M","L","XL"]: size_cols[i] = v
+                            # Loại bỏ các cột phụ không phải size
+                            if any(x in v for x in ["TOL", "GRADE", "CODE", "+/-", "SPEC"]): continue
+                            # Chấp nhận Size là chữ ngắn (S, M, L) hoặc số nguyên (28, 30)
+                            if len(v) <= 8 or v.isdigit(): 
+                                size_cols[i] = v
                         if size_cols: break
+                    
                     if size_cols:
                         for s_col, s_name in size_cols.items():
                             temp_data = {}
                             for d_idx in range(len(df)):
                                 pom_text = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
-                                if len(pom_text) < 3 or any(x in pom_text.upper() for x in ["DESCRIPTION", "POM NAME"]): continue
+                                # Lọc bỏ các dòng tiêu đề trùng lặp
+                                if len(pom_text) < 3 or any(x in pom_text.upper() for x in ["DESCRIPTION", "POM NAME", "SIZE"]): continue
                                 val = parse_val(df.iloc[d_idx, s_col])
                                 if val > 0: temp_data[pom_text] = val
                             if temp_data:
                                 if s_name not in all_specs: all_specs[s_name] = {}
                                 all_specs[s_name].update(temp_data)
         return {"all_specs": all_specs, "img": img_bytes}
-    except: return None
+    except Exception as e:
+        st.error(f"Lỗi trích xuất: {e}")
+        return None
+
 
 # ================= 4. UI MASTER REPOSITORY =================
 with st.sidebar:
