@@ -154,6 +154,7 @@ st.markdown("---")
 
 file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf", key=f"audit_{st.session_state['reset_key']}")
 
+# ================= PHẦN SỬA LOGIC SO SÁNH (Dán đè vào đoạn xử lý so sánh) =================
 if file_audit:
     a_bytes = file_audit.read()
     target = extract_pdf_multi_size(a_bytes)
@@ -162,11 +163,39 @@ if file_audit:
         if res.data:
             df_db = pd.DataFrame(res.data)
             t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
-            df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
-            top_3 = df_db.sort_values('sim', ascending=False).head(3)
             
+            # 1. Tính toán độ tương đồng hình ảnh (Cũ)
+            db_vectors = np.array([v for v in df_db['vector']])
+            df_db['sim'] = cosine_similarity(t_vec, db_vectors).flatten()
+
+            # 2. LOGIC MỚI: KIỂM TRA TỪ KHÓA ĐỂ PHÂN LOẠI (Chống quần short so quần dài)
+            # Lấy tên file đang audit để tìm từ khóa chính
+            t_name = file_audit.name.upper()
+            def calculate_text_score(row_name):
+                row_name = str(row_name).upper()
+                score = 0
+                # Phân loại độ dài quần
+                if ("SHORT" in t_name) == ("SHORT" in row_name): score += 0.2
+                if ("LONG" in t_name) == ("LONG" in row_name): score += 0.2
+                # Phân loại loại túi/chi tiết
+                keywords = ["POCKET", "PATCH", "WELT", "JOGGER", "CARGO"]
+                for kw in keywords:
+                    if (kw in t_name) == (kw in row_name): score += 0.1
+                return score
+
+            df_db['text_bonus'] = df_db['file_name'].apply(calculate_text_score)
+            
+            # Kết hợp điểm hình ảnh và điểm từ khóa (Ưu tiên hình ảnh nhưng có lọc từ khóa)
+            df_db['final_sim'] = df_db['sim'] + df_db['text_bonus']
+            
+            # Sắp xếp theo điểm tổng hợp mới
+            top_3 = df_db.sort_values('final_sim', ascending=False).head(3)
+            
+            # (Phần hiển thị UI bên dưới giữ nguyên như cũ của bạn...)
             st.subheader(f"🎯 AI Best Matches")
             cols = st.columns(4)
+            # ... tiếp tục code hiển thị cũ ...
+
             with cols[0]:
                 st.image(target['img'], caption="SOURCE FILE", use_container_width=True)
             
