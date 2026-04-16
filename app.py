@@ -6,6 +6,7 @@ from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 import os
+from difflib import get_close_matches
 
 # ================= 1. CONFIGURATION =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
@@ -34,37 +35,32 @@ def get_file_hash(file_bytes): return hashlib.md5(file_bytes).hexdigest()
 def get_image_vector(img_bytes):
     img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
     tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
-    with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
+    with torch.no_grad(): 
+        return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
 
-# ================= 2. AI CORE ENGINE (CẬP NHẬT) =================
 def parse_val(t):
     try:
-        if t is None: return 0
-        # Xử lý các trường hợp số nằm trong chuỗi phức tạp
+        if not t or str(t).strip() == "": return 0
         txt = str(t).replace(',', '.').replace('"', '').strip().lower()
-        # Loại bỏ đơn vị
         txt = re.sub(r'(cm|inch|in|mm|yds|tol|grade)$', '', txt)
-        # Tìm tất cả các cụm số, phân số (ví dụ: 1 1/2 hoặc 15.5)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
         v = match[0]
-        if ' ' in v: # Xử lý hỗn số: 1 1/2 -> 1.5
+        if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
-        if '/' in v: # Xử lý phân số: 1/2 -> 0.5
-            return float(eval(v))
-        return float(v)
+        return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION (CẬP NHẬT LOGIC TÌM CỘT) =================
+# ================= 3. PDF EXTRACTION (SKETCH DETECTOR + FULL SPECS) =================
 def extract_pdf_multi_size(file_content):
-    all_specs, img_bytes, is_reit = {}, None, False
+    all_specs, img_bytes = {}, None
     try:
-        # 1. Trích xuất ảnh (giữ nguyên logic dò Sketch của bạn)
+        # --- DÒ TÌM VÙNG HÌNH VẼ SKETCH ---
         doc = fitz.open(stream=file_content, filetype="pdf")
         page = doc.load_page(0)
-        paths = page.get_drawings()
-        if paths:
+        try:
+            paths = page.get_drawings()
             bboxes = [p["rect"] for p in paths if p["rect"].width < page.rect.width * 0.9]
             if bboxes:
                 x0, y0 = min([b.x0 for b in bboxes]), min([b.y0 for b in bboxes])
@@ -72,11 +68,11 @@ def extract_pdf_multi_size(file_content):
                 crop = fitz.Rect(max(0, x0-30), max(0, y0-30), min(page.rect.width, x1+30), min(page.rect.height, y1+30))
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=crop)
             else: pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-        else: pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
+        except: pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
         img_bytes = pix.tobytes("png")
         doc.close()
 
-        # 2. TRÍCH XUẤT THÔNG SỐ - MỞ RỘNG TỪ KHÓA TÌM CỘT
+        # --- QUÉT TOÀN BỘ BẢNG THÔNG SỐ TRÊN TẤT CẢ CÁC TRANG ---
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
@@ -85,45 +81,37 @@ def extract_pdf_multi_size(file_content):
                     if df.empty or len(df.columns) < 2: continue
                     
                     desc_col, size_cols = -1, {}
-                    # Tìm cột Description (mở rộng thêm từ khóa)
-                    for r_idx in range(min(15, len(df))):
+                    # Tìm cột tên thông số (Description/POM/Measurement)
+                    for r_idx in range(min(12, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         for i, v in enumerate(row):
-                            if any(x in v for x in ["DESCRIPTION", "POM NAME", "MEASUREMENT", "POINT"]):
+                            if any(kw in v for kw in ["DESCRIPTION", "POM", "MEASUREMENT", "POINT"]):
                                 desc_col = i; break
                         if desc_col != -1: break
-                    
                     if desc_col == -1: continue
-                    
-                    # Tìm các cột Size (XS, S, M, L, XL hoặc số 28, 30, 32...)
-                    for r_idx in range(min(15, len(df))):
+
+                    # Tìm các cột Size
+                    for r_idx in range(min(12, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         for i, v in enumerate(row):
                             if i == desc_col or not v: continue
-                            # Loại bỏ các cột phụ không phải size
                             if any(x in v for x in ["TOL", "GRADE", "CODE", "+/-", "SPEC"]): continue
-                            # Chấp nhận Size là chữ ngắn (S, M, L) hoặc số nguyên (28, 30)
-                            if len(v) <= 8 or v.isdigit(): 
-                                size_cols[i] = v
+                            if len(v) <= 8: size_cols[i] = v
                         if size_cols: break
                     
                     if size_cols:
                         for s_col, s_name in size_cols.items():
                             temp_data = {}
                             for d_idx in range(len(df)):
-                                pom_text = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
-                                # Lọc bỏ các dòng tiêu đề trùng lặp
-                                if len(pom_text) < 3 or any(x in pom_text.upper() for x in ["DESCRIPTION", "POM NAME", "SIZE"]): continue
+                                pom = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
+                                if len(pom) < 3 or any(kw in pom.upper() for kw in ["DESCRIPTION", "POM", "SIZE"]): continue
                                 val = parse_val(df.iloc[d_idx, s_col])
-                                if val > 0: temp_data[pom_text] = val
+                                if val > 0: temp_data[pom] = val
                             if temp_data:
                                 if s_name not in all_specs: all_specs[s_name] = {}
                                 all_specs[s_name].update(temp_data)
         return {"all_specs": all_specs, "img": img_bytes}
-    except Exception as e:
-        st.error(f"Lỗi trích xuất: {e}")
-        return None
-
+    except: return None
 
 # ================= 4. UI MASTER REPOSITORY =================
 with st.sidebar:
@@ -143,8 +131,6 @@ with st.sidebar:
             with st.spinner("AI Processing..."):
                 for f in new_files:
                     c = f.read(); h = get_file_hash(c)
-                    check = supabase.table("ai_data").select("id").eq("id", h).execute()
-                    if check.data: continue
                     data = extract_pdf_multi_size(c)
                     if data and data.get('img') and data.get('all_specs'):
                         path = f"lib_{h}.png"
@@ -159,10 +145,10 @@ with st.sidebar:
             st.session_state['reset_key'] += 1
             st.rerun()
 
-# ================= 5. AUDIT INTERFACE =================
-h_col1, h_col2 = st.columns(2) # ĐÃ SỬA LỖI Ở ĐÂY
+# ================= 5. AUDIT INTERFACE (HIGH SENSITIVITY) =================
+h_col1, h_col2 = st.columns(2)
 with h_col1: display_logo(width=120)
-with h_col2:
+with h_col2: 
     st.title("AI SMART AUDITOR PRO")
     st.markdown("*Premium Technical Audit System for PPJ Group*")
 
@@ -178,31 +164,36 @@ if file_audit:
         if res.data:
             df_db = pd.DataFrame(res.data)
             
-            # --- BỘ LỌC CHI TIẾT NHẠY CAO ---
+            # --- BỘ LỌC ĐỘ NHẠY SIÊU CẤP (SUPER SENSITIVE) ---
             t_name = file_audit.name.upper()
             KEYWORDS = {
                 "CARGO": ["CARGO", "TUI HOP", "POCKET HOP"],
                 "WAIST": ["ELASTIC", "THUN", "WAISTBAND", "LUNG"],
+                "POCKET": ["PATCH", "WELT", "TUI MO", "TUI DAP"],
                 "TYPE": ["SKIRT", "VAY", "PANT", "QUAN", "SHORT", "TROUSER"]
             }
 
             def get_sensitivity_weight(row_name):
                 row_name = str(row_name).upper(); weight = 1.0
+                # Cấp 1: Phân loại gốc (Quần vs Váy)
                 for kw in KEYWORDS["TYPE"]:
-                    if (kw in t_name) == (kw in row_name): weight += 0.4
-                for kw in KEYWORDS["CARGO"] + KEYWORDS["WAIST"]:
-                    if (kw in t_name) == (kw in row_name): weight += 0.3
+                    if (kw in t_name) == (kw in row_name): weight += 0.5
+                # Cấp 2: Chi tiết Túi & Lưng (Tính năng bạn yêu cầu)
+                for kw in KEYWORDS["CARGO"] + KEYWORDS["WAIST"] + KEYWORDS["POCKET"]:
+                    if (kw in t_name) and (kw in row_name): weight += 0.3
                 return weight
 
             df_db['weight'] = df_db['file_name'].apply(get_sensitivity_weight)
             t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
+            
+            # ĐIỂM TỔNG HỢP = Hình ảnh x Trọng số chi tiết
             df_db['final_score'] = df_db['sim'] * df_db['weight']
             top_3 = df_db.sort_values('final_score', ascending=False).head(3)
             
-            st.subheader("🎯 AI Best Image Matches")
+            st.subheader("🎯 AI Smart Matches (Sensitivity Active)")
             cols = st.columns(4)
-            with cols[0]: st.image(target['img'], caption="SOURCE SKETCH", use_container_width=True)
+            with cols: st.image(target['img'], caption="SOURCE SKETCH", use_container_width=True)
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 with cols[i+1]:
                     st.image(row['image_url'], caption=f"Match: {row['sim']:.1%}", use_container_width=True)
@@ -210,19 +201,24 @@ if file_audit:
                         st.session_state['sel'] = row.to_dict()
 
             best = st.session_state.get('sel', top_3.iloc[0].to_dict())
-            st.success(f"**REFERENCE SKU:** {best['file_name']}")
+            st.success(f"**COMPARING WITH:** {best['file_name']}")
 
+            # --- HIỂN THỊ BẢNG SO SÁNH THÔNG MINH (FUZZY MATCHING) ---
             if target.get("all_specs"):
                 st.subheader("📋 Measurement Comparison")
                 all_export = []
-                for sz, specs in target['all_specs'].items():
+                for sz, t_specs in target['all_specs'].items():
                     with st.expander(f"SIZE: {sz}", expanded=True):
-                        ref_s = best['spec_json'].get(sz, {})
-                        rows = []
-                        for pom, val in specs.items():
-                            rv = ref_s.get(pom, 0); diff = val - rv
-                            rows.append({"Point": pom, "Target": val, "Ref": rv, "Diff": f"{diff:+.3f}"})
-                            all_export.append({"Size": sz, "Point": pom, "Target": val, "Ref": rv, "Diff": diff})
+                        r_specs = best['spec_json'].get(sz, {})
+                        rows = []; ref_poms = list(r_specs.keys())
+                        
+                        for t_pom, t_val in t_specs.items():
+                            # Tìm tên gần nhất để ghép cặp Target và Ref
+                            matches = get_close_matches(t_pom, ref_poms, n=1, cutoff=0.6)
+                            r_val = r_specs.get(matches[0], 0) if matches else 0
+                            
+                            rows.append({"Point": t_pom, "Target": t_val, "Ref": r_val, "Diff": f"{t_val-r_val:+.3f}"})
+                            all_export.append({"Size": sz, "Point": t_pom, "Target": t_val, "Ref": r_val, "Diff": t_val-r_val})
                         st.table(pd.DataFrame(rows))
                 
                 buf = io.BytesIO()
