@@ -126,6 +126,22 @@ with st.sidebar:
     st.progress(percent / 100)
 
         st.divider()
+    # ================= 4. UI PPJ GROUP =================
+with st.sidebar:
+    display_logo(width=220)
+    st.markdown("---")
+    st.title("📂 MASTER REPOSITORY")
+    
+    res_count = supabase.table("ai_data").select("id", count="exact").execute()
+    count = res_count.count or 0
+    st.metric("Total Synchronized SKUs", f"{count} Models")
+    
+    used_mb = (count * 0.15)
+    percent = min((used_mb / 1024) * 100, 100.0)
+    st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1GB")
+    st.progress(percent / 100)
+
+    st.divider()
     st.subheader("📥 Data Ingestion")
     new_files = st.file_uploader("Upload Tech-Packs (Bulk)", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
     if new_files and st.button("SYNCHRONIZE DATABASE", use_container_width=True):
@@ -134,14 +150,14 @@ with st.sidebar:
                 c = f.read()
                 h = get_file_hash(c)
                 
-                # 1. KIỂM TRA TRÙNG LẶP (Bỏ qua nếu đã có trong DB)
+                # Chống trùng lặp
                 check_exists = supabase.table("ai_data").select("id").eq("id", h).execute()
                 if check_exists.data:
                     continue
 
                 data = extract_pdf_multi_size(c)
                 
-                # 2. KIỂM TRA FILE LỖI (Phải có đủ hình và thông số mới up)
+                # Chống file lỗi (không hình hoặc không thông số)
                 if data and data.get('img') and data.get('all_specs'):
                     path = f"lib_{h}.png"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
@@ -149,9 +165,9 @@ with st.sidebar:
                         "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
                         "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                     }).execute()
-                    
         st.session_state['reset_key'] += 1
         st.rerun()
+
 
                 # -----------------------------------------------------
 
