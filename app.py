@@ -21,7 +21,7 @@ if 'sel' not in st.session_state: st.session_state['sel'] = None
 
 def display_logo(width=200):
     if os.path.exists("logo.png"): st.image("logo.png", width=width)
-    else: st.markdown(f"<h1 style='color: #1E3A8A;'>PPJ GROUP</h1>", unsafe_allow_html=True)
+    else: st.markdown(f"<h1 style='color: #1E3A8A; margin:0;'>PPJ GROUP</h1>", unsafe_allow_html=True)
 
 # ================= 2. AI CORE ENGINE =================
 @st.cache_resource
@@ -44,25 +44,23 @@ def parse_val(t):
         txt = re.sub(r'(cm|inch|in|mm|yds|tol|grade)$', '', txt)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0] # SỬA LỖI TẠI ĐÂY
+        v = match[0] # Lấy giá trị đầu tiên tìm được
         if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION (CHẾ ĐỘ QUÉT CẠN) =================
+# ================= 3. PDF EXTRACTION (QUÉT CẠN THÔNG SỐ) =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes = {}, None
     try:
-        # 1. Trích xuất ảnh Sketch
         doc = fitz.open(stream=file_content, filetype="pdf")
         page = doc.load_page(0)
         pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
         img_bytes = pix.tobytes("png")
         doc.close()
 
-        # 2. Quét thông số không phụ thuộc từ khóa (Quét cạn)
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
@@ -70,14 +68,13 @@ def extract_pdf_multi_size(file_content):
                     df = pd.DataFrame(tb).fillna("")
                     if df.empty or len(df.columns) < 2: continue
                     
-                    # Cột nhiều chữ nhất là tên thông số (Point)
+                    # Tìm cột tên thông số bằng cách đếm chiều dài chuỗi trung bình
                     char_counts = df.apply(lambda x: x.astype(str).str.len().mean())
                     desc_col = char_counts.idxmax()
                     
                     for col_idx in range(len(df.columns)):
                         if col_idx == desc_col: continue
                         
-                        # Kiểm tra xem cột có chứa số không
                         sample_vals = [parse_val(v) for v in df.iloc[:, col_idx].head(15)]
                         if sum(sample_vals) > 0:
                             s_name = str(df.iloc[0, col_idx]).strip().replace('\n', ' ') or f"Size_{col_idx}"
@@ -156,7 +153,6 @@ if file_audit:
         if res.data:
             df_db = pd.DataFrame(res.data)
             
-            # TÌM KIẾM MÃ HÀNG
             st.subheader("🔍 Tìm kiếm mã hàng thủ công")
             search_query = st.text_input("Nhập mã hàng/tên file:", placeholder="Ví dụ: 5176...")
             if search_query:
@@ -173,8 +169,6 @@ if file_audit:
             if st.button("🚀 TỰ ĐỘNG TÌM KIẾM MẪU TƯƠNG ĐỒNG (AI)", use_container_width=True):
                 st.session_state['sel'] = None
 
-            # LOGIC SO SÁNH AI
-            t_name = file_audit.name.upper()
             t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
@@ -198,9 +192,9 @@ if file_audit:
                     for sz, t_specs in target['all_specs'].items():
                         with st.expander(f"SIZE: {sz}", expanded=True):
                             r_specs = best['spec_json'].get(sz, {})
-                            rows = []; r_poms = list(r_specs.keys())
+                            rows = []; ref_poms = list(r_specs.keys())
                             for t_pom, t_val in t_specs.items():
-                                matches = get_close_matches(t_pom, r_poms, n=1, cutoff=0.6)
+                                matches = get_close_matches(t_pom, ref_poms, n=1, cutoff=0.6)
                                 rv = r_specs.get(matches[0], 0) if matches else 0
                                 rows.append({"Point": t_pom, "Target": t_val, "Ref": rv, "Diff": f"{t_val-rv:+.3f}"})
                                 all_export.append({"Size": sz, "Point": t_pom, "Target": t_val, "Ref": rv, "Diff": t_val-rv})
@@ -209,4 +203,3 @@ if file_audit:
                     with pd.ExcelWriter(buf, engine='xlsxwriter') as wr:
                         pd.DataFrame(all_export).to_excel(wr, index=False)
                     st.download_button("📥 DOWNLOAD REPORT", buf.getvalue(), f"Audit_{best['file_name']}.xlsx", use_container_width=True)
-                else: st.warning("⚠️ File không có thông số bảng để so sánh.")
