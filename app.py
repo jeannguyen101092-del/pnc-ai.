@@ -44,10 +44,10 @@ def parse_val(t):
         txt = re.sub(r'(cm|inch|in|mm|yds|tol|grade)$', '', txt)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0]
+        v = match
         if ' ' in v:
             p = v.split()
-            return float(p[0]) + eval(p[1])
+            return float(p) + eval(p)
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
@@ -111,8 +111,15 @@ with st.sidebar:
     st.markdown("---")
     st.title("📂 MASTER REPOSITORY")
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
-    st.metric("Total Synchronized SKUs", f"{res_count.count or 0} Models")
+    count = res_count.count or 0
+    st.metric("Total Synchronized SKUs", f"{count} Models")
     
+    # --- KHÔI PHỤC HIỂN THỊ DUNG LƯỢNG ---
+    used_mb = (count * 0.15)
+    percent = min((used_mb / 1024) * 100, 100.0)
+    st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1GB")
+    st.progress(percent / 100)
+
     st.divider()
     st.subheader("📥 Data Ingestion")
     new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
@@ -176,10 +183,7 @@ if file_audit:
             
             st.subheader("🎯 AI Smart Matches (Sensitivity Active)")
             cols = st.columns(4)
-            # SỬA LỖI TẠI ĐÂY: Dùng cols[0] thay vì cols
-            with cols[0]: 
-                st.image(target['img'], caption="SOURCE SKETCH", use_container_width=True)
-            
+            with cols[0]: st.image(target['img'], caption="SOURCE SKETCH", use_container_width=True)
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 with cols[i+1]:
                     st.image(row['image_url'], caption=f"Match: {row['sim']:.1%}", use_container_width=True)
