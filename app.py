@@ -55,52 +55,40 @@ def parse_val(t):
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes = {}, None
     try:
-        # --- DÒ TÌM HÌNH VẼ SKETCH ---
+        # --- 1. DÒ TÌM HÌNH VẼ SKETCH ---
         doc = fitz.open(stream=file_content, filetype="pdf")
         page = doc.load_page(0)
-        try:
-            paths = page.get_drawings()
-            bboxes = [p["rect"] for p in paths if p["rect"].width < page.rect.width * 0.9]
-            if bboxes:
-                x0, y0 = min([b.x0 for b in bboxes]), min([b.y0 for b in bboxes])
-                x1, y1 = max([b.x1 for b in bboxes]), max([b.y1 for b in bboxes])
-                crop = fitz.Rect(max(0, x0-30), max(0, y0-30), min(page.rect.width, x1+30), min(page.rect.height, y1+30))
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=crop)
-            else: pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-        except: pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
+        pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
         img_bytes = pix.tobytes("png")
         doc.close()
 
-        # --- QUÉT THÔNG SỐ (QUÉT TOÀN BỘ CÁC TRANG) ---
+        # --- 2. QUÉT THÔNG SỐ (CHẾ ĐỘ QUÉT CẠN) ---
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
                     if df.empty or len(df.columns) < 2: continue
-                    desc_col, size_cols = -1, {}
-                    for r_idx in range(min(15, len(df))):
-                        row = [str(c).strip().upper() for c in df.iloc[r_idx]]
-                        for i, v in enumerate(row):
-                            if any(kw in v for kw in ["DESCRIPTION", "POM", "MEASUREMENT", "POINT"]):
-                                desc_col = i; break
-                        if desc_col != -1: break
-                    if desc_col == -1: continue
-                    for r_idx in range(min(15, len(df))):
-                        row = [str(c).strip().upper() for c in df.iloc[r_idx]]
-                        for i, v in enumerate(row):
-                            if i == desc_col or not v: continue
-                            if any(x in v for x in ["TOL", "GRADE", "CODE", "+/-", "SPEC"]): continue
-                            if len(v) <= 8: size_cols[i] = v
-                        if size_cols: break
-                    if size_cols:
-                        for s_col, s_name in size_cols.items():
+                    
+                    # TỰ ĐỘNG TÌM CỘT: Cột nào nhiều chữ nhất là Description, cột nào nhiều số nhất là Size
+                    char_counts = df.apply(lambda x: x.astype(str).str.len().mean())
+                    desc_col = char_counts.idxmax() # Giả định cột nhiều chữ nhất là tên thông số
+                    
+                    for col_idx in range(len(df.columns)):
+                        if col_idx == desc_col: continue
+                        
+                        # Kiểm tra xem cột này có chứa số không
+                        sample_vals = [parse_val(v) for v in df.iloc[:, col_idx].head(20)]
+                        if sum(sample_vals) > 0: # Nếu cột có dữ liệu số
+                            s_name = str(df.iloc[0, col_idx]).strip() or f"Size_{col_idx}"
+                            
                             temp_data = {}
                             for d_idx in range(len(df)):
                                 pom = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
-                                if len(pom) < 3 or any(kw in pom.upper() for kw in ["DESCRIPTION", "POM", "SIZE"]): continue
-                                val = parse_val(df.iloc[d_idx, s_col])
-                                if val > 0: temp_data[pom] = val
+                                val = parse_val(df.iloc[d_idx, col_idx])
+                                if val > 0 and len(pom) > 2:
+                                    temp_data[pom] = val
+                            
                             if temp_data:
                                 if s_name not in all_specs: all_specs[s_name] = {}
                                 all_specs[s_name].update(temp_data)
