@@ -110,6 +110,7 @@ def extract_pdf_multi_size(file_content):
     except: return None
 
 # ================= 4. UI PPJ GROUP =================
+# ================= 4. UI PPJ GROUP =================
 with st.sidebar:
     display_logo(width=220)
     st.markdown("---")
@@ -130,7 +131,17 @@ with st.sidebar:
     if new_files and st.button("SYNCHRONIZE DATABASE", use_container_width=True):
         with st.spinner("AI Processing..."):
             for f in new_files:
-                c = f.read(); h = get_file_hash(c); data = extract_pdf_multi_size(c)
+                c = f.read()
+                h = get_file_hash(c) # Tính mã băm định danh file
+                
+                # --- PHẦN SỬA: KIỂM TRA TRÙNG LẶP TRƯỚC KHI CHẠY AI ---
+                check_exists = supabase.table("ai_data").select("id").eq("id", h).execute()
+                if check_exists.data:
+                    # Nếu đã tồn tại id này, bỏ qua các bước AI bên dưới để tránh lãng phí
+                    continue 
+                # -----------------------------------------------------
+
+                data = extract_pdf_multi_size(c)
                 if data and data['all_specs']:
                     path = f"lib_{h}.png"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
@@ -140,6 +151,7 @@ with st.sidebar:
                     }).execute()
         st.session_state['reset_key'] += 1
         st.rerun()
+
 
 # Header chính
 h_col1, h_col2 = st.columns([1, 4])
