@@ -145,6 +145,7 @@ with h_col2: st.title("AI SMART AUDITOR PRO")
 st.markdown("---")
 file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf")
 
+# ================= NÂNG CẤP BỘ LỌC NHẠY CAO (Dán vào đoạn xử lý Audit) =================
 if file_audit:
     a_bytes = file_audit.read()
     target = extract_pdf_flexible(a_bytes)
@@ -153,21 +154,47 @@ if file_audit:
         res = supabase.table("ai_data").select("*").execute()
         if res.data:
             df_db = pd.DataFrame(res.data)
-            t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             
-            # --- LOGIC PHÂN LOẠI CATEGORY (GIỮ LẠI TỪ BƯỚC TRƯỚC) ---
+            # --- LOGIC BỘ LỌC ĐA TẦNG (HIGH SENSITIVITY) ---
             t_name = file_audit.name.upper()
-            is_skirt = any(x in t_name for x in ["SKIRT", "VAY", "DRESS"])
-            is_pant = any(x in t_name for x in ["PANT", "QUAN", "SHORT"])
-            def get_cat_weight(row_name):
-                row_name = str(row_name).upper()
-                if is_skirt and any(x in row_name for x in ["SKIRT", "VAY", "DRESS"]): return 1.3
-                if is_pant and any(x in row_name for x in ["PANT", "QUAN", "SHORT"]): return 1.3
-                return 1.0
             
+            def get_sensitivity_score(row_name):
+                row_name = str(row_name).upper()
+                score = 1.0 # Điểm mặc định
+                
+                # 1. Cấp độ 1: Phân loại gốc (Quần vs Váy) - Quan trọng nhất
+                if ("SKIRT" in t_name) == ("SKIRT" in row_name): score += 0.5
+                if ("PANT" in t_name or "QUAN" in t_name) == ("PANT" in row_name or "QUAN" in row_name): score += 0.5
+                
+                # 2. Cấp độ 2: Chi tiết túi (Cargo, Pocket, Welt, Patch)
+                keywords_pocket = ["CARGO", "POCKET", "WELT", "PATCH", "MO", "DAP"]
+                for kw in keywords_pocket:
+                    if (kw in t_name) and (kw in row_name): score += 0.3 # Cộng điểm nếu cùng loại túi
+                
+                # 3. Cấp độ 3: Chi tiết lưng (Elastic/Thun vs Non-elastic)
+                keywords_waist = ["ELASTIC", "THUN", "BELT", "WAISTBAND", "LUNG"]
+                for kw in keywords_waist:
+                    if (kw in t_name) and (kw in row_name): score += 0.3
+                
+                # 4. Cấp độ 4: Kiểu dáng (Short vs Long/Trouser)
+                if ("SHORT" in t_name) == ("SHORT" in row_name): score += 0.4
+                
+                return score
+
+            # Áp dụng bộ lọc nhạy
+            df_db['sensitivity_weight'] = df_db['file_name'].apply(get_sensitivity_score)
+            # -----------------------------------------------
+
+            t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
-            df_db['final_score'] = df_db['sim'] * df_db['file_name'].apply(get_cat_weight)
+            
+            # ĐIỂM CUỐI CÙNG = (Độ tương đồng hình ảnh) x (Trọng số chi tiết túi/lưng)
+            df_db['final_score'] = df_db['sim'] * df_db['sensitivity_weight']
+            
             top_3 = df_db.sort_values('final_score', ascending=False).head(3)
+            
+            # (Phần hiển thị UI tiếp theo giữ nguyên...)
+
             
             st.subheader("🎯 AI Image Matches")
             cols = st.columns(4)
