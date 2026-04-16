@@ -44,23 +44,34 @@ def parse_val(t):
         txt = re.sub(r'(cm|inch|in|mm|yds|tol|grade)$', '', txt)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0]
+        v = match[0] # Lấy giá trị đầu tiên
         if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION (QUÉT TRỌN BỘ THÔNG SỐ) =================
+# ================= 3. PDF EXTRACTION (SKETCH + FULL SPECS) =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes = {}, None
     try:
+        # --- DÒ TÌM VÙNG HÌNH VẼ SKETCH ---
         doc = fitz.open(stream=file_content, filetype="pdf")
         page = doc.load_page(0)
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+        try:
+            paths = page.get_drawings()
+            bboxes = [p["rect"] for p in paths if p["rect"].width < page.rect.width * 0.9]
+            if bboxes:
+                x0, y0 = min([b.x0 for b in bboxes]), min([b.y0 for b in bboxes])
+                x1, y1 = max([b.x1 for b in bboxes]), max([b.y1 for b in bboxes])
+                crop = fitz.Rect(max(0, x0-30), max(0, y0-30), min(page.rect.width, x1+30), min(page.rect.height, y1+30))
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=crop)
+            else: pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+        except: pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
         img_bytes = pix.tobytes("png")
         doc.close()
 
+        # --- QUÉT THÔNG SỐ TOÀN BỘ CÁC TRANG (CHẾ ĐỘ QUÉT CẠN) ---
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
@@ -71,7 +82,7 @@ def extract_pdf_multi_size(file_content):
                     desc_col = char_counts.idxmax()
                     for col_idx in range(len(df.columns)):
                         if col_idx == desc_col: continue
-                        sample_vals = [parse_val(v) for v in df.iloc[:, col_idx].head(20)]
+                        sample_vals = [parse_val(v) for v in df.iloc[:, col_idx].head(15)]
                         if sum(sample_vals) > 0:
                             s_name = str(df.iloc[0, col_idx]).strip().replace('\n', ' ') or f"Size_{col_idx}"
                             if any(kw in s_name.upper() for kw in ["TOL", "GRADE", "SPEC", "CODE"]): continue
@@ -111,8 +122,11 @@ with st.sidebar:
                 new_count = 0
                 for f in new_files:
                     fb = f.read(); h = get_file_hash(fb)
+                    check = supabase.table("ai_data").select("id").eq("id", h).execute()
+                    if check.data:
+                        st.sidebar.warning(f"⏩ {f.name} đã có trong kho.")
+                        continue
                     data = extract_pdf_multi_size(fb)
-                    # BẮT BUỘC CÓ THÔNG SỐ MỚI CHO UP
                     if data and data.get('img') and data.get('all_specs') and len(data['all_specs']) > 0:
                         path = f"lib_{h}.png"
                         supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
@@ -121,10 +135,9 @@ with st.sidebar:
                             "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                         }).execute()
                         new_count += 1
-                    else:
-                        st.sidebar.error(f"❌ {f.name}: Không có thông số.")
-                if new_count > 0: st.sidebar.success(f"✅ Đã cập nhật {new_count} mẫu!")
-            time.sleep(2); st.rerun()
+                    else: st.sidebar.error(f"❌ {f.name}: Lỗi/Không có TS")
+                if new_count > 0: st.sidebar.success(f"✅ Đã thêm mới {new_count} mẫu!")
+            time.sleep(1); st.rerun()
     with col_up2:
         if st.button("CLEAR FILES", use_container_width=True):
             st.session_state['reset_key'] += 1; st.rerun()
@@ -146,8 +159,7 @@ if file_audit:
         if res.data:
             df_db = pd.DataFrame(res.data)
             
-            # TÌM KIẾM THỦ CÔNG
-            st.subheader("🔍 Tìm kiếm mã hàng trong kho")
+            st.subheader("🔍 Tìm kiếm mã hàng thủ công")
             search_query = st.text_input("Nhập mã hàng/tên file:", placeholder="Ví dụ: 5176...")
             if search_query:
                 df_src = df_db[df_db['file_name'].str.contains(search_query, case=False, na=False)]
@@ -158,20 +170,37 @@ if file_audit:
                             st.image(s_row['image_url'], width=100)
                             if st.button(f"CHỌN {s_row['file_name'][:10]}...", key=f"src_{idx}"):
                                 st.session_state['sel'] = s_row.to_dict()
+                else: st.warning("Không tìm thấy mã hàng.")
 
             st.divider()
             if st.button("🚀 TỰ ĐỘNG TÌM KIẾM MẪU TƯƠNG ĐỒNG (AI)", use_container_width=True):
                 st.session_state['sel'] = None
 
+            # BỘ LỌC ĐỘ NHẠY SIÊU CẤP
+            t_name = file_audit.name.upper()
+            KEYWORDS = {
+                "CARGO": ["CARGO", "TUI HOP"], "WAIST": ["ELASTIC", "THUN", "LUNG"],
+                "POCKET": ["PATCH", "WELT", "TUI MO", "TUI DAP"],
+                "TYPE": ["SKIRT", "VAY", "PANT", "QUAN", "SHORT", "TROUSER"]
+            }
+            def get_weight(row_name):
+                row_name = str(row_name).upper(); w = 1.0
+                for kw in KEYWORDS["TYPE"]:
+                    if (kw in t_name) == (kw in row_name): w += 0.5
+                for kw in KEYWORDS["CARGO"] + KEYWORDS["WAIST"] + KEYWORDS["POCKET"]:
+                    if (kw in t_name) and (kw in row_name): w += 0.3
+                return w
+
+            df_db['weight'] = df_db['file_name'].apply(get_weight)
             t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
-            top_3 = df_db.sort_values('sim', ascending=False).head(3)
+            df_db['final'] = df_db['sim'] * df_db['weight']
+            top_3 = df_db.sort_values('final', ascending=False).head(3)
             
             if st.session_state['sel'] is None:
                 st.subheader("🎯 Đề xuất mẫu tương đồng (AI)")
-                cols_ai = st.columns(4) # SỬA LỖI TẠI ĐÂY
-                with cols_ai[0]: 
-                    st.image(target['img'], caption="SOURCE SKETCH", use_container_width=True)
+                cols_ai = st.columns(4)
+                with cols_ai[0]: st.image(target['img'], caption="SOURCE SKETCH", use_container_width=True)
                 for i, (idx, row) in enumerate(top_3.iterrows()):
                     with cols_ai[i+1]:
                         st.image(row['image_url'], caption=f"Match: {row['sim']:.1%}", use_container_width=True)
@@ -180,8 +209,8 @@ if file_audit:
 
             best = st.session_state.get('sel')
             if best:
-                st.success(f"**ĐỐI ỨNG VỚI MẪU:** {best['file_name']}")
-                if target.get("all_specs"):
+                st.success(f"**ĐANG SO SÁNH VỚI:** {best['file_name']}")
+                if target.get("all_specs") and len(target['all_specs']) > 0:
                     st.subheader("📋 Measurement Comparison")
                     all_export = []
                     for sz, t_specs in target['all_specs'].items():
@@ -194,8 +223,7 @@ if file_audit:
                                 rows.append({"Point": t_pom, "Target": t_val, "Ref": rv, "Diff": f"{t_val-rv:+.3f}"})
                                 all_export.append({"Size": sz, "Point": t_pom, "Target": t_val, "Ref": rv, "Diff": t_val-rv})
                             st.table(pd.DataFrame(rows))
-                    
-                    buf = io.BytesIO()
-                    with pd.ExcelWriter(buf, engine='xlsxwriter') as wr:
-                        pd.DataFrame(all_export).to_excel(wr, index=False)
+                    buf = io.BytesIO(); wr = pd.ExcelWriter(buf, engine='xlsxwriter')
+                    pd.DataFrame(all_export).to_excel(wr, index=False); wr.close()
                     st.download_button("📥 DOWNLOAD REPORT", buf.getvalue(), f"Audit_{best['file_name']}.xlsx", use_container_width=True)
+                else: st.warning("⚠️ File không có thông số để so sánh.")
