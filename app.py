@@ -1,6 +1,6 @@
 import streamlit as st
 import io, fitz, pdfplumber, re, pandas as pd, numpy as np
-import torch, hashlib, time
+import torch, hashlib, time, uuid
 from PIL import Image
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
@@ -15,7 +15,7 @@ BUCKET = "fashion-imgs"
 
 st.set_page_config(layout="wide", page_title="PPJ AI Auditor Pro", page_icon="👔")
 
-# Persistent State
+# Trạng thái hệ thống
 if 'sel_audit' not in st.session_state: st.session_state['sel_audit'] = None
 if 'sync_results' not in st.session_state: st.session_state['sync_results'] = None
 if 'up_key' not in st.session_state: st.session_state['up_key'] = 0
@@ -31,7 +31,8 @@ def get_vector(img_bytes):
     if not img_bytes: return None
     img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
     tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
-    with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
+    with torch.no_grad(): 
+        return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
 
 def parse_val(t):
     try:
@@ -45,7 +46,7 @@ def parse_val(t):
         return val if val < 250 else 0
     except: return 0
 
-# ================= 3. SCRAPER =================
+# ================= 3. PDF SCRAPER =================
 def extract_data(file_content):
     if not file_content: return None
     all_specs, img_bytes = {}, None
@@ -74,14 +75,18 @@ def extract_data(file_content):
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
-# ================= 4. SIDEBAR =================
+# ================= 4. SIDEBAR (MASTER SYNC) =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
-    res_count = supabase.table("ai_data").select("file_name", count="exact").execute()
+    
+    # Đọc số lượng SKU thực tế
+    res_count = supabase.table("ai_data").select("id", count="exact").execute()
     count = res_count.count or 0
-    st.metric("Repository Models", f"{count} SKUs")
-    st.write(f"💾 **Cloud Storage:** {count*0.08:.1f}MB / 1024MB")
-    st.progress(min(count*0.08/1024, 1.0))
+    st.metric("Total Models in Repository", f"{count} SKUs")
+    
+    used_mb = (count * 0.08)
+    st.write(f"💾 **Storage:** {used_mb:.1f}MB / 1024MB")
+    st.progress(min(used_mb / 1024, 1.0))
     st.divider()
     
     # Ô Upload dùng key động để xóa file sau khi Sync
@@ -89,38 +94,48 @@ with st.sidebar:
     
     if new_files and st.button("🚀 SYNCHRONIZE NOW", use_container_width=True):
         logs = []
-        with st.spinner("Processing..."):
+        with st.spinner("AI is storing new SKUs..."):
             for f in new_files:
-                fb = f.getvalue(); h = hashlib.md5(fb).hexdigest()
+                fb = f.getvalue()
                 data = extract_data(fb)
                 if data and data['img']:
-                    path = f"lib_{h}.webp"
+                    # TẠO ID MỚI HOÀN TOÀN ĐỂ TĂNG SỐ LƯỢNG
+                    new_id = str(uuid.uuid4()) 
+                    img_h = hashlib.md5(fb).hexdigest()
+                    path = f"lib_{img_h}.webp"
+                    
+                    # Upload ảnh
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
-                    # Dùng upsert dựa trên file_name để tránh lỗi ID kiểu số
-                    supabase.table("ai_data").upsert({
-                        "id": h, "file_name": f.name, "vector": get_vector(data['img']),
-                        "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                    # Lưu Data với ID mới
+                    supabase.table("ai_data").insert({
+                        "id": new_id, 
+                        "file_name": f.name, 
+                        "vector": get_vector(data['img']),
+                        "spec_json": data['all_specs'], 
+                        "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                     }).execute()
                     logs.append({"File": f.name, "Status": "Success"})
-                else: logs.append({"File": f.name, "Status": "Failed"})
+                else:
+                    logs.append({"File": f.name, "Status": "Failed"})
         
         st.session_state['sync_results'] = logs
-        st.session_state['up_key'] += 1 # RESET Ô UPLOAD
-        st.sidebar.success("Done!")
-        time.sleep(1); st.rerun()
+        st.session_state['up_key'] += 1 # Reset ô upload
+        st.sidebar.success("Added to Repository!")
+        time.sleep(1)
+        st.rerun()
 
     if st.session_state['sync_results']:
-        st.write("### Latest Sync Report:")
+        st.write("### Sync Report:")
         st.table(pd.DataFrame(st.session_state['sync_results']))
         if st.button("Clear Report"): 
             st.session_state['sync_results'] = None; st.rerun()
 
 # ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
-mode = st.radio("Mode Selection:", ["Audit Mode", "Version Control (Round A vs B)"], horizontal=True)
+mode = st.radio("Mode Selection:", ["Audit Mode", "Version Control (A:Repo vs B:Upload)"], horizontal=True)
 
 if mode == "Audit Mode":
-    file_audit = st.file_uploader("Upload PDF to Audit:", type="pdf")
+    file_audit = st.file_uploader("Upload Target PDF:", type="pdf")
     if file_audit:
         target = extract_data(file_audit.getvalue())
         if target and target['img']:
@@ -129,21 +144,20 @@ if mode == "Audit Mode":
                 res = supabase.table("ai_data").select("id, vector, file_name").range(i, i+999).execute()
                 all_db.extend(res.data)
             df_db = pd.DataFrame(all_db)
+            
             t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
 
-            st.subheader("🎯 AI Matches")
+            st.subheader("🎯 Best AI Matches")
             cols = st.columns(4)
-            cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True) # Sửa lỗi cols.image
+            cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
             for i, (idx, row) in enumerate(top_3.iterrows()):
-                res_det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute()
-                if res_det.data:
-                    det = res_det.data[0]
-                    with cols[i+1]:
-                        st.image(det['image_url'], caption=f"Match: {row['sim']:.1%}")
-                        if st.button(f"SELECT {i+1}", key=f"sel_{idx}"):
-                            st.session_state['sel_audit'] = {**row.to_dict(), **det}
+                det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data[0]
+                with cols[i+1]:
+                    st.image(det['image_url'], caption=f"Match: {row['sim']:.1%}")
+                    if st.button(f"SELECT {i+1}", key=f"sel_{idx}"):
+                        st.session_state['sel_audit'] = {**row.to_dict(), **det}
 
             sel = st.session_state['sel_audit']
             if sel:
@@ -153,8 +167,8 @@ if mode == "Audit Mode":
                 for sz, t_specs in target['all_specs'].items():
                     with st.expander(f"SIZE: {sz}", expanded=True):
                         r_sz_key = get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4)
-                        r_specs = sel['spec_json'].get(r_sz_key[0] if r_sz_key else "", {})
-                        rows = [{"Point": p, "Target": v, "Ref": r_specs.get(get_close_matches(p, list(r_specs.keys()), 1, 0.6)[0] if get_close_matches(p, list(r_specs.keys()), 1, 0.6) else "", 0)} for p, v in t_specs.items()]
+                        r_specs = sel['spec_json'].get(r_sz_key if r_sz_key else "", {})
+                        rows = [{"Point": p, "Target": v, "Ref": r_specs.get(get_close_matches(p, list(r_specs.keys()), 1, 0.6) if get_close_matches(p, list(r_specs.keys()), 1, 0.6) else "", 0)} for p, v in t_specs.items()]
                         for r in rows: r['Diff'] = f"{r['Target'] - r['Ref']:+.3f}"
                         st.table(pd.DataFrame(rows))
                         all_ex.extend([{"Size": sz, **r} for r in rows])
@@ -162,24 +176,25 @@ if mode == "Audit Mode":
                     buf = io.BytesIO(); pd.DataFrame(all_ex).to_excel(pd.ExcelWriter(buf), index=False)
                     st.download_button("📥 DOWNLOAD REPORT", buf.getvalue(), "Audit.xlsx")
 
-else: # Mode Version Control
-    st.subheader("🔄 Compare Round A (Repo) vs Round B (New Upload)")
-    all_names = []
+else: # --- MODE: VERSION CONTROL ---
+    st.subheader("🔄 Compare Version A (Repo) vs Version B (Upload)")
+    all_n = []
     for i in range(0, count, 1000):
-        all_names.extend([r['file_name'] for r in supabase.table("ai_data").select("file_name").range(i, i+999).execute().data])
+        res_n = supabase.table("ai_data").select("file_name").range(i, i+999).execute()
+        all_n.extend([r['file_name'] for r in res_n.data])
     
     col_a, col_b = st.columns(2)
     with col_a:
-        v_a_name = st.selectbox("Style A (Repo):", all_names)
+        v_a_name = st.selectbox("Style A (Repo):", list(set(all_n)))
         res_a = supabase.table("ai_data").select("*").eq("file_name", v_a_name).execute()
         data_a = res_a.data[0] if res_a.data else None
-        if data_a: st.image(data_a['image_url'], width=350, caption="Stored Round")
+        if data_a: st.image(data_a['image_url'], width=350, caption="Version A (Repo)")
     
     with col_b:
         file_b = st.file_uploader("Style B (Upload):", type="pdf", key="v_fb")
         if file_b:
             data_b = extract_data(file_b.getvalue())
-            if data_b: st.image(data_b['img'], width=350, caption="New Round")
+            if data_b: st.image(data_b['img'], width=350, caption="Version B (New)")
 
     if file_b and data_b and data_a:
         if st.button("RUN COMPARISON", use_container_width=True):
@@ -188,8 +203,8 @@ else: # Mode Version Control
             for sz, specs_b in data_b['all_specs'].items():
                 with st.expander(f"SIZE: {sz}", expanded=True):
                     r_sz = get_close_matches(sz, list(data_a['spec_json'].keys()), 1, 0.4)
-                    specs_a = data_a['spec_json'].get(r_sz[0] if r_sz else "", {})
-                    rows = [{"Point": p, "Repo (A)": specs_a.get(get_close_matches(p, list(specs_a.keys()), 1, 0.6)[0] if get_close_matches(p, list(specs_a.keys()), 1, 0.6) else "", 0), "New (B)": v} for p, v in specs_b.items()]
+                    specs_a = data_a['spec_json'].get(r_sz if r_sz else "", {})
+                    rows = [{"Point": p, "Repo (A)": specs_a.get(get_close_matches(p, list(specs_a.keys()), 1, 0.6) if get_close_matches(p, list(specs_a.keys()), 1, 0.6) else "", 0), "New (B)": v} for p, v in specs_b.items()]
                     for r in rows: r['Diff'] = f"{r['New (B)'] - r['Repo (A)']:+.3f}"
                     st.table(pd.DataFrame(rows))
                     all_r_ex.extend([{"Size": sz, **r} for r in rows])
