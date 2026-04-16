@@ -8,7 +8,6 @@ from supabase import create_client
 import os
 
 # ================= 1. CONFIGURATION =================
-# Link dự phòng nếu bạn chưa up file logo.png lên GitHub
 BACKUP_LOGO = "https://githubusercontent.com" 
 
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
@@ -16,18 +15,15 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
 supabase = create_client(URL, KEY)
 
-# Cấu hình trang phải nằm ở dòng đầu tiên
 st.set_page_config(layout="wide", page_title="PPJ GROUP | AI Auditor Pro", page_icon="👔")
 
 if 'reset_key' not in st.session_state:
     st.session_state['reset_key'] = 0
 
-# Hàm hiển thị Logo thông minh
 def display_logo(width=200):
     if os.path.exists("logo.png"):
         st.image("logo.png", width=width)
     else:
-        # Nếu chưa có file logo.png trên GitHub, hiển thị chữ PPJ tạm thời
         st.markdown(f"<h1 style='color: #1E3A8A;'>PPJ GROUP</h1>", unsafe_allow_html=True)
 
 # ================= 2. AI CORE ENGINE =================
@@ -131,13 +127,12 @@ with st.sidebar:
         with st.spinner("AI Processing..."):
             for f in new_files:
                 c = f.read(); h = get_file_hash(c)
-                
-                # CHỐNG TRÙNG: Kiểm tra ID tồn tại chưa
+                # CHỐNG TRÙNG
                 exist = supabase.table("ai_data").select("id").eq("id", h).execute()
                 if len(exist.data) > 0: continue
                 
                 data = extract_pdf_multi_size(c)
-                # CHỐNG FILE LỖI: Phải có cả hình (img) và thông số (all_specs)
+                # CHỐNG FILE LỖI
                 if data and data.get('img') and data.get('all_specs'):
                     path = f"lib_{h}.png"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
@@ -148,7 +143,6 @@ with st.sidebar:
         st.session_state['reset_key'] += 1
         st.rerun()
 
-# Header chính
 h_col1, h_col2 = st.columns([1, 4])
 with h_col1:
     display_logo(width=120)
@@ -184,30 +178,28 @@ if file_audit:
 
             best = st.session_state.get('sel', top_3.iloc[0].to_dict())
             st.success(f"**REFERENCE SKU:** {best['file_name']}")
-            # --- PHẦN BỔ SUNG: NÚT XUẤT EXCEL ---
+
+            # --- HIỂN THỊ BẢNG THÔNG SỐ (PHẦN BẠN CẦN) ---
+            st.subheader("📋 Measurement Comparison")
+            for size_name, specs in target['all_specs'].items():
+                with st.expander(f"SIZE: {size_name}", expanded=True):
+                    ref_specs = best['spec_json'].get(size_name, {})
+                    rows = []
+                    for pom, val in specs.items():
+                        ref_val = ref_specs.get(pom, 0)
+                        diff = val - ref_val
+                        color = "red" if abs(diff) > 0.25 else "green"
+                        rows.append({
+                            "Measurement Point": pom,
+                            "Target": val,
+                            "Reference": ref_val,
+                            "Diff": f"{diff:+.3f}"
+                        })
+                    st.table(pd.DataFrame(rows))
+
+            # --- NÚT XUẤT EXCEL ---
             st.divider()
-            st.subheader("📊 Export Results")
-            
-            # Chuyển đổi dữ liệu thông số (spec_json) của mẫu đang chọn thành DataFrame
-            if 'spec_json' in best:
-                # Tạo danh sách dữ liệu để xuất
-                export_data = []
-                for size, poms in best['spec_json'].items():
-                    for pom_name, value in poms.items():
-                        export_data.append({"Size": size, "Description/POM": pom_name, "Value": value})
-                
-                df_export = pd.DataFrame(export_data)
-                
-                # Tạo buffer để lưu file Excel trong bộ nhớ
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                    df_export.to_excel(writer, index=False, sheet_name='TechPack_Specs')
-                
-                # Hiển thị nút bấm tải về
-                st.download_button(
-                    label="📥 DOWNLOAD SPEC TO EXCEL",
-                    data=buffer.getvalue(),
-                    file_name=f"Spec_{best['file_name']}.xlsx",
-                    mime="application/vnd.ms-excel",
-                    use_container_width=True
-                )
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                pd.DataFrame(rows).to_excel(writer, index=False, sheet_name='Audit_Report')
+            st.download_button(label="📥 EXPORT AUDIT TO EXCEL", data=output.getvalue(), file_name=f"Audit_{best['file_name']}.xlsx", mime="application/vnd.ms-excel")
