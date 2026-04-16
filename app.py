@@ -127,6 +127,7 @@ with st.sidebar:
 
         st.divider()
     # ================= 4. UI PPJ GROUP =================
+# ================= 4. UI PPJ GROUP =================
 with st.sidebar:
     display_logo(width=220)
     st.markdown("---")
@@ -150,14 +151,14 @@ with st.sidebar:
                 c = f.read()
                 h = get_file_hash(c)
                 
-                # Chống trùng lặp
+                # Check trùng lặp
                 check_exists = supabase.table("ai_data").select("id").eq("id", h).execute()
                 if check_exists.data:
                     continue
 
                 data = extract_pdf_multi_size(c)
                 
-                # Chống file lỗi (không hình hoặc không thông số)
+                # Check lỗi hình/thông số
                 if data and data.get('img') and data.get('all_specs'):
                     path = f"lib_{h}.png"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
@@ -167,7 +168,6 @@ with st.sidebar:
                     }).execute()
         st.session_state['reset_key'] += 1
         st.rerun()
-
 
                 # -----------------------------------------------------
 
