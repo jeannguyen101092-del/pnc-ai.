@@ -44,10 +44,10 @@ def parse_val(t):
         txt = re.sub(r'(cm|inch|in|mm|yds|tol|grade)$', '', txt)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match
+        v = match[0] if isinstance(match, list) else match
         if ' ' in v:
             p = v.split()
-            return float(p) + eval(p)
+            return float(p[0]) + eval(p[1])
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
@@ -114,7 +114,6 @@ with st.sidebar:
     count = res_count.count or 0
     st.metric("Total Synchronized SKUs", f"{count} Models")
     
-    # --- KHÔI PHỤC HIỂN THỊ DUNG LƯỢNG ---
     used_mb = (count * 0.15)
     percent = min((used_mb / 1024) * 100, 100.0)
     st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1GB")
@@ -126,34 +125,28 @@ with st.sidebar:
     
     col_up1, col_up2 = st.columns(2)
     with col_up1:
-           if new_files and st.button("SYNCHRONIZE", use_container_width=True):
-        with st.spinner("AI Processing..."):
-            new_count = 0
-            for f in new_files:
-                c = f.read(); h = get_file_hash(c)
-                # KIỂM TRA TRÙNG
-                check = supabase.table("ai_data").select("id").eq("id", h).execute()
-                if check.data:
-                    st.sidebar.warning(f"⏩ {f.name} đã có trong kho.")
-                    continue
-                
-                data = extract_pdf_multi_size(c)
-                # CHỈ UP NẾU CÓ HÌNH VÀ THÔNG SỐ
-                if data and data.get('img') and data.get('all_specs'):
-                    path = f"lib_{h}.png"
-                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
-                    supabase.table("ai_data").upsert({
-                        "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
-                        "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
-                    }).execute()
-                    new_count += 1
-            
-            if new_count > 0:
-                st.sidebar.success(f"✅ Đã thêm mới {new_count} mẫu!")
-            else:
-                st.sidebar.info("Không có mẫu mới nào được thêm (trùng hoặc lỗi thông số).")
-        st.rerun()
-
+        if new_files and st.button("SYNCHRONIZE", use_container_width=True):
+            with st.spinner("AI Processing..."):
+                new_count = 0
+                for f in new_files:
+                    c = f.read(); h = get_file_hash(c)
+                    check = supabase.table("ai_data").select("id").eq("id", h).execute()
+                    if check.data: continue
+                    data = extract_pdf_multi_size(c)
+                    if data and data.get('img') and data.get('all_specs'):
+                        path = f"lib_{h}.png"
+                        supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
+                        supabase.table("ai_data").upsert({
+                            "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
+                            "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                        }).execute()
+                        new_count += 1
+            if new_count > 0: st.sidebar.success(f"✅ Đã thêm {new_count} mẫu!")
+            else: st.sidebar.info("Mẫu đã tồn tại hoặc lỗi thông số.")
+    with col_up2:
+        if st.button("CLEAR FILES", use_container_width=True):
+            st.session_state['reset_key'] += 1
+            st.rerun()
 
 # ================= 5. AUDIT INTERFACE =================
 h_col1, h_col2 = st.columns(2)
