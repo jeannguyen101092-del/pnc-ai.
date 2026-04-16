@@ -15,7 +15,10 @@ BUCKET = "fashion-imgs"
 
 st.set_page_config(layout="wide", page_title="PPJ AI Auditor Pro", page_icon="👔")
 
+# Khởi tạo các trạng thái lưu trữ
 if 'sel_audit' not in st.session_state: st.session_state['sel_audit'] = None
+if 'sync_log' not in st.session_state: st.session_state['sync_log'] = None
+if 'up_key' not in st.session_state: st.session_state['up_key'] = 0 # Mã để reset ô upload
 
 # ================= 2. AI CORE =================
 @st.cache_resource
@@ -42,7 +45,7 @@ def parse_val(t):
         return val if val < 250 else 0
     except: return 0
 
-# ================= 3. PPJ COORDINATE SCRAPER =================
+# ================= 3. SCRAPER (Y-GRID MODE) =================
 def extract_data(file_content):
     if not file_content: return None
     all_specs, img_bytes = {}, None
@@ -72,74 +75,73 @@ def extract_data(file_content):
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
-# ================= 4. SIDEBAR (POWER SYNC) =================
+# ================= 4. SIDEBAR (MASTER SYNC PRO) =================
 with st.sidebar:
-    st.title("👔 PPJ GROUP")
-    # Fetch count accurately
+    st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
     count = res_count.count or 0
     st.metric("Total Models in Repository", f"{count} SKUs")
     
-    # Storage progress
+    # Hiển thị dung lượng
     used_mb = (count * 0.08)
     st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1024MB")
     st.progress(min(used_mb / 1024, 1.0))
     st.divider()
     
-    new_files = st.file_uploader("Upload Tech-Packs to Sync", accept_multiple_files=True)
+    # Ô Upload dùng key động để reset
+    new_files = st.file_uploader("Upload Tech-Packs to Sync", accept_multiple_files=True, key=f"sync_up_{st.session_state['up_key']}")
+    
     if new_files and st.button("🚀 SYNCHRONIZE NOW", use_container_width=True):
         results = []
-        progress_bar = st.progress(0)
-        for i, f in enumerate(new_files):
-            fb = f.getvalue(); h = hashlib.md5(fb).hexdigest()
-            # Check if exists
-            exists = supabase.table("ai_data").select("id").eq("id", h).execute()
+        with st.spinner("AI is storing data..."):
+            for f in new_files:
+                fb = f.getvalue(); f_id = f.name 
+                existing = supabase.table("ai_data").select("id").eq("id", f_id).execute()
+                data = extract_data(fb)
+                if data and data['img']:
+                    path = f"lib_{hashlib.md5(fb).hexdigest()}.webp"
+                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
+                    supabase.table("ai_data").upsert({
+                        "id": f_id, "file_name": f.name, "vector": get_vector(data['img']),
+                        "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                    }).execute()
+                    status = "Updated" if existing.data else "New Added"
+                    results.append({"File": f.name, "Status": status})
             
-            data = extract_data(fb)
-            if data and data['img']:
-                path = f"lib_{h}.webp"
-                # Sync Image
-                supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
-                # Sync Data
-                supabase.table("ai_data").upsert({
-                    "id": h, "file_name": f.name, "vector": get_vector(data['img']),
-                    "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
-                }).execute()
-                
-                status = "Updated" if exists.data else "New Added"
-                results.append({"File": f.name, "Status": status})
-            else:
-                results.append({"File": f.name, "Status": "Failed (No Spec)"})
-            progress_bar.progress((i + 1) / len(new_files))
-        
-        st.write("### Sync Report:")
-        st.table(pd.DataFrame(results))
-        time.sleep(2)
-        st.rerun()
+        # LƯU BÁO CÁO VÀ RESET Ô UPLOAD
+        st.session_state['sync_log'] = results
+        st.session_state['up_key'] += 1 # Thay đổi key để xóa file upload
+        st.sidebar.success("Sync Process Finished!")
+        time.sleep(1); st.rerun()
+
+    if st.session_state['sync_log']:
+        st.write("### Latest Sync Report:")
+        st.table(pd.DataFrame(st.session_state['sync_log']))
+        if st.button("Clear Report"): 
+            st.session_state['sync_log'] = None
+            st.rerun()
 
 # ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
-mode = st.radio("Mode:", ["Audit Mode", "Version Control (Round A vs B)"], horizontal=True)
+mode = st.radio("Select Mode:", ["🔍 Audit Mode", "🔄 Version Control (Round A vs B)"], horizontal=True)
 
-if mode == "Audit Mode":
-    file_audit = st.file_uploader("Upload PDF to Audit:", type="pdf")
+if mode == "🔍 Audit Mode":
+    file_audit = st.file_uploader("Upload PDF to find matches:", type="pdf")
     if file_audit:
         target = extract_data(file_audit.getvalue())
         if target and target['img']:
-            # Fetch all rows with pagination for matching
             all_db = []
             for i in range(0, count, 1000):
                 res = supabase.table("ai_data").select("id, vector, file_name").range(i, i+999).execute()
                 all_db.extend(res.data)
             df_db = pd.DataFrame(all_db)
-            
             t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
 
-            st.subheader("🎯 AI Matches")
+            st.subheader("🎯 AI Best Matches")
             cols = st.columns(4)
-            cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
+            cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True) # Chỉ định cột [0]
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
                 if det:
@@ -151,29 +153,25 @@ if mode == "Audit Mode":
             sel = st.session_state['sel_audit']
             if sel:
                 st.divider()
-                st.success(f"Comparing with: {sel['file_name']}")
+                st.success(f"📈 Comparing with: **{sel['file_name']}**")
                 all_ex = []
                 for sz, t_specs in target['all_specs'].items():
                     with st.expander(f"SIZE: {sz}", expanded=True):
                         r_sz_key = get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4)
                         r_specs = sel['spec_json'].get(r_sz_key[0] if r_sz_key else "", {})
-                        rows = []
-                        for p, v in t_specs.items():
-                            m_p_key = get_close_matches(p, list(r_specs.keys()), 1, 0.6)
-                            rv = r_specs.get(m_p_key[0] if m_p_key else "", 0)
-                            rows.append({"Point": p, "Target": v, "Reference": rv, "Diff": f"{v-rv:+.3f}"})
-                            all_ex.append({"Size": sz, **rows[-1]})
+                        rows = [{"Point": p, "Target": v, "Ref": r_specs.get(get_close_matches(p, list(r_specs.keys()), 1, 0.6)[0] if get_close_matches(p, list(r_specs.keys()), 1, 0.6) else "", 0)} for p, v in t_specs.items()]
+                        for r in rows: r['Diff'] = f"{r['Target'] - r['Ref']:+.3f}"
                         st.table(pd.DataFrame(rows))
+                        all_ex.extend([{"Size": sz, **r} for r in rows])
                 if all_ex:
                     buf = io.BytesIO(); pd.DataFrame(all_ex).to_excel(pd.ExcelWriter(buf), index=False)
-                    st.download_button("📥 DOWNLOAD AUDIT REPORT", buf.getvalue(), "Audit.xlsx", use_container_width=True)
+                    st.download_button("📥 DOWNLOAD AUDIT REPORT", buf.getvalue(), "Audit_Report.xlsx", use_container_width=True)
 
 else: # Mode Version Control
-    st.subheader("🔄 Compare Version A (Repo) vs Version B (Local)")
+    st.subheader("🔄 Compare Version A (Stored) vs Version B (New Upload)")
     all_names = []
     for i in range(0, count, 1000):
-        res_n = supabase.table("ai_data").select("file_name").range(i, i+999).execute()
-        all_names.extend([r['file_name'] for r in res_n.data])
+        all_names.extend([r['file_name'] for r in supabase.table("ai_data").select("file_name").range(i, i+999).execute().data])
     
     col_a, col_b = st.columns(2)
     with col_a:
@@ -185,7 +183,7 @@ else: # Mode Version Control
     
     with col_b:
         st.info("Style B: Upload New PDF File")
-        file_b = st.file_uploader("Upload New Tech-Pack:", type="pdf", key="fb_round")
+        file_b = st.file_uploader("Upload New PDF:", type="pdf", key="v_fb")
         data_b = None
         if file_b:
             data_b = extract_data(file_b.getvalue())
@@ -205,8 +203,8 @@ else: # Mode Version Control
                         v_a = specs_a.get(m_p_key[0] if m_p_key else "", 0)
                         diff = v_b - v_a
                         rows.append({"Point": p_b, "Repo (A)": v_a, "New (B)": v_b, "Diff": f"{diff:+.3f}"})
-                        all_r_ex.append({"Size": sz, "Point": p_b, "Ref_A": v_a, "New_B": v_b, "Diff": diff})
+                        all_r_ex.append({"Size": sz, **rows[-1]})
                     st.table(pd.DataFrame(rows))
             if all_r_ex:
                 buf_r = io.BytesIO(); pd.DataFrame(all_r_ex).to_excel(pd.ExcelWriter(buf_r), index=False)
-                st.download_button("📥 DOWNLOAD REPORT", buf_r.getvalue(), "Comparison.xlsx", use_container_width=True)
+                st.download_button("📥 DOWNLOAD REPORT", buf_r.getvalue(), "Comparison_Report.xlsx", use_container_width=True)
