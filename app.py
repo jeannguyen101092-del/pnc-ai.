@@ -54,34 +54,38 @@ def parse_val(t):
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION (UPGRADED) =================
+# ================= 3. PDF EXTRACTION (FIXED ERROR) =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes, is_reit = {}, None, False
     try:
+        # Check text info
         txt_check = ""
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for p in pdf.pages[:1]: txt_check += (p.extract_text() or "").upper()
         if "REITMAN" in txt_check: is_reit = True
 
-        # --- TỰ ĐỘNG DÒ VÙNG HÌNH VẼ ĐỂ BỎ QUA CHỮ ---
+        # XỬ LÝ HÌNH VẼ AN TOÀN
         doc = fitz.open(stream=file_content, filetype="pdf")
         page = doc.load_page(0)
-        paths = page.get_drawings()
-        if paths:
+        try:
+            # Thử dò tìm vùng hình vẽ
+            paths = page.get_drawings()
             bboxes = [p["rect"] for p in paths if p["rect"].width < page.rect.width * 0.9]
             if bboxes:
-                x0 = min([b.x0 for b in bboxes]); y0 = min([b.y0 for b in bboxes])
-                x1 = max([b.x1 for b in bboxes]); y1 = max([b.y1 for b in bboxes])
-                crop_rect = fitz.Rect(max(0, x0-30), max(0, y0-30), min(page.rect.width, x1+30), min(page.rect.height, y1+30))
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=crop_rect)
+                x0, y0 = min([b.x0 for b in bboxes]), min([b.y0 for b in bboxes])
+                x1, y1 = max([b.x1 for b in bboxes]), max([b.y1 for b in bboxes])
+                crop = fitz.Rect(max(0, x0-30), max(0, y0-30), min(page.rect.width, x1+30), min(page.rect.height, y1+30))
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=crop)
             else:
                 pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-        else:
+        except:
+            # Nếu PDF lỗi cấu trúc (No common ancestor), chụp ảnh toàn trang cơ bản
             pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
+        
         img_bytes = pix.tobytes("png")
         doc.close()
 
-        # --- GIỮ NGUYÊN LOGIC TRÍCH XUẤT THÔNG SỐ CỦA BẠN ---
+        # TRÍCH XUẤT THÔNG SỐ (Giữ nguyên gốc)
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
@@ -92,8 +96,8 @@ def extract_pdf_multi_size(file_content):
                     for r_idx in range(min(15, len(df))):
                         row = [str(c).strip().upper() for c in df.iloc[r_idx]]
                         for i, v in enumerate(row):
-                            if is_reit and "POM NAME" in v: desc_col = i; break
-                            elif not is_reit and ("DESCRIPTION" in v or "POM NAME" in v): desc_col = i; break
+                            if (is_reit and "POM NAME" in v) or (not is_reit and ("DESCRIPTION" in v or "POM NAME" in v)):
+                                desc_col = i; break
                         if desc_col != -1: break
                     if desc_col == -1: continue
                     for r_idx in range(min(15, len(df))):
@@ -114,7 +118,7 @@ def extract_pdf_multi_size(file_content):
                             if temp_data:
                                 if s_name not in all_specs: all_specs[s_name] = {}
                                 all_specs[s_name].update(temp_data)
-        return {"all_specs": all_specs, "img": img_bytes, "is_reit": is_reit}
+        return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
 # ================= 4. UI PPJ GROUP =================
@@ -122,16 +126,12 @@ with st.sidebar:
     display_logo(width=220)
     st.markdown("---")
     st.title("📂 MASTER REPOSITORY")
-    
-    res_count = supabase.table("ai_data").select("id", count="exact").execute()
-    count = res_count.count or 0
+    try:
+        res_count = supabase.table("ai_data").select("id", count="exact").execute()
+        count = res_count.count or 0
+    except: count = 0
     st.metric("Total Synchronized SKUs", f"{count} Models")
     
-    used_mb = (count * 0.15)
-    percent = min((used_mb / 1024) * 100, 100.0)
-    st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1GB")
-    st.progress(percent / 100)
-
     st.divider()
     st.subheader("📥 Data Ingestion")
     new_files = st.file_uploader("Upload Tech-Packs (Bulk)", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
@@ -139,12 +139,9 @@ with st.sidebar:
         with st.spinner("AI Processing..."):
             for f in new_files:
                 c = f.read(); h = get_file_hash(c)
-                # Chống trùng
-                exist = supabase.table("ai_data").select("id").eq("id", h).execute()
-                if len(exist.data) > 0: continue
-                
+                check = supabase.table("ai_data").select("id").eq("id", h).execute()
+                if check.data: continue
                 data = extract_pdf_multi_size(c)
-                # Chống file lỗi (Không hình/Không thông số)
                 if data and data.get('img') and data.get('all_specs'):
                     path = f"lib_{h}.png"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
@@ -162,7 +159,6 @@ with h_col2:
     st.markdown("*Premium Technical Audit System for PPJ Group*")
 
 st.markdown("---")
-
 file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf", key=f"audit_{st.session_state['reset_key']}")
 
 if file_audit:
@@ -179,7 +175,6 @@ if file_audit:
             st.subheader(f"🎯 AI Best Matches")
             cols = st.columns(4)
             with cols[0]: st.image(target['img'], caption="SOURCE SKETCH", use_container_width=True)
-            
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 with cols[i+1]:
                     st.image(row['image_url'], caption=f"Match: {row['sim']:.1%}", use_container_width=True)
@@ -189,23 +184,24 @@ if file_audit:
             best = st.session_state.get('sel', top_3.iloc[0].to_dict())
             st.success(f"**REFERENCE SKU:** {best['file_name']}")
 
-            # Hiển thị bảng thông số
+            # Bảng so sánh
             st.subheader("📋 Measurement Comparison")
-            all_rows_for_export = []
-            for size_name, specs in target['all_specs'].items():
-                with st.expander(f"SIZE: {size_name}", expanded=True):
-                    ref_specs = best['spec_json'].get(size_name, {})
+            all_export = []
+            for s_name, specs in target['all_specs'].items():
+                with st.expander(f"SIZE: {s_name}", expanded=True):
+                    ref_specs = best['spec_json'].get(s_name, {})
                     rows = []
                     for pom, val in specs.items():
-                        ref_val = ref_specs.get(pom, 0)
-                        diff = val - ref_val
-                        rows.append({"Point": pom, "Target": val, "Ref": ref_val, "Diff": f"{diff:+.3f}"})
-                        all_rows_for_export.append({"Size": size_name, "Point": pom, "Target": val, "Ref": ref_val, "Diff": diff})
+                        rv = ref_specs.get(pom, 0)
+                        diff = val - rv
+                        rows.append({"Point": pom, "Target": val, "Ref": rv, "Diff": f"{diff:+.3f}"})
+                        all_export.append({"Size": s_name, "Point": pom, "Target": val, "Ref": rv, "Diff": diff})
                     st.table(pd.DataFrame(rows))
 
-            # Nút xuất Excel
-            df_ex = pd.DataFrame(all_rows_for_export)
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                df_ex.to_excel(writer, index=False)
-            st.download_button("📥 DOWNLOAD EXCEL REPORT", buffer.getvalue(), f"Audit_{best['file_name']}.xlsx", "application/vnd.ms-excel")
+            # Export Excel
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine='xlsxwriter') as wr:
+                pd.DataFrame(all_export).to_excel(wr, index=False)
+            st.download_button("📥 DOWNLOAD REPORT", buf.getvalue(), f"Audit_{best['file_name']}.xlsx", "application/vnd.ms-excel")
+    else:
+        st.error("⚠️ Không thể trích xuất thông số từ file này. Vui lòng kiểm tra lại định dạng PDF.")
