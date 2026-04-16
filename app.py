@@ -48,13 +48,13 @@ def parse_val(t):
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION =================
+# ================= 3. PDF EXTRACTION (HIGH-DPI & WEB-P) =================
 def extract_pdf_full_logic(file_content):
     all_specs, img_bytes = {}, None
     try:
         doc = fitz.open(stream=file_content, filetype="pdf")
         page = doc.load_page(0)
-        # Chụp ảnh nét cao DPI 2.5 để phóng to soi chi tiết
+        # High resolution for Zoom (DPI 2.5)
         pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5))
         img_temp = Image.open(io.BytesIO(pix.tobytes("png")))
         buf = io.BytesIO()
@@ -85,68 +85,74 @@ def extract_pdf_full_logic(file_content):
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
-# ================= 4. DỌN DẸP KHO AN TOÀN (FIXED API ERROR) =================
+# ================= 4. STORAGE CLEANUP LOGIC =================
 def safe_deep_clean():
     try:
-        files = supabase.storage.from_(BUCKET).list()
+        files = supabase.storage.from_(BUCKET).list(options={"limit": 5000})
         db_res = supabase.table("ai_data").select("id").execute()
         db_ids = [r['id'] for r in db_res.data]
-        
         deleted = 0
         for f in files:
             name = f['name']
             f_id = name.replace("lib_", "").split(".")[0]
-            # Xóa nếu file không có trong DB hoặc file quá nhỏ (lỗi trắng)
-            if f_id not in db_ids or f['metadata'].get('size', 0) < 1000:
+            if f_id not in db_ids or f['metadata'].get('size', 0) < 1500:
                 try:
                     supabase.storage.from_(BUCKET).remove([name])
                     supabase.table("ai_data").delete().eq("id", f_id).execute()
                     deleted += 1
-                except: continue # Bỏ qua nếu dòng này lỗi, không làm sập app
+                except: continue
         return deleted
     except: return 0
 
-# ================= 5. UI SIDEBAR =================
+# ================= 5. SIDEBAR (ENGLISH INTERFACE) =================
 with st.sidebar:
-    st.markdown("<h2 style='color: #1E3A8A; margin:0;'>PPJ GROUP</h2>", unsafe_allow_html=True)
+    st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     st.title("📂 MASTER REPOSITORY")
     
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
     count = res_count.count or 0
-    st.metric("Tổng số mẫu", f"{count} SKUs")
+    st.metric("Total Synchronized", f"{count} Models")
     
-    if st.button("🧹 DỌN FILE RÁC & LỖI", use_container_width=True):
+    if st.button("🧹 CLEAN TRASH & ERRORS", use_container_width=True):
         num = safe_deep_clean()
-        st.success(f"Đã dọn dẹp sạch sẽ {num} mục!")
+        st.success(f"Cleaned {num} items!")
         time.sleep(1); st.rerun()
 
     st.divider()
-    new_files = st.file_uploader("Nạp mẫu mới", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
-    if new_files and st.button("ĐỒNG BỘ", use_container_width=True):
-        with st.spinner("AI Processing..."):
-            for f in new_files:
-                fb = f.read(); h = get_file_hash(fb)
-                data = extract_pdf_full_logic(fb)
-                if data and data.get('img') and data.get('all_specs'):
-                    path = f"lib_{h}.webp"
-                    # Ép Content-Type để hiện hình
-                    supabase.storage.from_(BUCKET).upload(
-                        path=path, file=data['img'], 
-                        file_options={"content-type": "image/webp", "upsert": "true"}
-                    )
-                    supabase.table("ai_data").upsert({
-                        "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
-                        "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
-                    }).execute()
-            st.success("Xong!")
+    st.subheader("📥 Data Ingestion")
+    new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
+    c1, c2 = st.columns(2)
+    with c1:
+        if new_files and st.button("SYNCHRONIZE", use_container_width=True):
+            with st.spinner("AI Processing..."):
+                new_count = 0
+                for f in new_files:
+                    fb = f.read(); h = get_file_hash(fb)
+                    data = extract_pdf_full_logic(fb)
+                    if data and data.get('img') and data.get('all_specs'):
+                        path = f"lib_{h}.webp"
+                        supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
+                        supabase.table("ai_data").upsert({
+                            "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
+                            "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                        }).execute()
+                        new_count += 1
+                st.sidebar.success(f"Added {new_count} new models!")
             time.sleep(1); st.rerun()
-    
-    if st.button("DỌN DANH SÁCH"):
-        st.session_state['reset_key'] += 1; st.rerun()
+    with c2:
+        if st.button("CLEAR LIST", use_container_width=True):
+            st.session_state['reset_key'] += 1; st.rerun()
 
-# ================= 6. AUDIT INTERFACE =================
-st.title("👔 AI SMART AUDITOR PRO")
-file_audit = st.file_uploader("📤 Thả file Audit vào đây", type="pdf")
+# ================= 6. MAIN AUDIT UI (ENGLISH) =================
+col_logo, col_title = st.columns([1, 4])
+with col_logo:
+    st.markdown("<h2 style='color: #1E3A8A; margin:0;'>PPJ</h2>", unsafe_allow_html=True)
+with col_title:
+    st.title("AI SMART AUDITOR PRO")
+    st.markdown("*Premium Technical Audit System for PPJ Group*")
+
+st.markdown("---")
+file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf")
 
 if file_audit:
     a_bytes = file_audit.read()
@@ -156,9 +162,9 @@ if file_audit:
         if res.data:
             df_db = pd.DataFrame(res.data)
             
-            # Bộ lọc nhạy đa tầng
+            # KEYWORDS FOR SENSITIVITY
             t_name = file_audit.name.upper()
-            KEYWORDS = {"CARGO": ["CARGO", "TUI HOP"], "WAIST": ["ELASTIC", "THUN"], "TYPE": ["SKIRT", "VAY", "PANT", "QUAN"]}
+            KEYWORDS = {"CARGO": ["CARGO", "TUI HOP"], "WAIST": ["ELASTIC", "THUN", "LUNG"], "TYPE": ["SKIRT", "VAY", "PANT", "QUAN", "SHORT"]}
             def get_w(row_name):
                 row_name = str(row_name).upper(); w = 1.0
                 for kw in KEYWORDS["TYPE"]:
@@ -167,23 +173,25 @@ if file_audit:
                     if (kw in t_name) and (kw in row_name): w += 0.3
                 return w
 
+            # AI Calculation
             df_db['score'] = cosine_similarity(np.array(get_image_vector(target['img'])).reshape(1, -1), np.array([v for v in df_db['vector']])).flatten() * df_db['file_name'].apply(get_w)
             top_3 = df_db.sort_values('score', ascending=False).head(3)
             
-            st.subheader("🎯 Mẫu tương đồng (Click vào ảnh để phóng to)")
+            st.subheader("🎯 Best AI Matches (Click image to zoom)")
             c_ai = st.columns(4)
-            with c_ai[0]: st.image(target['img'], caption="FILE ĐANG AUDIT", use_container_width=True)
+            with c_ai[0]: st.image(target['img'], caption="TARGET FILE", use_container_width=True)
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 with c_ai[i+1]:
-                    st.image(row['image_url'], caption=f"Giống {row['score']:.1%}", use_container_width=True)
-                    if st.button(f"CHỌN MẪU {i+1}", key=f"btn_{idx}", use_container_width=True):
+                    st.image(row['image_url'], caption=f"Match: {row['score']:.1%}", use_container_width=True)
+                    if st.button(f"SELECT MODEL {i+1}", key=f"btn_{idx}", use_container_width=True):
                         st.session_state['sel'] = row.to_dict()
 
             best = st.session_state.get('sel')
             if best:
                 st.divider()
-                st.success(f"🔍 So sánh chi tiết: **{best['file_name']}**")
+                st.success(f"🔍 Comparing with: **{best['file_name']}**")
                 if target.get("all_specs"):
+                    st.subheader("📋 Measurement Comparison")
                     all_ex = []
                     for sz, t_specs in target['all_specs'].items():
                         with st.expander(f"SIZE: {sz}", expanded=True):
@@ -193,9 +201,9 @@ if file_audit:
                                 m = get_close_matches(t_pom, r_poms, n=1, cutoff=0.6)
                                 rv = r_specs.get(m[0], 0) if m else 0
                                 rows.append({"Point": t_pom, "Target": t_val, "Ref": rv, "Diff": f"{t_val-rv:+.3f}"})
-                                all_ex.append({"Size": sz, "Point": t_pom, "Target": t_val, "Ref": rv})
+                                all_ex.append({"Size": sz, "Point": t_pom, "Target": t_val, "Reference": rv, "Diff": t_val-rv})
                             st.table(pd.DataFrame(rows))
                     
                     buf = io.BytesIO(); wr = pd.ExcelWriter(buf, engine='xlsxwriter')
                     pd.DataFrame(all_ex).to_excel(wr, index=False); wr.close()
-                    st.download_button("📥 XUẤT BÁO CÁO EXCEL", buf.getvalue(), f"Audit_{best['file_name']}.xlsx", use_container_width=True)
+                    st.download_button("📥 DOWNLOAD EXCEL REPORT", buf.getvalue(), f"Audit_{best['file_name']}.xlsx", use_container_width=True)
