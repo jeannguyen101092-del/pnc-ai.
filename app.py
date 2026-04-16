@@ -44,35 +44,25 @@ def parse_val(t):
         txt = re.sub(r'(cm|inch|in|mm|yds|tol|grade)$', '', txt)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match if isinstance(match, list) else match
-        if isinstance(v, list): v = v[0]
+        v = match[0] # SỬA LỖI TẠI ĐÂY
         if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION (QUÉT CẠN THÔNG SỐ) =================
+# ================= 3. PDF EXTRACTION (CHẾ ĐỘ QUÉT CẠN) =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes = {}, None
     try:
-        # 1. Trích xuất ảnh (Dò Sketch)
+        # 1. Trích xuất ảnh Sketch
         doc = fitz.open(stream=file_content, filetype="pdf")
         page = doc.load_page(0)
-        try:
-            paths = page.get_drawings()
-            bboxes = [p["rect"] for p in paths if p["rect"].width < page.rect.width * 0.9]
-            if bboxes:
-                x0, y0 = min([b.x0 for b in bboxes]), min([b.y0 for b in bboxes])
-                x1, y1 = max([b.x1 for b in bboxes]), max([b.y1 for b in bboxes])
-                crop = fitz.Rect(max(0, x0-30), max(0, y0-30), min(page.rect.width, x1+30), min(page.rect.height, y1+30))
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=crop)
-            else: pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-        except: pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
+        pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
         img_bytes = pix.tobytes("png")
         doc.close()
 
-        # 2. Quét thông số chế độ "Thông minh không phụ thuộc từ khóa"
+        # 2. Quét thông số không phụ thuộc từ khóa (Quét cạn)
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
@@ -80,16 +70,15 @@ def extract_pdf_multi_size(file_content):
                     df = pd.DataFrame(tb).fillna("")
                     if df.empty or len(df.columns) < 2: continue
                     
-                    # Tìm cột tên thông số: cột có nhiều chữ nhất
+                    # Cột nhiều chữ nhất là tên thông số (Point)
                     char_counts = df.apply(lambda x: x.astype(str).str.len().mean())
                     desc_col = char_counts.idxmax()
                     
-                    # Tìm các cột số (Size)
                     for col_idx in range(len(df.columns)):
                         if col_idx == desc_col: continue
                         
                         # Kiểm tra xem cột có chứa số không
-                        sample_vals = [parse_val(v) for v in df.iloc[:, col_idx].head(20)]
+                        sample_vals = [parse_val(v) for v in df.iloc[:, col_idx].head(15)]
                         if sum(sample_vals) > 0:
                             s_name = str(df.iloc[0, col_idx]).strip().replace('\n', ' ') or f"Size_{col_idx}"
                             if any(kw in s_name.upper() for kw in ["TOL", "GRADE", "SPEC", "CODE"]): continue
@@ -111,8 +100,10 @@ with st.sidebar:
     display_logo(width=220)
     st.markdown("---")
     st.title("📂 MASTER REPOSITORY")
-    res_count = supabase.table("ai_data").select("id", count="exact").execute()
-    count = res_count.count or 0
+    try:
+        res_count = supabase.table("ai_data").select("id", count="exact").execute()
+        count = res_count.count or 0
+    except: count = 0
     st.metric("Total Synchronized SKUs", f"{count} Models")
     
     used_mb = (count * 0.15)
@@ -131,9 +122,7 @@ with st.sidebar:
                 for f in new_files:
                     fb = f.read(); h = get_file_hash(fb)
                     check = supabase.table("ai_data").select("id").eq("id", h).execute()
-                    if check.data:
-                        st.sidebar.warning(f"⏩ {f.name} đã có trong kho.")
-                        continue
+                    if check.data: continue
                     data = extract_pdf_multi_size(fb)
                     if data and data.get('img'):
                         path = f"lib_{h}.png"
@@ -145,8 +134,7 @@ with st.sidebar:
                         }).execute()
                         new_count += 1
                 if new_count > 0: st.sidebar.success(f"✅ Đã thêm mới {new_count} mẫu!")
-                else: st.sidebar.info("Không có mẫu mới nào được thêm.")
-            time.sleep(2); st.rerun()
+            time.sleep(1); st.rerun()
     with col_up2:
         if st.button("CLEAR FILES", use_container_width=True):
             st.session_state['reset_key'] += 1; st.rerun()
@@ -168,7 +156,7 @@ if file_audit:
         if res.data:
             df_db = pd.DataFrame(res.data)
             
-            # TÌM KIẾM THỦ CÔNG
+            # TÌM KIẾM MÃ HÀNG
             st.subheader("🔍 Tìm kiếm mã hàng thủ công")
             search_query = st.text_input("Nhập mã hàng/tên file:", placeholder="Ví dụ: 5176...")
             if search_query:
@@ -185,20 +173,11 @@ if file_audit:
             if st.button("🚀 TỰ ĐỘNG TÌM KIẾM MẪU TƯƠNG ĐỒNG (AI)", use_container_width=True):
                 st.session_state['sel'] = None
 
-            # BỘ LỌC ĐỘ NHẠY
+            # LOGIC SO SÁNH AI
             t_name = file_audit.name.upper()
-            KEYWORDS = {"CARGO": ["CARGO", "TUI HOP"], "WAIST": ["ELASTIC", "THUN"], "TYPE": ["SKIRT", "VAY", "PANT", "QUAN", "SHORT"]}
-            def get_weight(row_name):
-                row_name = str(row_name).upper(); w = 1.0
-                for kw in KEYWORDS["TYPE"]:
-                    if (kw in t_name) == (kw in row_name): w += 0.5
-                return w
-
-            df_db['weight'] = df_db['file_name'].apply(get_weight)
             t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
-            df_db['final'] = df_db['sim'] * df_db['weight']
-            top_3 = df_db.sort_values('final', ascending=False).head(3)
+            top_3 = df_db.sort_values('sim', ascending=False).head(3)
             
             if st.session_state['sel'] is None:
                 st.subheader("🎯 Đề xuất mẫu tương đồng (AI)")
@@ -230,4 +209,4 @@ if file_audit:
                     with pd.ExcelWriter(buf, engine='xlsxwriter') as wr:
                         pd.DataFrame(all_export).to_excel(wr, index=False)
                     st.download_button("📥 DOWNLOAD REPORT", buf.getvalue(), f"Audit_{best['file_name']}.xlsx", use_container_width=True)
-                else: st.warning("⚠️ File Audit không có thông số hoặc định dạng bảng không hỗ trợ.")
+                else: st.warning("⚠️ File không có thông số bảng để so sánh.")
