@@ -125,20 +125,34 @@ with st.sidebar:
     st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1GB")
     st.progress(percent / 100)
 
-    st.divider()
+        st.divider()
     st.subheader("📥 Data Ingestion")
     new_files = st.file_uploader("Upload Tech-Packs (Bulk)", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
     if new_files and st.button("SYNCHRONIZE DATABASE", use_container_width=True):
         with st.spinner("AI Processing..."):
             for f in new_files:
                 c = f.read()
-                h = get_file_hash(c) # Tính mã băm định danh file
+                h = get_file_hash(c)
                 
-                # --- PHẦN SỬA: KIỂM TRA TRÙNG LẶP TRƯỚC KHI CHẠY AI ---
+                # 1. KIỂM TRA TRÙNG LẶP (Bỏ qua nếu đã có trong DB)
                 check_exists = supabase.table("ai_data").select("id").eq("id", h).execute()
                 if check_exists.data:
-                    # Nếu đã tồn tại id này, bỏ qua các bước AI bên dưới để tránh lãng phí
-                    continue 
+                    continue
+
+                data = extract_pdf_multi_size(c)
+                
+                # 2. KIỂM TRA FILE LỖI (Phải có đủ hình và thông số mới up)
+                if data and data.get('img') and data.get('all_specs'):
+                    path = f"lib_{h}.png"
+                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
+                    supabase.table("ai_data").upsert({
+                        "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
+                        "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                    }).execute()
+                    
+        st.session_state['reset_key'] += 1
+        st.rerun()
+
                 # -----------------------------------------------------
 
                 data = extract_pdf_multi_size(c)
