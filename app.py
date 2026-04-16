@@ -126,23 +126,34 @@ with st.sidebar:
     
     col_up1, col_up2 = st.columns(2)
     with col_up1:
-        if new_files and st.button("SYNCHRONIZE", use_container_width=True):
-            with st.spinner("AI Processing..."):
-                for f in new_files:
-                    c = f.read(); h = get_file_hash(c)
-                    data = extract_pdf_multi_size(c)
-                    if data and data.get('img') and data.get('all_specs'):
-                        path = f"lib_{h}.png"
-                        supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
-                        supabase.table("ai_data").upsert({
-                            "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
-                            "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
-                        }).execute()
-            st.success("Done!")
-    with col_up2:
-        if st.button("CLEAR FILES", use_container_width=True):
-            st.session_state['reset_key'] += 1
-            st.rerun()
+           if new_files and st.button("SYNCHRONIZE", use_container_width=True):
+        with st.spinner("AI Processing..."):
+            new_count = 0
+            for f in new_files:
+                c = f.read(); h = get_file_hash(c)
+                # KIỂM TRA TRÙNG
+                check = supabase.table("ai_data").select("id").eq("id", h).execute()
+                if check.data:
+                    st.sidebar.warning(f"⏩ {f.name} đã có trong kho.")
+                    continue
+                
+                data = extract_pdf_multi_size(c)
+                # CHỈ UP NẾU CÓ HÌNH VÀ THÔNG SỐ
+                if data and data.get('img') and data.get('all_specs'):
+                    path = f"lib_{h}.png"
+                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
+                    supabase.table("ai_data").upsert({
+                        "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
+                        "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                    }).execute()
+                    new_count += 1
+            
+            if new_count > 0:
+                st.sidebar.success(f"✅ Đã thêm mới {new_count} mẫu!")
+            else:
+                st.sidebar.info("Không có mẫu mới nào được thêm (trùng hoặc lỗi thông số).")
+        st.rerun()
+
 
 # ================= 5. AUDIT INTERFACE =================
 h_col1, h_col2 = st.columns(2)
