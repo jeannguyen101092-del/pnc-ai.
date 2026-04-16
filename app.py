@@ -123,25 +123,45 @@ with st.sidebar:
     new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
     
     col_up1, col_up2 = st.columns(2)
+       col_up1, col_up2 = st.columns(2)
     with col_up1:
         if new_files and st.button("SYNCHRONIZE", use_container_width=True):
             with st.spinner("AI Processing..."):
+                new_count = 0
                 for f in new_files:
-                    c = f.read(); h = get_file_hash(c)
+                    file_bytes = f.read()
+                    h = get_file_hash(file_bytes)
+                    
+                    # 1. KIỂM TRA TRÙNG (Báo tên file trùng ra sidebar)
                     check = supabase.table("ai_data").select("id").eq("id", h).execute()
-                    if check.data: continue
-                    data = extract_pdf_multi_size(c)
+                    if check.data:
+                        st.sidebar.warning(f"⏩ {f.name} đã có trong kho.")
+                        continue
+                    
+                    data = extract_pdf_multi_size(file_bytes)
+                    
+                    # 2. KIỂM TRA FILE ĐỦ ĐIỀU KIỆN (Có hình & thông số)
                     if data and data.get('img') and data.get('all_specs'):
                         path = f"lib_{h}.png"
                         supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
                         supabase.table("ai_data").upsert({
-                            "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
-                            "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                            "id": h, 
+                            "file_name": f.name, 
+                            "vector": get_image_vector(data['img']),
+                            "spec_json": data['all_specs'], 
+                            "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                         }).execute()
-            st.success("Done!")
-    with col_up2:
-        if st.button("CLEAR FILES", use_container_width=True):
-            st.session_state['reset_key'] += 1
+                        new_count += 1
+                
+                # 3. BÁO CÁO KẾT QUẢ TỔNG KẾT
+                if new_count > 0:
+                    st.sidebar.success(f"✅ Đã thêm mới {new_count} mẫu!")
+                else:
+                    st.sidebar.info("Không có mẫu mới nào được nạp (trùng hoặc thiếu thông số).")
+            
+            # Đợi 2 giây để người dùng kịp nhìn thông báo trước khi rerun
+            import time
+            time.sleep(2)
             st.rerun()
 
 # ================= 5. AUDIT INTERFACE =================
