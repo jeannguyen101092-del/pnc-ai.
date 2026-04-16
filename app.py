@@ -44,20 +44,21 @@ def parse_val(t):
         txt = re.sub(r'(cm|inch|in|mm|yds|tol|grade)$', '', txt)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0] # Lấy giá trị đầu tiên tìm được
+        v = match[0] # Lấy giá trị đầu tiên trong list
         if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION (QUÉT CẠN THÔNG SỐ) =================
+# ================= 3. PDF EXTRACTION (BẮT BUỘC QUÉT FULL THÔNG SỐ) =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes = {}, None
     try:
         doc = fitz.open(stream=file_content, filetype="pdf")
         page = doc.load_page(0)
-        pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+        # Chụp Sketch chất lượng cao
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
         img_bytes = pix.tobytes("png")
         doc.close()
 
@@ -68,15 +69,15 @@ def extract_pdf_multi_size(file_content):
                     df = pd.DataFrame(tb).fillna("")
                     if df.empty or len(df.columns) < 2: continue
                     
-                    # Tìm cột tên thông số bằng cách đếm chiều dài chuỗi trung bình
+                    # Tự động tìm cột thông số (Cột có nhiều text nhất)
                     char_counts = df.apply(lambda x: x.astype(str).str.len().mean())
                     desc_col = char_counts.idxmax()
                     
                     for col_idx in range(len(df.columns)):
                         if col_idx == desc_col: continue
-                        
-                        sample_vals = [parse_val(v) for v in df.iloc[:, col_idx].head(15)]
+                        sample_vals = [parse_val(v) for v in df.iloc[:, col_idx].head(20)]
                         if sum(sample_vals) > 0:
+                            # Lấy tên Size (Thường ở dòng đầu tiên)
                             s_name = str(df.iloc[0, col_idx]).strip().replace('\n', ' ') or f"Size_{col_idx}"
                             if any(kw in s_name.upper() for kw in ["TOL", "GRADE", "SPEC", "CODE"]): continue
                             
@@ -97,10 +98,8 @@ with st.sidebar:
     display_logo(width=220)
     st.markdown("---")
     st.title("📂 MASTER REPOSITORY")
-    try:
-        res_count = supabase.table("ai_data").select("id", count="exact").execute()
-        count = res_count.count or 0
-    except: count = 0
+    res_count = supabase.table("ai_data").select("id", count="exact").execute()
+    count = res_count.count or 0
     st.metric("Total Synchronized SKUs", f"{count} Models")
     
     used_mb = (count * 0.15)
@@ -118,20 +117,20 @@ with st.sidebar:
                 new_count = 0
                 for f in new_files:
                     fb = f.read(); h = get_file_hash(fb)
-                    check = supabase.table("ai_data").select("id").eq("id", h).execute()
-                    if check.data: continue
                     data = extract_pdf_multi_size(fb)
-                    if data and data.get('img'):
+                    # --- ĐIỀU KIỆN QUYẾT ĐỊNH: PHẢI CÓ THÔNG SỐ MỚI CHO UP ---
+                    if data and data.get('img') and data.get('all_specs') and len(data['all_specs']) > 0:
                         path = f"lib_{h}.png"
                         supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
-                        specs = data.get('all_specs') if data.get('all_specs') else {}
                         supabase.table("ai_data").upsert({
                             "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
-                            "spec_json": specs, "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                            "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                         }).execute()
                         new_count += 1
-                if new_count > 0: st.sidebar.success(f"✅ Đã thêm mới {new_count} mẫu!")
-            time.sleep(1); st.rerun()
+                    else:
+                        st.sidebar.error(f"❌ File {f.name} không tìm thấy thông số. Bị hủy bỏ.")
+                if new_count > 0: st.sidebar.success(f"✅ Đã cập nhật {new_count} mẫu có thông số!")
+            time.sleep(2); st.rerun()
     with col_up2:
         if st.button("CLEAR FILES", use_container_width=True):
             st.session_state['reset_key'] += 1; st.rerun()
@@ -153,7 +152,8 @@ if file_audit:
         if res.data:
             df_db = pd.DataFrame(res.data)
             
-            st.subheader("🔍 Tìm kiếm mã hàng thủ công")
+            # TÌM KIẾM MÃ HÀNG THỦ CÔNG
+            st.subheader("🔍 Tìm kiếm mã hàng trong kho")
             search_query = st.text_input("Nhập mã hàng/tên file:", placeholder="Ví dụ: 5176...")
             if search_query:
                 df_src = df_db[df_db['file_name'].str.contains(search_query, case=False, na=False)]
@@ -169,6 +169,7 @@ if file_audit:
             if st.button("🚀 TỰ ĐỘNG TÌM KIẾM MẪU TƯƠNG ĐỒNG (AI)", use_container_width=True):
                 st.session_state['sel'] = None
 
+            # LOGIC SO SÁNH AI HÌNH ẢNH
             t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
@@ -176,7 +177,7 @@ if file_audit:
             if st.session_state['sel'] is None:
                 st.subheader("🎯 Đề xuất mẫu tương đồng (AI)")
                 cols = st.columns(4)
-                with cols[0]: st.image(target['img'], caption="SOURCE SKETCH", use_container_width=True)
+                with cols: st.image(target['img'], caption="SOURCE SKETCH", use_container_width=True)
                 for i, (idx, row) in enumerate(top_3.iterrows()):
                     with cols[i+1]:
                         st.image(row['image_url'], caption=f"Match: {row['sim']:.1%}", use_container_width=True)
@@ -186,20 +187,27 @@ if file_audit:
             best = st.session_state.get('sel')
             if best:
                 st.success(f"**ĐANG SO SÁNH VỚI:** {best['file_name']}")
-                if target.get("all_specs") and len(target['all_specs']) > 0:
+                # Kiểm tra xem mẫu trong kho có thông số không
+                if not best.get('spec_json') or len(best['spec_json']) == 0:
+                    st.error("⚠️ Mẫu này trong kho đang bị thiếu thông số. Hãy upload lại mẫu này ở sidebar để cập nhật số.")
+                
+                if target.get("all_specs"):
                     st.subheader("📋 Measurement Comparison")
                     all_export = []
                     for sz, t_specs in target['all_specs'].items():
                         with st.expander(f"SIZE: {sz}", expanded=True):
                             r_specs = best['spec_json'].get(sz, {})
-                            rows = []; ref_poms = list(r_specs.keys())
+                            rows = []; r_poms = list(r_specs.keys())
                             for t_pom, t_val in t_specs.items():
-                                matches = get_close_matches(t_pom, ref_poms, n=1, cutoff=0.6)
+                                matches = get_close_matches(t_pom, r_poms, n=1, cutoff=0.6)
                                 rv = r_specs.get(matches[0], 0) if matches else 0
                                 rows.append({"Point": t_pom, "Target": t_val, "Ref": rv, "Diff": f"{t_val-rv:+.3f}"})
                                 all_export.append({"Size": sz, "Point": t_pom, "Target": t_val, "Ref": rv, "Diff": t_val-rv})
                             st.table(pd.DataFrame(rows))
+                    
                     buf = io.BytesIO()
                     with pd.ExcelWriter(buf, engine='xlsxwriter') as wr:
                         pd.DataFrame(all_export).to_excel(wr, index=False)
                     st.download_button("📥 DOWNLOAD REPORT", buf.getvalue(), f"Audit_{best['file_name']}.xlsx", use_container_width=True)
+                else:
+                    st.warning("⚠️ File đang Audit không trích xuất được bảng thông số.")
