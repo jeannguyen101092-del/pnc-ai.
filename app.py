@@ -17,7 +17,7 @@ supabase = create_client(URL, KEY)
 st.set_page_config(layout="wide", page_title="PPJ GROUP | AI Auditor Pro", page_icon="👔")
 
 if 'reset_key' not in st.session_state: st.session_state['reset_key'] = 0
-if 'sel_a' not in st.session_state: st.session_state['sel_a'] = None
+if 'sel_audit' not in st.session_state: st.session_state['sel_audit'] = None
 
 # ================= 2. AI CORE ENGINE =================
 @st.cache_resource
@@ -42,179 +42,164 @@ def parse_val(t):
         if not match: return 0
         v = match[0]
         if ' ' in v:
-            parts = v.split()
-            return float(parts[0]) + eval(parts[1])
+            p = v.split()
+            return float(p[0]) + eval(p[1])
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. AI TRANSLATION LOGIC =================
 def translate_insight(text):
-    mapping = {
-        "WASH": "Hướng dẫn Giặt", "FABRIC": "Thành phần Vải", "STITCH": "Quy cách May",
-        "THREAD": "Chỉ may", "LABEL": "Nhãn mác", "COLOR": "Màu sắc",
-        "POCKET": "Chi tiết Túi", "WAIST": "Chi tiết Lưng/Cạp"
-    }
-    translated_notes = []
-    lines = list(set([l.strip() for l in text.split('\n') if len(l.strip()) > 5]))
-    for line in lines:
-        for eng, vni in mapping.items():
-            if eng in line.upper():
-                translated_notes.append(f"**[{vni}]**: {line}")
-                break
-    return "\n\n".join(translated_notes[:10])
+    mapping = {"WASH": "HD Giặt", "FABRIC": "Thành phần Vải", "STITCH": "Quy cách May", "LABEL": "Nhãn mác", "COLOR": "Màu sắc", "POCKET": "Túi", "WAIST": "Lưng/Cạp"}
+    notes = [f"**[{v}]**: {l.strip()}" for l in text.split('\n') for k, v in mapping.items() if k in l.upper() and len(l.strip()) > 5]
+    return "\n\n".join(list(set(notes))[:10])
 
-# ================= 4. PDF EXTRACTION =================
+# ================= 3. PDF EXTRACTION (ULTRA-CLEAR) =================
 def extract_full_techpack(file_content):
     all_specs, img_bytes, vi_summary = {}, None, ""
     try:
         doc = fitz.open(stream=file_content, filetype="pdf")
         page = doc.load_page(0)
-        pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
-        img_temp = Image.open(io.BytesIO(pix.tobytes("png")))
-        buf = io.BytesIO()
-        img_temp.save(buf, format="WEBP", quality=70)
-        img_bytes = buf.getvalue()
+        pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0)) # Super Clear
+        img_t = Image.open(io.BytesIO(pix.tobytes("png")))
+        buf = io.BytesIO(); img_t.save(buf, format="WEBP", quality=75); img_bytes = buf.getvalue()
         doc.close()
-
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
-            full_text = ""
+            full_txt = ""
             for p in pdf.pages:
-                full_text += (p.extract_text() or "") + "\n"
-                tables = p.extract_tables()
-                for tb in tables:
+                full_txt += (p.extract_text() or "") + "\n"
+                for tb in p.extract_tables():
                     df = pd.DataFrame(tb).fillna("")
                     if df.empty or len(df.columns) < 2: continue
-                    char_counts = df.apply(lambda x: x.astype(str).str.len().mean())
-                    desc_col = char_counts.idxmax()
-                    for col_idx in range(len(df.columns)):
-                        if col_idx == desc_col: continue
-                        if sum([parse_val(v) for v in df.iloc[:, col_idx].head(15)]) > 0:
-                            s_name = str(df.iloc[0, col_idx]).strip().replace('\n', ' ')
-                            if any(k in s_name.upper() for k in ["TOL", "GRADE", "SPEC"]): continue
-                            temp_data = {str(df.iloc[d, desc_col]).strip(): parse_val(df.iloc[d, col_idx]) 
-                                         for d in range(len(df)) if len(str(df.iloc[d, desc_col])) > 3}
-                            if temp_data: all_specs[s_name] = temp_data
-            vi_summary = translate_insight(full_text)
+                    d_col = df.apply(lambda x: x.astype(str).str.len().mean()).idxmax()
+                    for c_idx in range(len(df.columns)):
+                        if c_idx == d_col: continue
+                        if sum([parse_val(v) for v in df.iloc[:, c_idx].head(15)]) > 0:
+                            s_n = str(df.iloc[0, c_idx]).strip().replace('\n', ' ')
+                            if any(k in s_n.upper() for k in ["TOL", "GRADE", "SPEC"]): continue
+                            specs = {str(df.iloc[d, d_col]).strip(): parse_val(df.iloc[d, c_idx]) for d in range(len(df)) if len(str(df.iloc[d, d_col])) > 3}
+                            if specs: all_specs[s_n] = specs
+            vi_summary = translate_insight(full_txt)
         return {"all_specs": all_specs, "img": img_bytes, "summary_vi": vi_summary}
     except: return None
 
-# ================= 5. UI SIDEBAR =================
+# ================= 4. SIDEBAR (STORAGE) =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
     count = res_count.count or 0
     st.metric("Repository Models", f"{count} SKUs")
-    st.write(f"💾 **Storage:** {count * 0.06:.1f}MB / 1024MB")
+    st.write(f"💾 **Storage:** {count * 0.07:.1f}MB / 1024MB")
     st.progress(min((count / 10000), 1.0))
-    
     st.divider()
     new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
     c1, c2 = st.columns(2)
     with c1:
         if new_files and st.button("SYNCHRONIZE", use_container_width=True):
-            with st.spinner("AI Processing..."):
+            with st.spinner("AI Saving..."):
                 for f in new_files:
                     fb = f.read(); h = get_file_hash(fb)
-                    check = supabase.table("ai_data").select("id").eq("id", h).execute()
-                    if check.data: continue
                     data = extract_full_techpack(fb)
                     if data and data.get('img') and data.get('all_specs'):
                         path = f"lib_{h}.webp"
                         supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
-                        supabase.table("ai_data").upsert({
-                            "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
-                            "spec_json": data['all_specs'], "summary_vi": data['summary_vi'], 
-                            "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
-                        }).execute()
+                        supabase.table("ai_data").upsert({"id": h, "file_name": f.name, "vector": get_image_vector(data['img']), "spec_json": data['all_specs'], "summary_vi": data['summary_vi'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)}).execute()
             st.rerun()
     with c2:
         if st.button("CLEAR LIST"): st.session_state['reset_key'] += 1; st.rerun()
 
-# ================= 6. MAIN AUDIT INTERFACE =================
+# ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
-mode = st.radio("Select Mode:", ["Audit vs Repository", "Version Control (Compare 2 Rounds)"], horizontal=True)
+mode = st.radio("Working Mode:", ["🔍 AI Similarity Search (Audit)", "🔄 Version Control (Repo vs Upload)"], horizontal=True)
 
-if mode == "Audit vs Repository":
-    file_audit = st.file_uploader("Upload PDF to Audit", type="pdf")
+if mode == "🔍 AI Similarity Search (Audit)":
+    file_audit = st.file_uploader("Upload PDF to find matches in Repository:", type="pdf")
     if file_audit:
         target = extract_full_techpack(file_audit.read())
         if target:
             with st.expander("📝 AI TECHNICAL INSIGHT (TIẾNG VIỆT)", expanded=True):
-                st.write(target['summary_vi'] if target['summary_vi'] else "Không tìm thấy ghi chú.")
+                st.write(target['summary_vi'] if target['summary_vi'] else "No special notes found.")
             
             res = supabase.table("ai_data").select("*").execute()
             df_db = pd.DataFrame(res.data)
             
+            # --- AI SENSITIVITY LOGIC (GIỮ NGUYÊN) ---
             t_name = file_audit.name.upper()
             def cat_filter(row_name):
                 row_name = str(row_name).upper()
                 is_t_pant = any(x in t_name for x in ["PANT", "QUAN", "SHORT"])
                 is_r_pant = any(x in row_name for x in ["PANT", "QUAN", "SHORT"])
-                return 1.3 if is_t_pant == is_r_pant else 0.0
+                if is_t_pant != is_r_pant: return 0.0
+                bonus = 1.0
+                for kw in ["CARGO", "THUN", "ELASTIC", "WAIST"]: 
+                    if (kw in t_name) == (kw in row_name): bonus += 0.2
+                return bonus
 
-            df_db['sim'] = cosine_similarity(np.array(get_image_vector(target['img'])).reshape(1, -1), np.array([v for v in df_db['vector']])).flatten()
+            t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
+            df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             df_db['final'] = df_db['sim'] * df_db['file_name'].apply(cat_filter)
             top_3 = df_db.sort_values('final', ascending=False).head(3)
             
-            st.subheader("🎯 Best Matches")
+            st.subheader("🎯 Best AI Matches (Quick Search)")
             cols = st.columns(4)
-            cols[0].image(target['img'], caption="TARGET SKETCH", use_container_width=True)
+            with cols[0]: st.image(target['img'], caption="TARGET FILE", use_container_width=True)
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 with cols[i+1]:
                     st.image(row['image_url'], caption=f"Match: {row['sim']:.1%}")
-                    if st.button(f"SELECT MODEL {i+1}", key=f"btn_{idx}"): st.session_state['sel_a'] = row.to_dict()
+                    if st.button(f"SELECT MODEL {i+1}", key=f"btn_{idx}"): st.session_state['sel_audit'] = row.to_dict()
 
-            selected = st.session_state.get('sel_a')
+            selected = st.session_state.get('sel_audit')
             if selected:
+                st.divider()
                 st.success(f"Comparing with: {selected['file_name']}")
-                all_export_data = []
+                all_ex = []
                 for sz, t_specs in target['all_specs'].items():
                     with st.expander(f"SIZE: {sz}", expanded=True):
                         r_specs = selected['spec_json'].get(sz, {})
                         rows = []
                         for p, v in t_specs.items():
-                            match_p = get_close_matches(p, list(r_specs.keys()), 1, 0.6)
-                            rv = r_specs.get(match_p[0], 0) if match_p else 0
-                            diff = v - rv
-                            rows.append({"Measurement Point": p, "Target": v, "Reference": rv, "Diff": f"{diff:+.3f}"})
-                            all_export_data.append({"Size": sz, "Point": p, "Target": v, "Reference": rv, "Diff": diff})
+                            m_p = get_close_matches(p, list(r_specs.keys()), 1, 0.6)
+                            rv = r_specs.get(m_p[0], 0) if m_p else 0
+                            rows.append({"Measurement Point": p, "Target": v, "Reference": rv, "Diff": f"{v-rv:+.3f}"})
+                            all_ex.append({"Size": sz, "Point": p, "Target": v, "Reference": rv, "Diff": v-rv})
                         st.table(pd.DataFrame(rows))
                 
-                # --- EXCEL EXPORT ---
-                buf = io.BytesIO()
-                with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-                    pd.DataFrame(all_export_data).to_excel(writer, index=False, sheet_name='Comparison')
+                buf = io.BytesIO(); wr = pd.ExcelWriter(buf, engine='xlsxwriter')
+                pd.DataFrame(all_ex).to_excel(wr, index=False); wr.close()
                 st.download_button("📥 DOWNLOAD AUDIT REPORT (.XLSX)", buf.getvalue(), f"Audit_{selected['file_name']}.xlsx", use_container_width=True)
 
-else: # Mode: Version Control
-    st.subheader("🔄 Version Control: Compare 2 Style Rounds")
+else: # --- MODE: VERSION CONTROL (A FROM REPO VS B FROM UPLOAD) ---
+    st.subheader("🔄 Compare Round A (From Repo) vs Round B (New Upload)")
     res = supabase.table("ai_data").select("file_name, spec_json, image_url").execute()
     df_repo = pd.DataFrame(res.data)
+    
     c1, c2 = st.columns(2)
     with c1:
-        v_a = st.selectbox("Select Version A:", df_repo['file_name'].tolist(), key="va")
-        data_a = df_repo[df_repo['file_name'] == v_a].iloc[0]
-        st.image(data_a['image_url'], width=300)
+        st.info("Step 1: Select Reference Style (Round A)")
+        ver_a_name = st.selectbox("Search Repo SKU:", df_repo['file_name'].tolist(), key="va")
+        data_a = df_repo[df_repo['file_name'] == ver_a_name].iloc[0]
+        st.image(data_a['image_url'], caption=f"Stored: {ver_a_name}", width=350)
     with c2:
-        v_b = st.selectbox("Select Version B:", df_repo['file_name'].tolist(), key="vb")
-        data_b = df_repo[df_repo['file_name'] == v_b].iloc[0]
-        st.image(data_b['image_url'], width=300)
-    
-    if st.button("RUN ROUND COMPARISON", use_container_width=True):
+        st.info("Step 2: Upload New Version (Round B)")
+        file_b = st.file_uploader("Upload New Tech-Pack:", type="pdf", key="file_b")
+        if file_b:
+            data_b = extract_full_techpack(file_b.read())
+            if data_b:
+                st.image(data_b['img'], caption="Newly Uploaded Style", width=350)
+
+    if file_b and st.button("RUN DIRECT COMPARISON", use_container_width=True):
+        st.divider()
+        st.write(f"### 📊 Comparing **{ver_a_name}** vs **{file_b.name}**")
         all_round_data = []
-        for sz, specs_a in data_a['spec_json'].items():
+        for sz, specs_b in data_b['all_specs'].items():
             with st.expander(f"SIZE: {sz}", expanded=True):
-                specs_b = data_b['spec_json'].get(sz, {})
+                specs_a = data_a['spec_json'].get(sz, {})
                 rows = []
-                for p, v_a in specs_a.items():
-                    v_b = specs_b.get(p, 0)
-                    diff = v_b - v_a
-                    rows.append({"Point": p, "Round A": v_a, "Round B": v_b, "Diff": f"{diff:+.3f}"})
-                    all_round_data.append({"Size": sz, "Point": p, "Round A": v_a, "Round B": v_b, "Diff": diff})
+                for p_b, v_b in specs_b.items():
+                    m_p = get_close_matches(p_b, list(specs_a.keys()), 1, 0.6)
+                    v_a = specs_a.get(m_p[0], 0) if m_p else 0
+                    rows.append({"Point": p_b, "Stored (A)": v_a, "New (B)": v_b, "Diff": f"{v_b-v_a:+.3f}"})
+                    all_round_data.append({"Size": sz, "Point": p_b, "Stored_A": v_a, "New_B": v_b, "Diff": v_b-v_a})
                 st.table(pd.DataFrame(rows))
         
-        # --- EXCEL EXPORT FOR VERSION CONTROL ---
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-            pd.DataFrame(all_round_data).to_excel(writer, index=False, sheet_name='Round_Comparison')
-        st.download_button("📥 DOWNLOAD ROUND REPORT (.XLSX)", buf.getvalue(), f"Round_Comp_{data_a['file_name']}.xlsx", use_container_width=True)
+        buf_r = io.BytesIO(); wr = pd.ExcelWriter(buf_r, engine='xlsxwriter')
+        pd.DataFrame(all_round_data).to_excel(wr, index=False); wr.close()
+        st.download_button("📥 DOWNLOAD COMPARISON (.XLSX)", buf_r.getvalue(), f"Round_Comp_{ver_a_name}.xlsx", use_container_width=True)
