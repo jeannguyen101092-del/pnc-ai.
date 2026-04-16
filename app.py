@@ -161,6 +161,7 @@ with h_col2:
 st.markdown("---")
 file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf", key=f"audit_{st.session_state['reset_key']}")
 
+# ================= PHẦN SỬA LOGIC SO SÁNH (Nâng cấp từ dòng 147) =================
 if file_audit:
     a_bytes = file_audit.read()
     target = extract_pdf_multi_size(a_bytes)
@@ -168,11 +169,37 @@ if file_audit:
         res = supabase.table("ai_data").select("*").execute()
         if res.data:
             df_db = pd.DataFrame(res.data)
+            
+            # --- BƯỚC MỚI: BỘ LỌC PHÂN LOẠI (CATEGORY FILTER) ---
+            # 1. Xác định loại sản phẩm của file đang Audit (Váy hay Quần)
+            t_name = file_audit.name.upper()
+            is_skirt = any(x in t_name for x in ["SKIRT", "VAY", "DRESS"])
+            is_pant = any(x in t_name for x in ["PANT", "QUAN", "SHORT", "TROUSER"])
+
+            def check_category_match(row_name):
+                row_name = str(row_name).upper()
+                # Nếu file Audit là Váy, ưu tiên mẫu trong kho cũng là Váy
+                if is_skirt and any(x in row_name for x in ["SKIRT", "VAY", "DRESS"]): return 1.5
+                # Nếu file Audit là Quần, ưu tiên mẫu trong kho cũng là Quần
+                if is_pant and any(x in row_name for x in ["PANT", "QUAN", "SHORT", "TROUSER"]): return 1.5
+                return 1.0 # Mặc định không ưu tiên nếu không khớp loại
+
+            df_db['cat_score'] = df_db['file_name'].apply(check_category_match)
+            # ---------------------------------------------------
+
             t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
+            # Tính độ tương đồng hình ảnh
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
-            top_3 = df_db.sort_values('sim', ascending=False).head(3)
+            
+            # TÍNH ĐIỂM TỔNG HỢP: Hình ảnh x Bộ lọc loại sản phẩm
+            df_db['final_score'] = df_db['sim'] * df_db['cat_score']
+            
+            # Sắp xếp theo điểm tổng hợp mới (final_score) thay vì chỉ sim
+            top_3 = df_db.sort_values('final_score', ascending=False).head(3)
             
             st.subheader(f"🎯 AI Best Matches")
+            # ... (Các phần hiển thị bên dưới giữ nguyên) ...
+
             cols = st.columns(4)
             with cols[0]: st.image(target['img'], caption="SOURCE SKETCH", use_container_width=True)
             for i, (idx, row) in enumerate(top_3.iterrows()):
