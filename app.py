@@ -47,7 +47,7 @@ def parse_val(t):
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION (DEEP SCAN 2.0) =================
+# ================= 3. PDF EXTRACTION (SMART POM FILTER) =================
 def extract_full_techpack(file_content):
     all_specs, img_bytes, category = {}, None, "UNKNOWN"
     try:
@@ -58,52 +58,39 @@ def extract_full_techpack(file_content):
         buf = io.BytesIO(); img_t.save(buf, format="WEBP", quality=75); img_bytes = buf.getvalue()
         doc.close()
 
-        # Cấu hình quét bảng chuyên sâu cho PDF khó
-        TABLE_SETTINGS = {
-            "vertical_strategy": "lines",
-            "horizontal_strategy": "lines",
-            "explicit_vertical_lines": [],
-            "explicit_horizontal_lines": [],
-            "snap_tolerance": 3,
-            "join_tolerance": 3,
-            "edge_min_length": 15,
-            "min_words_vertical": 2,
-            "intersection_y_tolerance": 10,
-        }
-
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             full_txt = ""
-            for p_idx, p in enumerate(pdf.pages):
+            for p in pdf.pages:
                 full_txt += (p.extract_text() or "") + "\n"
-                # Thử quét với 2 chiến thuật: mặc định và chuyên sâu
                 tables = p.extract_tables()
-                if not tables:
-                    tables = p.extract_tables(table_settings=TABLE_SETTINGS)
-                
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
                     if df.empty or len(df.columns) < 2: continue
                     
-                    # Cột mô tả: cột có chiều dài text lớn nhất
+                    # KIỂM TRA XEM CÓ PHẢI BẢNG THÔNG SỐ KHÔNG (LỌC BẢNG RÁC)
+                    headers = " ".join([str(c).upper() for c in df.iloc[0]])
+                    is_spec_table = any(kw in headers for kw in ["POM", "DESCRIPTION", "SPEC", "MEASURE", "TOL"])
+                    if not is_spec_table: continue # Bỏ qua bảng BOM, Label...
+
+                    # Tìm cột POM Description
                     char_counts = df.apply(lambda x: x.astype(str).str.len().mean())
                     desc_col = char_counts.idxmax()
                     
                     for col_idx in range(len(df.columns)):
                         if col_idx == desc_col: continue
-                        # Chỉ lấy cột nếu có chứa ít nhất 1 giá trị số hợp lệ
+                        # Nhận diện cột Size: Phải có số và tiêu đề ngắn
                         vals = [parse_val(v) for v in df.iloc[:, col_idx]]
-                        if any(v > 0 for v in vals):
-                            # Tên Size: lấy dòng đầu tiên hoặc tên cột
-                            raw_name = str(df.iloc[0, col_idx]).strip().replace('\n', ' ')
-                            s_name = raw_name if len(raw_name) < 10 else f"Size_{col_idx}"
-                            
-                            if any(k in s_name.upper() for k in ["TOL", "GRADE", "SPEC", "CODE"]): continue
+                        if sum(1 for v in vals if v > 0) >= 2:
+                            s_name = str(df.iloc[0, col_idx]).strip().replace('\n', ' ')
+                            # Loại bỏ các cột phụ như Tol, Code, Grade
+                            if any(k in s_name.upper() for k in ["TOL", "GRADE", "CODE", "SPEC NO"]): continue
                             
                             temp_specs = {}
-                            for d_idx in range(len(df)):
+                            for d_idx in range(1, len(df)): # Bỏ qua dòng tiêu đề
                                 pom_name = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
                                 val = parse_val(df.iloc[d_idx, col_idx])
-                                if val > 0 and len(pom_name) > 3:
+                                # Lọc bỏ các dòng rác trong bảng
+                                if val > 0 and len(pom_name) > 3 and not any(x in pom_name.upper() for x in ["FABRIC", "COLOR", "GSM", "TICKET"]):
                                     temp_specs[pom_name] = val
                             
                             if temp_specs:
@@ -117,18 +104,17 @@ def extract_full_techpack(file_content):
         return {"all_specs": all_specs, "img": img_bytes, "category": category}
     except: return None
 
-# ================= 4. UI SIDEBAR =================
+# ================= 4. SIDEBAR =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
     count = res_count.count or 0
-    st.metric("Repository Models", f"{count}")
+    st.metric("Total Models", f"{count}")
     st.write(f"💾 **Cloud Storage:** {count * 0.08:.1f}MB / 1024MB")
-    st.progress(min((count * 0.08) / 1024, 1.0))
     st.divider()
-    new_files = st.file_uploader("Sync New Tech-Packs", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
+    new_files = st.file_uploader("Sync Tech-Packs (Spec Only)", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
     if new_files and st.button("SYNCHRONIZE", use_container_width=True):
-        with st.spinner("Deep Scanning & Archiving..."):
+        with st.spinner("Filtering POM Specs & Saving..."):
             for f in new_files:
                 fb = f.read(); h = get_file_hash(fb)
                 data = extract_full_techpack(fb)
@@ -144,9 +130,9 @@ st.title("👔 AI SMART AUDITOR PRO")
 mode = st.radio("Mode Selection:", ["🔍 AI Search (Audit)", "🔄 Version Control (Repo vs New File)"], horizontal=True)
 
 if mode == "🔍 AI Search (Audit)":
-    file_audit = st.file_uploader("Upload Target PDF:", type="pdf")
+    file_audit = st.file_uploader("Upload PDF to find match:", type="pdf")
     if file_audit:
-        with st.status("Deep Scanning PDF and Repository...", expanded=True) as status:
+        with st.status("Deep Scanning Spec Tables...", expanded=True) as status:
             target = extract_full_techpack(file_audit.read())
             all_db = []
             for i in range(0, count, 1000):
@@ -164,7 +150,7 @@ if mode == "🔍 AI Search (Audit)":
             det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).single().execute()
             with cols[i+1]:
                 st.image(det.data['image_url'], caption=f"Match: {row['sim']:.1%}")
-                if st.button(f"SELECT {i+1}", key=f"btn_{idx}", use_container_width=True):
+                if st.button(f"SELECT MODEL {i+1}", key=f"btn_{idx}"):
                     st.session_state['sel_audit'] = {**row.to_dict(), **det.data}
 
         selected = st.session_state.get('sel_audit')
@@ -180,18 +166,17 @@ if mode == "🔍 AI Search (Audit)":
                         m_p = get_close_matches(p, list(r_specs.keys()), 1, 0.6)
                         rv = r_specs.get(m_p[0] if m_p else "", 0)
                         diff = v - rv
-                        rows.append({"Point": p, "Target": v, "Ref": rv, "Diff": f"{diff:+.3f}"})
+                        rows.append({"Point of Measure": p, "Target": v, "Ref": rv, "Diff": f"{diff:+.3f}"})
                         all_ex.append({"Size": sz, **rows[-1]})
                     st.table(pd.DataFrame(rows))
             
             if all_ex:
                 buf = io.BytesIO(); wr = pd.ExcelWriter(buf, engine='xlsxwriter')
                 pd.DataFrame(all_ex).to_excel(wr, index=False); wr.close()
-                st.download_button("📥 DOWNLOAD AUDIT REPORT", buf.getvalue(), f"Audit_{selected['file_name']}.xlsx", use_container_width=True)
-            else: st.warning("No measurement tables found in this PDF.")
+                st.download_button("📥 DOWNLOAD AUDIT REPORT", buf.getvalue(), f"Audit_{selected['file_name']}.xlsx")
 
 else: # --- VERSION CONTROL MODE ---
-    st.subheader("🔄 Compare Round A (Repo) vs Round B (New Upload)")
+    st.subheader("🔄 Compare Round A (Repo) vs Round B (New PDF)")
     all_names = []
     for i in range(0, count, 1000):
         res_n = supabase.table("ai_data").select("file_name").range(i, i+999).execute()
@@ -215,10 +200,10 @@ else: # --- VERSION CONTROL MODE ---
 
     if file_b and data_b:
         st.divider()
-        st.success(f"📈 **COMPARING:** {ver_a_name} (Repo) vs {file_b.name} (New)")
+        st.success(f"📈 **COMPARING:** {ver_a_name} vs {file_b.name}")
         all_round_ex = []
         if not data_b['all_specs']:
-            st.error("Could not find measurement tables in the uploaded PDF. Please check the file format.")
+            st.error("Could not find Measurement Spec tables. Please check if PDF contains POM tables.")
         else:
             for sz, specs_b in data_b['all_specs'].items():
                 with st.expander(f"SIZE: {sz}", expanded=True):
@@ -228,11 +213,11 @@ else: # --- VERSION CONTROL MODE ---
                         m_p = get_close_matches(p_b, list(specs_a.keys()), 1, 0.6)
                         v_a = specs_a.get(m_p[0] if m_p else "", 0)
                         diff = v_b - v_a
-                        rows.append({"Point": p_b, "Stored (A)": v_a, "New (B)": v_b, "Diff": f"{diff:+.3f}"})
+                        rows.append({"Measurement Point": p_b, "Stored (A)": v_a, "New (B)": v_b, "Diff": f"{diff:+.3f}"})
                         all_round_ex.append({"Size": sz, "Point": p_b, "Stored_A": v_a, "New_B": v_b, "Diff": diff})
                     st.table(pd.DataFrame(rows))
         
         if all_round_ex:
             buf_r = io.BytesIO(); wr = pd.ExcelWriter(buf_r, engine='xlsxwriter')
             pd.DataFrame(all_round_ex).to_excel(wr, index=False); wr.close()
-            st.download_button("📥 DOWNLOAD COMPARISON (.XLSX)", buf_r.getvalue(), f"Comparison_{ver_a_name}.xlsx", use_container_width=True)
+            st.download_button("📥 DOWNLOAD COMPARISON (.XLSX)", buf_r.getvalue(), f"Comparison_{ver_a_name}.xlsx")
