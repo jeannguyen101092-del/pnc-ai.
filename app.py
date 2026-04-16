@@ -47,28 +47,21 @@ def parse_val(t):
         txt = re.sub(r'(cm|inch|in|mm|yds)$', '', txt)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0]
+        v = match[0] if isinstance(match, list) else match
         if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION (FIXED ERROR) =================
-def extract_pdf_multi_size(file_content):
-    all_specs, img_bytes, is_reit = {}, None, False
+# ================= 3. PDF EXTRACTION (LINH HOẠT) =================
+def extract_pdf_flexible(file_content):
+    all_specs, img_bytes = {}, None
     try:
-        # Check text info
-        txt_check = ""
-        with pdfplumber.open(io.BytesIO(file_content)) as pdf:
-            for p in pdf.pages[:1]: txt_check += (p.extract_text() or "").upper()
-        if "REITMAN" in txt_check: is_reit = True
-
-        # XỬ LÝ HÌNH VẼ AN TOÀN
+        # --- 1. LUÔN LẤY HÌNH VẼ TRƯỚC (ƯU TIÊN) ---
         doc = fitz.open(stream=file_content, filetype="pdf")
         page = doc.load_page(0)
         try:
-            # Thử dò tìm vùng hình vẽ
             paths = page.get_drawings()
             bboxes = [p["rect"] for p in paths if p["rect"].width < page.rect.width * 0.9]
             if bboxes:
@@ -76,48 +69,46 @@ def extract_pdf_multi_size(file_content):
                 x1, y1 = max([b.x1 for b in bboxes]), max([b.y1 for b in bboxes])
                 crop = fitz.Rect(max(0, x0-30), max(0, y0-30), min(page.rect.width, x1+30), min(page.rect.height, y1+30))
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=crop)
-            else:
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-        except:
-            # Nếu PDF lỗi cấu trúc (No common ancestor), chụp ảnh toàn trang cơ bản
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
-        
+            else: pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+        except: pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
         img_bytes = pix.tobytes("png")
         doc.close()
 
-        # TRÍCH XUẤT THÔNG SỐ (Giữ nguyên gốc)
-        with pdfplumber.open(io.BytesIO(file_content)) as pdf:
-            for page in pdf.pages:
-                tables = page.extract_tables()
-                for tb in tables:
-                    df = pd.DataFrame(tb).fillna("")
-                    if df.empty or len(df.columns) < 2: continue
-                    desc_col, size_cols = -1, {}
-                    for r_idx in range(min(15, len(df))):
-                        row = [str(c).strip().upper() for c in df.iloc[r_idx]]
-                        for i, v in enumerate(row):
-                            if (is_reit and "POM NAME" in v) or (not is_reit and ("DESCRIPTION" in v or "POM NAME" in v)):
-                                desc_col = i; break
-                        if desc_col != -1: break
-                    if desc_col == -1: continue
-                    for r_idx in range(min(15, len(df))):
-                        row = [str(c).strip().upper() for c in df.iloc[r_idx]]
-                        for i, v in enumerate(row):
-                            if i == desc_col or not v: continue
-                            if any(x in v for x in ["TOL", "GRADE", "CODE", "+/-"]): continue
-                            if len(v) <= 8 or v.isdigit() or v in ["XS","S","M","L","XL"]: size_cols[i] = v
-                        if size_cols: break
-                    if size_cols:
-                        for s_col, s_name in size_cols.items():
-                            temp_data = {}
-                            for d_idx in range(len(df)):
-                                pom_text = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
-                                if len(pom_text) < 3 or any(x in pom_text.upper() for x in ["DESCRIPTION", "POM NAME", "SIZE"]): continue
-                                val = parse_val(df.iloc[d_idx, s_col])
-                                if val > 0: temp_data[pom_text] = val
-                            if temp_data:
-                                if s_name not in all_specs: all_specs[s_name] = {}
-                                all_specs[s_name].update(temp_data)
+        # --- 2. THỬ LẤY THÔNG SỐ (NẾU CÓ) ---
+        try:
+            with pdfplumber.open(io.BytesIO(file_content)) as pdf:
+                for page in pdf.pages:
+                    tables = page.extract_tables()
+                    for tb in tables:
+                        df = pd.DataFrame(tb).fillna("")
+                        if df.empty or len(df.columns) < 2: continue
+                        desc_col, size_cols = -1, {}
+                        for r_idx in range(min(15, len(df))):
+                            row = [str(c).strip().upper() for c in df.iloc[r_idx]]
+                            for i, v in enumerate(row):
+                                if "DESCRIPTION" in v or "POM NAME" in v: desc_col = i; break
+                            if desc_col != -1: break
+                        if desc_col == -1: continue
+                        for r_idx in range(min(15, len(df))):
+                            row = [str(c).strip().upper() for c in df.iloc[r_idx]]
+                            for i, v in enumerate(row):
+                                if i == desc_col or not v: continue
+                                if any(x in v for x in ["TOL", "GRADE", "CODE", "+/-"]): continue
+                                if len(v) <= 8 or v.isdigit() or v in ["XS","S","M","L","XL"]: size_cols[i] = v
+                            if size_cols: break
+                        if size_cols:
+                            for s_col, s_name in size_cols.items():
+                                temp_data = {}
+                                for d_idx in range(len(df)):
+                                    pom_text = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
+                                    if len(pom_text) < 3 or any(x in pom_text.upper() for x in ["DESCRIPTION", "POM NAME"]): continue
+                                    val = parse_val(df.iloc[d_idx, s_col])
+                                    if val > 0: temp_data[pom_text] = val
+                                if temp_data:
+                                    if s_name not in all_specs: all_specs[s_name] = {}
+                                    all_specs[s_name].update(temp_data)
+        except: pass # Nếu lỗi trích xuất bảng thì bỏ qua, vẫn giữ img_bytes
+
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
@@ -126,109 +117,90 @@ with st.sidebar:
     display_logo(width=220)
     st.markdown("---")
     st.title("📂 MASTER REPOSITORY")
-    try:
-        res_count = supabase.table("ai_data").select("id", count="exact").execute()
-        count = res_count.count or 0
-    except: count = 0
-    st.metric("Total Synchronized SKUs", f"{count} Models")
+    res_count = supabase.table("ai_data").select("id", count="exact").execute()
+    st.metric("Total Synchronized SKUs", f"{res_count.count or 0} Models")
     
     st.divider()
     st.subheader("📥 Data Ingestion")
-    new_files = st.file_uploader("Upload Tech-Packs (Bulk)", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
-    if new_files and st.button("SYNCHRONIZE DATABASE", use_container_width=True):
+    new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
+    if new_files and st.button("SYNCHRONIZE DATABASE"):
         with st.spinner("AI Processing..."):
             for f in new_files:
                 c = f.read(); h = get_file_hash(c)
                 check = supabase.table("ai_data").select("id").eq("id", h).execute()
                 if check.data: continue
-                data = extract_pdf_multi_size(c)
-                if data and data.get('img') and data.get('all_specs'):
-                    path = f"lib_{h}.png"
-                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
+                data = extract_pdf_flexible(c)
+                if data and data.get('img'): # Chỉ cần có hình là cho phép Up
+                    supabase.storage.from_(BUCKET).upload(f"lib_{h}.png", data['img'], {"upsert":"true"})
                     supabase.table("ai_data").upsert({
                         "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
-                        "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                        "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(f"lib_{h}.png")
                     }).execute()
-        st.session_state['reset_key'] += 1
         st.rerun()
 
 h_col1, h_col2 = st.columns([1, 4])
 with h_col1: display_logo(width=120)
-with h_col2:
-    st.title("AI SMART AUDITOR PRO")
-    st.markdown("*Premium Technical Audit System for PPJ Group*")
+with h_col2: st.title("AI SMART AUDITOR PRO")
 
 st.markdown("---")
-file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf", key=f"audit_{st.session_state['reset_key']}")
+file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf")
 
-# ================= PHẦN SỬA LOGIC SO SÁNH (Nâng cấp từ dòng 147) =================
 if file_audit:
     a_bytes = file_audit.read()
-    target = extract_pdf_multi_size(a_bytes)
-    if target and target["all_specs"]:
+    target = extract_pdf_flexible(a_bytes)
+    
+    if target and target.get("img"):
         res = supabase.table("ai_data").select("*").execute()
         if res.data:
             df_db = pd.DataFrame(res.data)
+            t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             
-            # --- BƯỚC MỚI: BỘ LỌC PHÂN LOẠI (CATEGORY FILTER) ---
-            # 1. Xác định loại sản phẩm của file đang Audit (Váy hay Quần)
+            # --- LOGIC PHÂN LOẠI CATEGORY (GIỮ LẠI TỪ BƯỚC TRƯỚC) ---
             t_name = file_audit.name.upper()
             is_skirt = any(x in t_name for x in ["SKIRT", "VAY", "DRESS"])
-            is_pant = any(x in t_name for x in ["PANT", "QUAN", "SHORT", "TROUSER"])
-
-            def check_category_match(row_name):
+            is_pant = any(x in t_name for x in ["PANT", "QUAN", "SHORT"])
+            def get_cat_weight(row_name):
                 row_name = str(row_name).upper()
-                # Nếu file Audit là Váy, ưu tiên mẫu trong kho cũng là Váy
-                if is_skirt and any(x in row_name for x in ["SKIRT", "VAY", "DRESS"]): return 1.5
-                # Nếu file Audit là Quần, ưu tiên mẫu trong kho cũng là Quần
-                if is_pant and any(x in row_name for x in ["PANT", "QUAN", "SHORT", "TROUSER"]): return 1.5
-                return 1.0 # Mặc định không ưu tiên nếu không khớp loại
-
-            df_db['cat_score'] = df_db['file_name'].apply(check_category_match)
-            # ---------------------------------------------------
-
-            t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
-            # Tính độ tương đồng hình ảnh
+                if is_skirt and any(x in row_name for x in ["SKIRT", "VAY", "DRESS"]): return 1.3
+                if is_pant and any(x in row_name for x in ["PANT", "QUAN", "SHORT"]): return 1.3
+                return 1.0
+            
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
-            
-            # TÍNH ĐIỂM TỔNG HỢP: Hình ảnh x Bộ lọc loại sản phẩm
-            df_db['final_score'] = df_db['sim'] * df_db['cat_score']
-            
-            # Sắp xếp theo điểm tổng hợp mới (final_score) thay vì chỉ sim
+            df_db['final_score'] = df_db['sim'] * df_db['file_name'].apply(get_cat_weight)
             top_3 = df_db.sort_values('final_score', ascending=False).head(3)
             
-            st.subheader(f"🎯 AI Best Matches")
-            # ... (Các phần hiển thị bên dưới giữ nguyên) ...
-
+            st.subheader("🎯 AI Image Matches")
             cols = st.columns(4)
-            with cols[0]: st.image(target['img'], caption="SOURCE SKETCH", use_container_width=True)
+            with cols[0]: st.image(target['img'], caption="FILE ĐANG AUDIT", use_container_width=True)
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 with cols[i+1]:
-                    st.image(row['image_url'], caption=f"Match: {row['sim']:.1%}", use_container_width=True)
-                    if st.button(f"SELECT MODEL {i+1}", key=f"btn_{idx}", use_container_width=True):
-                        st.session_state['sel'] = row.to_dict()
+                    st.image(row['image_url'], caption=f"Độ giống: {row['sim']:.1%}", use_container_width=True)
+                    if st.button(f"CHỌN MẪU {i+1}", key=f"btn_{idx}"): st.session_state['sel'] = row.to_dict()
 
             best = st.session_state.get('sel', top_3.iloc[0].to_dict())
-            st.success(f"**REFERENCE SKU:** {best['file_name']}")
+            st.success(f"**ĐỐI ỨNG VỚI MẪU:** {best['file_name']}")
 
-            # Bảng so sánh
-            st.subheader("📋 Measurement Comparison")
-            all_export = []
-            for s_name, specs in target['all_specs'].items():
-                with st.expander(f"SIZE: {s_name}", expanded=True):
-                    ref_specs = best['spec_json'].get(s_name, {})
-                    rows = []
-                    for pom, val in specs.items():
-                        rv = ref_specs.get(pom, 0)
-                        diff = val - rv
-                        rows.append({"Point": pom, "Target": val, "Ref": rv, "Diff": f"{diff:+.3f}"})
-                        all_export.append({"Size": s_name, "Point": pom, "Target": val, "Ref": rv, "Diff": diff})
-                    st.table(pd.DataFrame(rows))
+            # --- KIỂM TRA ĐỂ HIỂN THỊ THÔNG SỐ ---
+            if target.get("all_specs") and len(target["all_specs"]) > 0:
+                st.subheader("📋 Measurement Comparison")
+                all_exp = []
+                for sz, specs in target['all_specs'].items():
+                    with st.expander(f"SIZE: {sz}", expanded=True):
+                        ref_s = best['spec_json'].get(sz, {})
+                        rows = []
+                        for pom, val in specs.items():
+                            rv = ref_s.get(pom, 0)
+                            rows.append({"Point": pom, "Target": val, "Ref": rv, "Diff": f"{val-rv:+.3f}"})
+                            all_exp.append({"Size": sz, "Point": pom, "Target": val, "Ref": rv, "Diff": val-rv})
+                        st.table(pd.DataFrame(rows))
+                
+                # Nút Excel chỉ hiện khi có thông số
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine='xlsxwriter') as wr:
+                    pd.DataFrame(all_exp).to_excel(wr, index=False)
+                st.download_button("📥 DOWNLOAD REPORT", buf.getvalue(), f"Audit_{best['file_name']}.xlsx")
+            else:
+                st.warning("⚠️ File mới không tìm thấy bảng thông số. Chỉ có thể so sánh hình ảnh tương đồng.")
 
-            # Export Excel
-            buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine='xlsxwriter') as wr:
-                pd.DataFrame(all_export).to_excel(wr, index=False)
-            st.download_button("📥 DOWNLOAD REPORT", buf.getvalue(), f"Audit_{best['file_name']}.xlsx", "application/vnd.ms-excel")
     else:
-        st.error("⚠️ Không thể trích xuất thông số từ file này. Vui lòng kiểm tra lại định dạng PDF.")
+        st.error("❌ Không thể xử lý hình ảnh từ file này.")
