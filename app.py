@@ -50,17 +50,16 @@ def parse_val(t):
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION (SKETCH DETECTOR + FULL SPECS) =================
+# ================= 3. PDF EXTRACTION (FULL SPECS + SKETCH DETECTOR) =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes, is_reit = {}, None, False
     try:
-        # --- LUÔN QUÉT TOÀN BỘ BẢNG THÔNG SỐ (GIỮ NGUYÊN GỐC) ---
         txt_check = ""
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for p in pdf.pages[:1]: txt_check += (p.extract_text() or "").upper()
         if "REITMAN" in txt_check: is_reit = True
 
-        # --- DÒ TÌM HÌNH VẼ SKETCH (BỎ QUA CHỮ GÂY NHIỄU) ---
+        # --- DÒ TÌM HÌNH VẼ SKETCH ---
         doc = fitz.open(stream=file_content, filetype="pdf")
         page = doc.load_page(0)
         try:
@@ -76,7 +75,7 @@ def extract_pdf_multi_size(file_content):
         img_bytes = pix.tobytes("png")
         doc.close()
 
-        # --- QUÉT TOÀN BỘ TRANG PDF ĐỂ LẤY FULL BẢNG THÔNG SỐ ---
+        # --- QUÉT TOÀN BỘ TRANG ĐỂ LẤY FULL THÔNG SỐ ---
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
@@ -147,9 +146,11 @@ with st.sidebar:
             st.rerun()
 
 # ================= 5. AUDIT INTERFACE =================
-h_col1, h_col2 = st.columns()
+h_col1, h_col2 = st.columns(2) # ĐÃ SỬA LỖI Ở ĐÂY
 with h_col1: display_logo(width=120)
-with h_col2: st.title("AI SMART AUDITOR PRO")
+with h_col2:
+    st.title("AI SMART AUDITOR PRO")
+    st.markdown("*Premium Technical Audit System for PPJ Group*")
 
 st.markdown("---")
 file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf")
@@ -163,7 +164,7 @@ if file_audit:
         if res.data:
             df_db = pd.DataFrame(res.data)
             
-            # --- BỘ LỌC CHI TIẾT NHẠY CAO (SENSITIVE FILTER) ---
+            # --- BỘ LỌC CHI TIẾT NHẠY CAO ---
             t_name = file_audit.name.upper()
             KEYWORDS = {
                 "CARGO": ["CARGO", "TUI HOP", "POCKET HOP"],
@@ -187,14 +188,14 @@ if file_audit:
             
             st.subheader("🎯 AI Best Image Matches")
             cols = st.columns(4)
-            with cols: st.image(target['img'], caption="SOURCE SKETCH", use_container_width=True)
+            with cols[0]: st.image(target['img'], caption="SOURCE SKETCH", use_container_width=True)
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 with cols[i+1]:
                     st.image(row['image_url'], caption=f"Match: {row['sim']:.1%}", use_container_width=True)
                     if st.button(f"SELECT MODEL {i+1}", key=f"btn_{idx}", use_container_width=True):
                         st.session_state['sel'] = row.to_dict()
 
-            best = st.session_state.get('sel', top_3.iloc.to_dict())
+            best = st.session_state.get('sel', top_3.iloc[0].to_dict())
             st.success(f"**REFERENCE SKU:** {best['file_name']}")
 
             if target.get("all_specs"):
