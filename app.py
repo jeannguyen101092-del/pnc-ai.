@@ -110,24 +110,6 @@ def extract_pdf_multi_size(file_content):
     except: return None
 
 # ================= 4. UI PPJ GROUP =================
-# ================= 4. UI PPJ GROUP =================
-with st.sidebar:
-    display_logo(width=220)
-    st.markdown("---")
-    st.title("📂 MASTER REPOSITORY")
-    
-    res_count = supabase.table("ai_data").select("id", count="exact").execute()
-    count = res_count.count or 0
-    st.metric("Total Synchronized SKUs", f"{count} Models")
-    
-    used_mb = (count * 0.15)
-    percent = min((used_mb / 1024) * 100, 100.0)
-    st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1GB")
-    st.progress(percent / 100)
-
-        st.divider()
-    # ================= 4. UI PPJ GROUP =================
-# ================= 4. UI PPJ GROUP =================
 with st.sidebar:
     display_logo(width=220)
     st.markdown("---")
@@ -148,17 +130,14 @@ with st.sidebar:
     if new_files and st.button("SYNCHRONIZE DATABASE", use_container_width=True):
         with st.spinner("AI Processing..."):
             for f in new_files:
-                c = f.read()
-                h = get_file_hash(c)
+                c = f.read(); h = get_file_hash(c)
                 
-                # Check trùng lặp
-                check_exists = supabase.table("ai_data").select("id").eq("id", h).execute()
-                if check_exists.data:
-                    continue
-
+                # CHỐNG TRÙNG: Kiểm tra ID tồn tại chưa
+                exist = supabase.table("ai_data").select("id").eq("id", h).execute()
+                if len(exist.data) > 0: continue
+                
                 data = extract_pdf_multi_size(c)
-                
-                # Check lỗi hình/thông số
+                # CHỐNG FILE LỖI: Phải có cả hình (img) và thông số (all_specs)
                 if data and data.get('img') and data.get('all_specs'):
                     path = f"lib_{h}.png"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
@@ -168,20 +147,6 @@ with st.sidebar:
                     }).execute()
         st.session_state['reset_key'] += 1
         st.rerun()
-
-                # -----------------------------------------------------
-
-                data = extract_pdf_multi_size(c)
-                if data and data['all_specs']:
-                    path = f"lib_{h}.png"
-                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
-                    supabase.table("ai_data").upsert({
-                        "id": h, "file_name": f.name, "vector": get_image_vector(data['img']),
-                        "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
-                    }).execute()
-        st.session_state['reset_key'] += 1
-        st.rerun()
-
 
 # Header chính
 h_col1, h_col2 = st.columns([1, 4])
@@ -219,31 +184,30 @@ if file_audit:
 
             best = st.session_state.get('sel', top_3.iloc[0].to_dict())
             st.success(f"**REFERENCE SKU:** {best['file_name']}")
-            
+            # --- PHẦN BỔ SUNG: NÚT XUẤT EXCEL ---
             st.divider()
-            sel_size = st.selectbox("Select Target Size:", list(target['all_specs'].keys()))
-            spec_audit = target['all_specs'][sel_size]
-            spec_ref = best['spec_json'].get(sel_size, list(best['spec_json'].values())[0])
+            st.subheader("📊 Export Results")
             
-            def norm(x): return re.sub(r'[^a-z0-9]', '', str(x).lower())
-            ref_map = {norm(k): v for k, v in spec_ref.items()}
-            
-            report = []
-            for d, v in spec_audit.items():
-                k_n = norm(d); rv = ref_map.get(k_n, 0)
-                if rv == 0:
-                    for k, val in ref_map.items():
-                        if k_n in k or k in k_n: rv = val; break
-                report.append({"POM Description": d, "Audit": v, "Repo": rv, "Diff": round(v - rv, 3), "Status": "✅ PASS" if abs(v-rv) < 0.2 else "❌ FAIL"})
-            
-            st.table(pd.DataFrame(report))
-            
-            # Xuất Excel
-            towrite = io.BytesIO()
-            pd.DataFrame(report).to_excel(towrite, index=False, engine='xlsxwriter')
-            st.download_button("📥 DOWNLOAD XLS", data=towrite.getvalue(), file_name=f"Audit_{file_audit.name}.xlsx")
-            
-            if st.button("CLEAR SESSION"):
-                st.session_state['reset_key'] += 1
-                if 'sel' in st.session_state: del st.session_state['sel']
-                st.rerun()
+            # Chuyển đổi dữ liệu thông số (spec_json) của mẫu đang chọn thành DataFrame
+            if 'spec_json' in best:
+                # Tạo danh sách dữ liệu để xuất
+                export_data = []
+                for size, poms in best['spec_json'].items():
+                    for pom_name, value in poms.items():
+                        export_data.append({"Size": size, "Description/POM": pom_name, "Value": value})
+                
+                df_export = pd.DataFrame(export_data)
+                
+                # Tạo buffer để lưu file Excel trong bộ nhớ
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                    df_export.to_excel(writer, index=False, sheet_name='TechPack_Specs')
+                
+                # Hiển thị nút bấm tải về
+                st.download_button(
+                    label="📥 DOWNLOAD SPEC TO EXCEL",
+                    data=buffer.getvalue(),
+                    file_name=f"Spec_{best['file_name']}.xlsx",
+                    mime="application/vnd.ms-excel",
+                    use_container_width=True
+                )
