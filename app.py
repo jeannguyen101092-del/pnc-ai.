@@ -47,15 +47,15 @@ def parse_val(t):
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION (SMART POM FILTER) =================
+# ================= 3. PDF EXTRACTION (MORPHEUS SCRAPER - SIÊU NHẠY) =================
 def extract_full_techpack(file_content):
     all_specs, img_bytes, category = {}, None, "UNKNOWN"
     try:
         doc = fitz.open(stream=file_content, filetype="pdf")
-        page_img = doc.load_page(0)
-        pix = page_img.get_pixmap(matrix=fitz.Matrix(2.5, 2.5))
+        # Chụp ảnh trang đầu làm Sketch
+        pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.5, 2.5))
         img_t = Image.open(io.BytesIO(pix.tobytes("png")))
-        buf = io.BytesIO(); img_t.save(buf, format="WEBP", quality=75); img_bytes = buf.getvalue()
+        buf = io.BytesIO(); img_t.save(buf, format="WEBP", quality=70); img_bytes = buf.getvalue()
         doc.close()
 
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
@@ -67,58 +67,60 @@ def extract_full_techpack(file_content):
                     df = pd.DataFrame(tb).fillna("")
                     if df.empty or len(df.columns) < 2: continue
                     
-                    # KIỂM TRA XEM CÓ PHẢI BẢNG THÔNG SỐ KHÔNG (LỌC BẢNG RÁC)
-                    headers = " ".join([str(c).upper() for c in df.iloc[0]])
-                    is_spec_table = any(kw in headers for kw in ["POM", "DESCRIPTION", "SPEC", "MEASURE", "TOL"])
-                    if not is_spec_table: continue # Bỏ qua bảng BOM, Label...
-
-                    # Tìm cột POM Description
+                    # LOGIC NHẬN DIỆN BẢNG THÔNG SỐ (Dựa trên hình thái dữ liệu)
+                    # Cột mô tả là cột có nhiều chữ nhất
                     char_counts = df.apply(lambda x: x.astype(str).str.len().mean())
                     desc_col = char_counts.idxmax()
                     
+                    # Tìm các cột có chứa số (Cột Size)
                     for col_idx in range(len(df.columns)):
                         if col_idx == desc_col: continue
-                        # Nhận diện cột Size: Phải có số và tiêu đề ngắn
+                        
                         vals = [parse_val(v) for v in df.iloc[:, col_idx]]
+                        # Nếu cột có ít nhất 2 số thực sự -> Đây là cột Size
                         if sum(1 for v in vals if v > 0) >= 2:
-                            s_name = str(df.iloc[0, col_idx]).strip().replace('\n', ' ')
-                            # Loại bỏ các cột phụ như Tol, Code, Grade
-                            if any(k in s_name.upper() for k in ["TOL", "GRADE", "CODE", "SPEC NO"]): continue
+                            raw_s_name = str(df.iloc[0, col_idx]).strip().replace('\n', ' ')
+                            s_name = raw_s_name if 0 < len(raw_s_name) < 15 else f"Size_{col_idx}"
+                            
+                            # Loại bỏ các cột rác (Tol, Code...)
+                            if any(k in s_name.upper() for k in ["TOL", "GRADE", "CODE", "SPEC NO", "±"]): continue
                             
                             temp_specs = {}
-                            for d_idx in range(1, len(df)): # Bỏ qua dòng tiêu đề
+                            for d_idx in range(len(df)):
                                 pom_name = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
                                 val = parse_val(df.iloc[d_idx, col_idx])
-                                # Lọc bỏ các dòng rác trong bảng
-                                if val > 0 and len(pom_name) > 3 and not any(x in pom_name.upper() for x in ["FABRIC", "COLOR", "GSM", "TICKET"]):
+                                # Chỉ lấy nếu dòng đó có tên POM hợp lệ và có số
+                                if val > 0 and len(pom_name) > 3 and not any(x in pom_name.upper() for x in ["COLOR", "FABRIC", "GSM", "TICKET"]):
                                     temp_specs[pom_name] = val
                             
                             if temp_specs:
                                 if s_name not in all_specs: all_specs[s_name] = {}
                                 all_specs[s_name].update(temp_specs)
             
-            txt_u = full_txt.upper()
-            if any(x in txt_u for x in ["PANT", "QUAN", "SHORT"]): category = "BOTTOM"
-            elif any(x in txt_u for x in ["SHIRT", "AO", "TOP"]): category = "TOP"
+            # Phân loại tự động
+            u_txt = full_txt.upper()
+            if any(x in u_txt for x in ["PANT", "QUAN", "SHORT"]): category = "BOTTOM"
+            elif any(x in u_txt for x in ["SHIRT", "AO", "TOP"]): category = "TOP"
             
         return {"all_specs": all_specs, "img": img_bytes, "category": category}
     except: return None
 
-# ================= 4. SIDEBAR =================
+# ================= 4. UI SIDEBAR =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
     count = res_count.count or 0
-    st.metric("Total Models", f"{count}")
+    st.metric("Repository Models", f"{count}")
     st.write(f"💾 **Cloud Storage:** {count * 0.08:.1f}MB / 1024MB")
+    st.progress(min((count * 0.08) / 1024, 1.0))
     st.divider()
-    new_files = st.file_uploader("Sync Tech-Packs (Spec Only)", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
+    new_files = st.file_uploader("Ingest Tech-Packs", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
     if new_files and st.button("SYNCHRONIZE", use_container_width=True):
-        with st.spinner("Filtering POM Specs & Saving..."):
+        with st.spinner("Deep Scanning all pages..."):
             for f in new_files:
                 fb = f.read(); h = get_file_hash(fb)
                 data = extract_full_techpack(fb)
-                if data and data.get('img') and data.get('all_specs'):
+                if data and data.get('all_specs'):
                     path = f"lib_{h}.webp"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
                     supabase.table("ai_data").upsert({"id": h, "file_name": f.name, "vector": get_image_vector(data['img']), "spec_json": data['all_specs'], "category": data['category'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)}).execute()
@@ -130,9 +132,9 @@ st.title("👔 AI SMART AUDITOR PRO")
 mode = st.radio("Mode Selection:", ["🔍 AI Search (Audit)", "🔄 Version Control (Repo vs New File)"], horizontal=True)
 
 if mode == "🔍 AI Search (Audit)":
-    file_audit = st.file_uploader("Upload PDF to find match:", type="pdf")
+    file_audit = st.file_uploader("Upload Target PDF:", type="pdf")
     if file_audit:
-        with st.status("Deep Scanning Spec Tables...", expanded=True) as status:
+        with st.status("Isolating tables across all pages...", expanded=True) as status:
             target = extract_full_techpack(file_audit.read())
             all_db = []
             for i in range(0, count, 1000):
@@ -142,7 +144,7 @@ if mode == "🔍 AI Search (Audit)":
             t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
-            status.update(label="Scanning Complete!", state="complete")
+            status.update(label="Deep Scan Complete!", state="complete")
 
         cols = st.columns(4)
         cols[0].image(target['img'], caption="TARGET", use_container_width=True)
@@ -150,7 +152,7 @@ if mode == "🔍 AI Search (Audit)":
             det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).single().execute()
             with cols[i+1]:
                 st.image(det.data['image_url'], caption=f"Match: {row['sim']:.1%}")
-                if st.button(f"SELECT MODEL {i+1}", key=f"btn_{idx}"):
+                if st.button(f"SELECT {i+1}", key=f"b_{idx}"):
                     st.session_state['sel_audit'] = {**row.to_dict(), **det.data}
 
         selected = st.session_state.get('sel_audit')
@@ -169,14 +171,13 @@ if mode == "🔍 AI Search (Audit)":
                         rows.append({"Point of Measure": p, "Target": v, "Ref": rv, "Diff": f"{diff:+.3f}"})
                         all_ex.append({"Size": sz, **rows[-1]})
                     st.table(pd.DataFrame(rows))
-            
             if all_ex:
                 buf = io.BytesIO(); wr = pd.ExcelWriter(buf, engine='xlsxwriter')
                 pd.DataFrame(all_ex).to_excel(wr, index=False); wr.close()
                 st.download_button("📥 DOWNLOAD AUDIT REPORT", buf.getvalue(), f"Audit_{selected['file_name']}.xlsx")
 
-else: # --- VERSION CONTROL MODE ---
-    st.subheader("🔄 Compare Round A (Repo) vs Round B (New PDF)")
+else: # --- VERSION CONTROL MODE (REPO VS NEW PDF) ---
+    st.subheader("🔄 Compare Round A (Repo) vs Round B (New Upload)")
     all_names = []
     for i in range(0, count, 1000):
         res_n = supabase.table("ai_data").select("file_name").range(i, i+999).execute()
@@ -187,23 +188,23 @@ else: # --- VERSION CONTROL MODE ---
         st.info("Step 1: Select SKU from Repository")
         ver_a_name = st.selectbox("Search Model Name:", all_names)
         data_a = supabase.table("ai_data").select("*").eq("file_name", ver_a_name).single().execute().data
-        st.image(data_a['image_url'], width=300, caption="Stored Version")
+        st.image(data_a['image_url'], width=300, caption="Round A (Repo)")
     
     with c2:
         st.info("Step 2: Upload New Tech-Pack File")
         file_b = st.file_uploader("Drop new PDF here:", type="pdf", key="v_file_b")
         if file_b:
-            with st.spinner("Deep Scanning New File..."):
+            with st.spinner("Deep Scanning New Round..."):
                 data_b = extract_full_techpack(file_b.read())
             if data_b:
-                st.image(data_b['img'], width=300, caption="New Version")
+                st.image(data_b['img'], width=300, caption="Round B (New)")
 
     if file_b and data_b:
         st.divider()
         st.success(f"📈 **COMPARING:** {ver_a_name} vs {file_b.name}")
         all_round_ex = []
         if not data_b['all_specs']:
-            st.error("Could not find Measurement Spec tables. Please check if PDF contains POM tables.")
+            st.error("No measurement tables found. Try Synchronizing this file in the sidebar to see if it reads correctly.")
         else:
             for sz, specs_b in data_b['all_specs'].items():
                 with st.expander(f"SIZE: {sz}", expanded=True):
@@ -213,11 +214,10 @@ else: # --- VERSION CONTROL MODE ---
                         m_p = get_close_matches(p_b, list(specs_a.keys()), 1, 0.6)
                         v_a = specs_a.get(m_p[0] if m_p else "", 0)
                         diff = v_b - v_a
-                        rows.append({"Measurement Point": p_b, "Stored (A)": v_a, "New (B)": v_b, "Diff": f"{diff:+.3f}"})
-                        all_round_ex.append({"Size": sz, "Point": p_b, "Stored_A": v_a, "New_B": v_b, "Diff": diff})
+                        rows.append({"Point": p_b, "Repo (A)": v_a, "New (B)": v_b, "Diff": f"{diff:+.3f}"})
+                        all_round_ex.append({"Size": sz, "Point": p_b, "Ref_A": v_a, "New_B": v_b, "Diff": diff})
                     st.table(pd.DataFrame(rows))
-        
-        if all_round_ex:
-            buf_r = io.BytesIO(); wr = pd.ExcelWriter(buf_r, engine='xlsxwriter')
-            pd.DataFrame(all_round_ex).to_excel(wr, index=False); wr.close()
-            st.download_button("📥 DOWNLOAD COMPARISON (.XLSX)", buf_r.getvalue(), f"Comparison_{ver_a_name}.xlsx")
+            if all_round_ex:
+                buf_r = io.BytesIO(); wr = pd.ExcelWriter(buf_r, engine='xlsxwriter')
+                pd.DataFrame(all_round_ex).to_excel(wr, index=False); wr.close()
+                st.download_button("📥 DOWNLOAD COMPARISON", buf_r.getvalue(), f"Round_Comp_{ver_a_name}.xlsx")
