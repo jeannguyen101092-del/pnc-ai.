@@ -16,7 +16,6 @@ supabase = create_client(URL, KEY)
 
 st.set_page_config(layout="wide", page_title="PPJ GROUP | AI Auditor Pro", page_icon="👔")
 
-# Persistent State
 if 'reset_key' not in st.session_state: st.session_state['reset_key'] = 0
 if 'sel_audit' not in st.session_state: st.session_state['sel_audit'] = None
 
@@ -55,22 +54,36 @@ def translate_insight(text):
     notes = [f"**[{v}]**: {l.strip()}" for l in text.split('\n') for k, v in mapping.items() if k in l.upper() and len(l.strip()) > 5]
     return "\n\n".join(list(set(notes))[:10])
 
-# ================= 3. PDF EXTRACTION (SPEC HUNTER 6.0) =================
+# ================= 3. RESILIENT PDF EXTRACTION =================
 def extract_full_techpack(file_content):
     if not file_content: return None
     all_specs, img_bytes, vi_summary, category = {}, None, "", "UNKNOWN"
     POM_KWS = ["WAIST", "HIP", "THIGH", "KNEE", "LEG", "INSEAM", "RISE", "LENGTH", "CHEST", "SHOULDER", "POM", "SPEC"]
-    IGNORE_KWS = ["STYLE ID", "SHORT DESC", "DEPARTMENT", "SEASON", "VENDOR", "497204", "DATE"]
+    IGNORE_KWS = ["STYLE ID", "SHORT DESC", "DEPARTMENT", "SEASON", "VENDOR", "DATE"]
     
     try:
         doc = fitz.open(stream=file_content, filetype="pdf")
         page = doc.load_page(0)
-        # DPI 2.0 for stability and zoom
-        pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0)) 
+        
+        # THUẬT TOÁN CẮT HÌNH CÓ DỰ PHÒNG (RESILIENT CROP)
+        try:
+            paths = page.get_drawings()
+            valid_bboxes = [p["rect"] for p in paths if 80 < p["rect"].width < page.rect.width * 0.8]
+            if valid_bboxes:
+                x0, y0 = min([b.x0 for b in valid_bboxes]), min([b.y0 for b in valid_bboxes])
+                x1, y1 = max([b.x1 for b in valid_bboxes]), max([b.y1 for b in valid_bboxes])
+                crop = fitz.Rect(max(0, x0-30), max(0, y0-30), min(page.rect.width, x1+30), min(page.rect.height, y1+30))
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5), clip=crop)
+            else: raise ValueError("No drawing area")
+        except:
+            # Fallback: Nếu không cắt được hình vẽ, chụp toàn bộ trang (Full Page)
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+            
         img_temp = Image.open(io.BytesIO(pix.tobytes("png")))
         buf = io.BytesIO(); img_temp.save(buf, format="WEBP", quality=75); img_bytes = buf.getvalue()
         doc.close()
 
+        # QUÉT THÔNG SỐ (GIỮ NGUYÊN LOGIC SPEC HUNTER 6.0)
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             full_txt = ""
             for page in pdf.pages:
@@ -83,15 +96,14 @@ def extract_full_techpack(file_content):
                     desc_col = -1
                     for c_idx in range(len(df.columns)):
                         col_str = " ".join(df.iloc[:, c_idx].astype(str).upper())
-                        if any(kw in col_str for kw in POM_KWS):
-                            desc_col = c_idx; break
+                        if any(kw in col_str for kw in POM_KWS): desc_col = c_idx; break
                     if desc_col == -1: continue
 
                     for col_idx in range(len(df.columns)):
                         if col_idx == desc_col: continue
                         vals = [parse_val(v) for v in df.iloc[:, col_idx]]
-                        if sum(1 for v in vals if v > 0) >= 3: # Cột phải có ít nhất 3 số đo
-                            s_name = "Unknown"
+                        if sum(1 for v in vals if v > 0) >= 3:
+                            s_name = "Size"
                             for r_idx in range(min(3, len(df))):
                                 raw = str(df.iloc[r_idx, col_idx]).strip().replace('\n', ' ')
                                 if raw and 0 < len(raw) < 10 and not any(k in raw.upper() for k in ["TOL", "SPEC", "CODE"]):
@@ -105,27 +117,26 @@ def extract_full_techpack(file_content):
             vi_summary = translate_insight(full_txt)
             category = "BOTTOM" if any(x in full_txt.upper() for x in ["PANT", "QUAN", "SHORT"]) else "TOP"
         return {"all_specs": all_specs, "img": img_bytes, "summary_vi": vi_summary, "category": category}
-    except: return None
+    except Exception as e:
+        st.error(f"Fatal Scan Error: {str(e)}")
+        return None
 
-# ================= 4. UI SIDEBAR (STORAGE DISPLAY) =================
+# ================= 4. UI SIDEBAR =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
     count = res_count.count or 0
     st.metric("Repository Models", f"{count} SKUs")
-    
-    used_mb = (count * 0.08) 
-    st.write(f"💾 **Cloud Storage:** {used_mb:.1f}MB / 1024MB")
-    st.progress(min(used_mb / 1024, 1.0))
-
+    st.write(f"💾 **Cloud Storage:** {count * 0.08:.1f}MB / 1024MB")
+    st.progress(min(count * 0.08 / 1024, 1.0))
     st.divider()
     new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"up_{st.session_state['reset_key']}")
     if new_files and st.button("SYNCHRONIZE", use_container_width=True):
-        with st.spinner("AI Saving..."):
+        with st.spinner("Syncing to Master Repo..."):
             for f in new_files:
                 fb = f.getvalue(); h = get_file_hash(fb)
                 data = extract_full_techpack(fb)
-                if data and data['img'] and data['all_specs']:
+                if data and data['img']:
                     path = f"lib_{h}.webp"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
                     supabase.table("ai_data").upsert({"id": h, "file_name": f.name, "vector": get_image_vector(data['img']), "spec_json": data['all_specs'], "summary_vi": data['summary_vi'], "category": data['category'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)}).execute()
@@ -142,9 +153,9 @@ if mode == "🔍 AI Search (Audit)":
         target = extract_full_techpack(file_audit.getvalue())
         if target and target.get('img'):
             with st.expander("📝 AI TECHNICAL INSIGHT", expanded=True):
-                st.write(target['summary_vi'] if target['summary_vi'] else "No notes found.")
+                st.write(target['summary_vi'] if target['summary_vi'] else "No technical notes found.")
             
-            # Fetch all for matching (break 1000 limit)
+            # Fetch and Match
             all_db = []
             for i in range(0, count, 1000):
                 res = supabase.table("ai_data").select("id, vector, file_name, category").range(i, i + 999).execute()
@@ -155,14 +166,14 @@ if mode == "🔍 AI Search (Audit)":
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
 
-            st.subheader("🎯 Best Matches")
+            st.subheader("🎯 Best AI Matches")
             cols = st.columns(4)
-            cols.image(target['img'], caption="TARGET", use_container_width=True)
+            cols.image(target['img'], caption="TARGET SKETCH", use_container_width=True)
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).single().execute()
                 with cols[i+1]:
                     st.image(det.data['image_url'], caption=f"Match: {row['sim']:.1%}")
-                    if st.button(f"SELECT {i+1}", key=f"btn_{idx}"):
+                    if st.button(f"SELECT {i+1}", key=f"btn_{idx}", use_container_width=True):
                         st.session_state['sel_audit'] = {**row.to_dict(), **det.data}
 
             selected = st.session_state.get('sel_audit')
@@ -185,7 +196,8 @@ if mode == "🔍 AI Search (Audit)":
                     buf = io.BytesIO(); wr = pd.ExcelWriter(buf, engine='xlsxwriter')
                     pd.DataFrame(all_ex).to_excel(wr, index=False); wr.close()
                     st.download_button("📥 DOWNLOAD AUDIT", buf.getvalue(), f"Audit.xlsx", use_container_width=True)
-        else: st.error("Processing error. Ensure PDF has valid content.")
+        else:
+            st.warning("⚠️ Could not extract sketch from this PDF. AI matching is disabled for this file.")
 
 else: # --- MODE: VERSION CONTROL ---
     st.subheader("🔄 Compare Round A (Repo) vs Round B (New Upload)")
@@ -199,32 +211,29 @@ else: # --- MODE: VERSION CONTROL ---
         v_a_name = st.selectbox("Style A (Repo):", all_n)
         res_a = supabase.table("ai_data").select("*").eq("file_name", v_a_name).single().execute()
         data_a = res_a.data
-        if data_a: st.image(data_a['image_url'], width=350, caption="Version A")
+        if data_a: st.image(data_a['image_url'], width=350, caption="Version A (Repo)")
     with c2:
         file_b = st.file_uploader("Style B (New Round):", type="pdf", key="v_fb")
         if file_b:
             data_b = extract_full_techpack(file_b.getvalue())
-            if data_b: st.image(data_b['img'], width=350, caption="Version B")
+            if data_b and data_b.get('img'): st.image(data_b['img'], width=350, caption="Version B (New)")
 
     if file_b and data_b and data_a:
         st.divider()
         st.success(f"📈 **COMPARING:** {v_a_name} vs {file_b.name}")
         all_r_ex = []
-        if not data_b['all_specs']:
-            st.warning("No measurement tables detected in Round B. Try Synchronizing this file in the sidebar.")
-        else:
-            for sz, specs_b in data_b['all_specs'].items():
-                with st.expander(f"SIZE: {sz}", expanded=True):
-                    r_sz = get_close_matches(sz, list(data_a['spec_json'].keys()), 1, 0.4)
-                    specs_a = data_a['spec_json'].get(r_sz[0] if r_sz else "", {})
-                    rows = []
-                    for p_b, v_b in specs_b.items():
-                        m_p = get_close_matches(p_b, list(specs_a.keys()), 1, 0.6)
-                        v_a = specs_a.get(m_p[0] if m_p else "", 0)
-                        rows.append({"Point": p_b, "Round A": v_a, "Round B": v_b, "Diff": f"{v_b-v_a:+.3f}"})
-                        all_r_ex.append({"Size": sz, **rows[-1]})
-                    st.table(pd.DataFrame(rows))
-            if all_r_ex:
-                buf_r = io.BytesIO(); wr = pd.ExcelWriter(buf_r, engine='xlsxwriter')
-                pd.DataFrame(all_r_ex).to_excel(wr, index=False); wr.close()
-                st.download_button("📥 DOWNLOAD COMPARISON (.XLSX)", buf_r.getvalue(), f"Comparison.xlsx", use_container_width=True)
+        for sz, specs_b in data_b['all_specs'].items():
+            with st.expander(f"SIZE: {sz}", expanded=True):
+                r_sz = get_close_matches(sz, list(data_a['spec_json'].keys()), 1, 0.4)
+                specs_a = data_a['spec_json'].get(r_sz[0] if r_sz else "", {})
+                rows = []
+                for p_b, v_b in specs_b.items():
+                    m_p = get_close_matches(p_b, list(specs_a.keys()), 1, 0.6)
+                    v_a = specs_a.get(m_p[0] if m_p else "", 0)
+                    rows.append({"Point": p_b, "Round A": v_a, "Round B": v_b, "Diff": f"{v_b-v_a:+.3f}"})
+                    all_r_ex.append({"Size": sz, "Point": p_b, "Repo_A": v_a, "New_B": v_b, "Diff": v_b-v_a})
+                st.table(pd.DataFrame(rows))
+        if all_r_ex:
+            buf_r = io.BytesIO(); wr = pd.ExcelWriter(buf_r, engine='xlsxwriter')
+            pd.DataFrame(all_r_ex).to_excel(wr, index=False); wr.close()
+            st.download_button("📥 DOWNLOAD COMPARISON", buf_r.getvalue(), f"Round_Comparison.xlsx", use_container_width=True)
