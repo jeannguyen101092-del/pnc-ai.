@@ -60,15 +60,34 @@ def parse_val(t):
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes, is_reit = {}, None, False
     try:
+        # ... (giữ nguyên phần check text và is_reit của bạn) ...
         txt_check = ""
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for p in pdf.pages[:1]: txt_check += (p.extract_text() or "").upper()
         if "REITMAN" in txt_check: is_reit = True
 
         doc = fitz.open(stream=file_content, filetype="pdf")
-        pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
+        page = doc.load_page(0)
+        
+        # --- LOGIC MỚI: CHỈ LẤY HÌNH VẼ (SKETCH) ---
+        # Tìm tất cả các đối tượng là hình ảnh hoặc đường kẻ vẽ trong file PDF
+        paths = page.get_drawings() 
+        if paths:
+            # Xác định vùng bao quanh tất cả các nét vẽ (thường là Sketch)
+            bbox = page.rect # Mặc định lấy cả trang
+            # Thử tìm vùng tập trung các nét vẽ để crop
+            x0, y0, x1, y1 = page.rect
+            # Thông thường hình vẽ Techpack nằm ở giữa hoặc bên trái trang 1
+            # Chúng ta sẽ crop bỏ bớt phần Header và Footer (nơi chứa nhiều chữ nhất)
+            crop_rect = fitz.Rect(x0, y0 + 100, x1, y1 - 150) 
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), clip=crop_rect)
+        else:
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
+            
         img_bytes = pix.tobytes("png")
         doc.close()
+        # ... (giữ nguyên phần trích xuất table phía dưới của bạn) ...
+
 
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
