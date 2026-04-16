@@ -44,20 +44,19 @@ def parse_val(t):
         txt = re.sub(r'(cm|inch|in|mm|yds|tol|grade)$', '', txt)
         match = re.findall(r'(\d+\s+\d+/\d+|\d+/\d+|\d+\.\d+|\d+)', txt)
         if not match: return 0
-        v = match[0] # Lấy giá trị đầu tiên trong list
+        v = match[0]
         if ' ' in v:
             p = v.split()
             return float(p[0]) + eval(p[1])
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION (BẮT BUỘC QUÉT FULL THÔNG SỐ) =================
+# ================= 3. PDF EXTRACTION (QUÉT TRỌN BỘ THÔNG SỐ) =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes = {}, None
     try:
         doc = fitz.open(stream=file_content, filetype="pdf")
         page = doc.load_page(0)
-        # Chụp Sketch chất lượng cao
         pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
         img_bytes = pix.tobytes("png")
         doc.close()
@@ -68,19 +67,14 @@ def extract_pdf_multi_size(file_content):
                 for tb in tables:
                     df = pd.DataFrame(tb).fillna("")
                     if df.empty or len(df.columns) < 2: continue
-                    
-                    # Tự động tìm cột thông số (Cột có nhiều text nhất)
                     char_counts = df.apply(lambda x: x.astype(str).str.len().mean())
                     desc_col = char_counts.idxmax()
-                    
                     for col_idx in range(len(df.columns)):
                         if col_idx == desc_col: continue
                         sample_vals = [parse_val(v) for v in df.iloc[:, col_idx].head(20)]
                         if sum(sample_vals) > 0:
-                            # Lấy tên Size (Thường ở dòng đầu tiên)
                             s_name = str(df.iloc[0, col_idx]).strip().replace('\n', ' ') or f"Size_{col_idx}"
                             if any(kw in s_name.upper() for kw in ["TOL", "GRADE", "SPEC", "CODE"]): continue
-                            
                             temp_data = {}
                             for d_idx in range(len(df)):
                                 pom = str(df.iloc[d_idx, desc_col]).replace('\n', ' ').strip()
@@ -118,7 +112,7 @@ with st.sidebar:
                 for f in new_files:
                     fb = f.read(); h = get_file_hash(fb)
                     data = extract_pdf_multi_size(fb)
-                    # --- ĐIỀU KIỆN QUYẾT ĐỊNH: PHẢI CÓ THÔNG SỐ MỚI CHO UP ---
+                    # BẮT BUỘC CÓ THÔNG SỐ MỚI CHO UP
                     if data and data.get('img') and data.get('all_specs') and len(data['all_specs']) > 0:
                         path = f"lib_{h}.png"
                         supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
@@ -128,8 +122,8 @@ with st.sidebar:
                         }).execute()
                         new_count += 1
                     else:
-                        st.sidebar.error(f"❌ File {f.name} không tìm thấy thông số. Bị hủy bỏ.")
-                if new_count > 0: st.sidebar.success(f"✅ Đã cập nhật {new_count} mẫu có thông số!")
+                        st.sidebar.error(f"❌ {f.name}: Không có thông số.")
+                if new_count > 0: st.sidebar.success(f"✅ Đã cập nhật {new_count} mẫu!")
             time.sleep(2); st.rerun()
     with col_up2:
         if st.button("CLEAR FILES", use_container_width=True):
@@ -152,7 +146,7 @@ if file_audit:
         if res.data:
             df_db = pd.DataFrame(res.data)
             
-            # TÌM KIẾM MÃ HÀNG THỦ CÔNG
+            # TÌM KIẾM THỦ CÔNG
             st.subheader("🔍 Tìm kiếm mã hàng trong kho")
             search_query = st.text_input("Nhập mã hàng/tên file:", placeholder="Ví dụ: 5176...")
             if search_query:
@@ -169,28 +163,24 @@ if file_audit:
             if st.button("🚀 TỰ ĐỘNG TÌM KIẾM MẪU TƯƠNG ĐỒNG (AI)", use_container_width=True):
                 st.session_state['sel'] = None
 
-            # LOGIC SO SÁNH AI HÌNH ẢNH
             t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
             
             if st.session_state['sel'] is None:
                 st.subheader("🎯 Đề xuất mẫu tương đồng (AI)")
-                cols = st.columns(4)
-                with cols: st.image(target['img'], caption="SOURCE SKETCH", use_container_width=True)
+                cols_ai = st.columns(4) # SỬA LỖI TẠI ĐÂY
+                with cols_ai[0]: 
+                    st.image(target['img'], caption="SOURCE SKETCH", use_container_width=True)
                 for i, (idx, row) in enumerate(top_3.iterrows()):
-                    with cols[i+1]:
+                    with cols_ai[i+1]:
                         st.image(row['image_url'], caption=f"Match: {row['sim']:.1%}", use_container_width=True)
                         if st.button(f"SELECT MODEL {i+1}", key=f"btn_{idx}", use_container_width=True):
                             st.session_state['sel'] = row.to_dict()
 
             best = st.session_state.get('sel')
             if best:
-                st.success(f"**ĐANG SO SÁNH VỚI:** {best['file_name']}")
-                # Kiểm tra xem mẫu trong kho có thông số không
-                if not best.get('spec_json') or len(best['spec_json']) == 0:
-                    st.error("⚠️ Mẫu này trong kho đang bị thiếu thông số. Hãy upload lại mẫu này ở sidebar để cập nhật số.")
-                
+                st.success(f"**ĐỐI ỨNG VỚI MẪU:** {best['file_name']}")
                 if target.get("all_specs"):
                     st.subheader("📋 Measurement Comparison")
                     all_export = []
@@ -209,5 +199,3 @@ if file_audit:
                     with pd.ExcelWriter(buf, engine='xlsxwriter') as wr:
                         pd.DataFrame(all_export).to_excel(wr, index=False)
                     st.download_button("📥 DOWNLOAD REPORT", buf.getvalue(), f"Audit_{best['file_name']}.xlsx", use_container_width=True)
-                else:
-                    st.warning("⚠️ File đang Audit không trích xuất được bảng thông số.")
