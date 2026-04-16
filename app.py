@@ -8,8 +8,6 @@ from supabase import create_client
 import os
 
 # ================= 1. CONFIGURATION =================
-BACKUP_LOGO = "https://githubusercontent.com" 
-
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 BUCKET = "fashion-imgs"
@@ -56,39 +54,34 @@ def parse_val(t):
         return float(eval(v)) if '/' in v else float(v)
     except: return 0
 
-# ================= 3. PDF EXTRACTION =================
+# ================= 3. PDF EXTRACTION (UPGRADED) =================
 def extract_pdf_multi_size(file_content):
     all_specs, img_bytes, is_reit = {}, None, False
     try:
-        # ... (giữ nguyên phần check text và is_reit của bạn) ...
         txt_check = ""
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for p in pdf.pages[:1]: txt_check += (p.extract_text() or "").upper()
         if "REITMAN" in txt_check: is_reit = True
 
+        # --- TỰ ĐỘNG DÒ VÙNG HÌNH VẼ ĐỂ BỎ QUA CHỮ ---
         doc = fitz.open(stream=file_content, filetype="pdf")
         page = doc.load_page(0)
-        
-        # --- LOGIC MỚI: CHỈ LẤY HÌNH VẼ (SKETCH) ---
-        # Tìm tất cả các đối tượng là hình ảnh hoặc đường kẻ vẽ trong file PDF
-        paths = page.get_drawings() 
+        paths = page.get_drawings()
         if paths:
-            # Xác định vùng bao quanh tất cả các nét vẽ (thường là Sketch)
-            bbox = page.rect # Mặc định lấy cả trang
-            # Thử tìm vùng tập trung các nét vẽ để crop
-            x0, y0, x1, y1 = page.rect
-            # Thông thường hình vẽ Techpack nằm ở giữa hoặc bên trái trang 1
-            # Chúng ta sẽ crop bỏ bớt phần Header và Footer (nơi chứa nhiều chữ nhất)
-            crop_rect = fitz.Rect(x0, y0 + 100, x1, y1 - 150) 
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), clip=crop_rect)
+            bboxes = [p["rect"] for p in paths if p["rect"].width < page.rect.width * 0.9]
+            if bboxes:
+                x0 = min([b.x0 for b in bboxes]); y0 = min([b.y0 for b in bboxes])
+                x1 = max([b.x1 for b in bboxes]); y1 = max([b.y1 for b in bboxes])
+                crop_rect = fitz.Rect(max(0, x0-30), max(0, y0-30), min(page.rect.width, x1+30), min(page.rect.height, y1+30))
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=crop_rect)
+            else:
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
         else:
             pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
-            
         img_bytes = pix.tobytes("png")
         doc.close()
-        # ... (giữ nguyên phần trích xuất table phía dưới của bạn) ...
 
-
+        # --- GIỮ NGUYÊN LOGIC TRÍCH XUẤT THÔNG SỐ CỦA BẠN ---
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
@@ -146,12 +139,12 @@ with st.sidebar:
         with st.spinner("AI Processing..."):
             for f in new_files:
                 c = f.read(); h = get_file_hash(c)
-                # CHỐNG TRÙNG
+                # Chống trùng
                 exist = supabase.table("ai_data").select("id").eq("id", h).execute()
                 if len(exist.data) > 0: continue
                 
                 data = extract_pdf_multi_size(c)
-                # CHỐNG FILE LỖI
+                # Chống file lỗi (Không hình/Không thông số)
                 if data and data.get('img') and data.get('all_specs'):
                     path = f"lib_{h}.png"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"upsert":"true"})
@@ -163,8 +156,7 @@ with st.sidebar:
         st.rerun()
 
 h_col1, h_col2 = st.columns([1, 4])
-with h_col1:
-    display_logo(width=120)
+with h_col1: display_logo(width=120)
 with h_col2:
     st.title("AI SMART AUDITOR PRO")
     st.markdown("*Premium Technical Audit System for PPJ Group*")
@@ -173,7 +165,6 @@ st.markdown("---")
 
 file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf", key=f"audit_{st.session_state['reset_key']}")
 
-# ================= PHẦN SỬA LOGIC SO SÁNH (Dán đè vào đoạn xử lý so sánh) =================
 if file_audit:
     a_bytes = file_audit.read()
     target = extract_pdf_multi_size(a_bytes)
@@ -182,41 +173,12 @@ if file_audit:
         if res.data:
             df_db = pd.DataFrame(res.data)
             t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
+            df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
+            top_3 = df_db.sort_values('sim', ascending=False).head(3)
             
-            # 1. Tính toán độ tương đồng hình ảnh (Cũ)
-            db_vectors = np.array([v for v in df_db['vector']])
-            df_db['sim'] = cosine_similarity(t_vec, db_vectors).flatten()
-
-            # 2. LOGIC MỚI: KIỂM TRA TỪ KHÓA ĐỂ PHÂN LOẠI (Chống quần short so quần dài)
-            # Lấy tên file đang audit để tìm từ khóa chính
-            t_name = file_audit.name.upper()
-            def calculate_text_score(row_name):
-                row_name = str(row_name).upper()
-                score = 0
-                # Phân loại độ dài quần
-                if ("SHORT" in t_name) == ("SHORT" in row_name): score += 0.2
-                if ("LONG" in t_name) == ("LONG" in row_name): score += 0.2
-                # Phân loại loại túi/chi tiết
-                keywords = ["POCKET", "PATCH", "WELT", "JOGGER", "CARGO"]
-                for kw in keywords:
-                    if (kw in t_name) == (kw in row_name): score += 0.1
-                return score
-
-            df_db['text_bonus'] = df_db['file_name'].apply(calculate_text_score)
-            
-            # Kết hợp điểm hình ảnh và điểm từ khóa (Ưu tiên hình ảnh nhưng có lọc từ khóa)
-            df_db['final_sim'] = df_db['sim'] + df_db['text_bonus']
-            
-            # Sắp xếp theo điểm tổng hợp mới
-            top_3 = df_db.sort_values('final_sim', ascending=False).head(3)
-            
-            # (Phần hiển thị UI bên dưới giữ nguyên như cũ của bạn...)
             st.subheader(f"🎯 AI Best Matches")
             cols = st.columns(4)
-            # ... tiếp tục code hiển thị cũ ...
-
-            with cols[0]:
-                st.image(target['img'], caption="SOURCE FILE", use_container_width=True)
+            with cols[0]: st.image(target['img'], caption="SOURCE SKETCH", use_container_width=True)
             
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 with cols[i+1]:
@@ -227,8 +189,9 @@ if file_audit:
             best = st.session_state.get('sel', top_3.iloc[0].to_dict())
             st.success(f"**REFERENCE SKU:** {best['file_name']}")
 
-            # --- HIỂN THỊ BẢNG THÔNG SỐ (PHẦN BẠN CẦN) ---
+            # Hiển thị bảng thông số
             st.subheader("📋 Measurement Comparison")
+            all_rows_for_export = []
             for size_name, specs in target['all_specs'].items():
                 with st.expander(f"SIZE: {size_name}", expanded=True):
                     ref_specs = best['spec_json'].get(size_name, {})
@@ -236,18 +199,13 @@ if file_audit:
                     for pom, val in specs.items():
                         ref_val = ref_specs.get(pom, 0)
                         diff = val - ref_val
-                        color = "red" if abs(diff) > 0.25 else "green"
-                        rows.append({
-                            "Measurement Point": pom,
-                            "Target": val,
-                            "Reference": ref_val,
-                            "Diff": f"{diff:+.3f}"
-                        })
+                        rows.append({"Point": pom, "Target": val, "Ref": ref_val, "Diff": f"{diff:+.3f}"})
+                        all_rows_for_export.append({"Size": size_name, "Point": pom, "Target": val, "Ref": ref_val, "Diff": diff})
                     st.table(pd.DataFrame(rows))
 
-            # --- NÚT XUẤT EXCEL ---
-            st.divider()
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                pd.DataFrame(rows).to_excel(writer, index=False, sheet_name='Audit_Report')
-            st.download_button(label="📥 EXPORT AUDIT TO EXCEL", data=output.getvalue(), file_name=f"Audit_{best['file_name']}.xlsx", mime="application/vnd.ms-excel")
+            # Nút xuất Excel
+            df_ex = pd.DataFrame(all_rows_for_export)
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                df_ex.to_excel(writer, index=False)
+            st.download_button("📥 DOWNLOAD EXCEL REPORT", buffer.getvalue(), f"Audit_{best['file_name']}.xlsx", "application/vnd.ms-excel")
