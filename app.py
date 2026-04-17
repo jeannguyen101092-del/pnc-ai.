@@ -9,7 +9,7 @@ from difflib import get_close_matches
 
 # ================= 1. CONFIGURATION =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
-KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
+
 supabase = create_client(URL, KEY)
 BUCKET = "fashion-imgs"
 
@@ -155,72 +155,81 @@ with st.sidebar:
         st.sidebar.success("Process Completed!"); time.sleep(1); st.rerun()
 
 # ================= 5. MAIN UI =================
-st.title("👔 AI SMART AUDITOR PRO")
-mode = st.radio("Select Mode:", ["🔍 Audit Mode", "🔄 Version Control"], horizontal=True)
-
+# ================= 5. MAIN UI (TIẾP TỤC VÀ SỬA LỖI) =================
 if mode == "🔍 Audit Mode":
     file_audit = st.file_uploader("Upload Target PDF:", type="pdf")
     if file_audit:
         target = extract_data(file_audit.getvalue())
         if target and target['img']:
-            all_db = [r for i in range(0, count, 1000) for r in supabase.table("ai_data").select("id, vector, file_name").range(i, i+999).execute().data]
-            df_db = pd.DataFrame(all_db)
-            t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
-            df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
-            top_3 = df_db.sort_values('sim', ascending=False).head(3)
+            # Lấy toàn bộ dữ liệu từ DB để so sánh vector
+            all_db = []
+            try:
+                # Chia nhỏ để lấy dữ liệu nếu repo quá lớn
+                for i in range(0, count, 1000):
+                    res = supabase.table("ai_data").select("id, vector, file_name").range(i, i+999).execute()
+                    if res.data: all_db.extend(res.data)
+                
+                if all_db:
+                    df_db = pd.DataFrame(all_db)
+                    t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
+                    db_vectors = np.array([v for v in df_db['vector']])
+                    
+                    df_db['sim'] = cosine_similarity(t_vec, db_vectors).flatten()
+                    top_3 = df_db.sort_values('sim', ascending=False).head(3)
 
-            st.subheader("🎯 AI Matches")
-            cols = st.columns(4)
-            cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
-            for i, (idx, row) in enumerate(top_3.iterrows()):
-                det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
-                if det:
-                    with cols[i+1]:
-                        st.image(det[0]['image_url'], caption=f"Match: {row['sim']:.1%}")
-                        if st.button(f"SELECT {i+1}", key=f"s_{idx}", use_container_width=True):
-                            st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
+                    st.subheader("🎯 AI Matches (Top 3 tương đồng nhất)")
+                    cols = st.columns(4)
+                    cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
+                    
+                    for i, (idx, row) in enumerate(top_3.iterrows()):
+                        det_res = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute()
+                        if det_res.data:
+                            det = det_res.data[0]
+                            with cols[i+1]:
+                                st.image(det['image_url'], caption=f"Match: {row['sim']:.1%}")
+                                if st.button(f"SELECT {i+1}", key=f"s_{row['id']}", use_container_width=True):
+                                    st.session_state['sel_audit'] = {**row.to_dict(), **det}
 
-            sel = st.session_state['sel_audit']
-            if sel:
-                st.divider()
-                st.success(f"📈 Comparing with: **{sel['file_name']}**")
-                final_ex = []
-                for sz, t_specs in target['all_specs'].items():
-                    with st.expander(f"SIZE: {sz}", expanded=True):
-                        m_sz = get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4)
-                        r_specs = sel['spec_json'].get(m_sz[0], {}) if m_sz else {}
-                        rows = []
-                        for p, v in t_specs.items():
-                            m_p = get_close_matches(p, list(r_specs.keys()), 1, 0.6)
-                            rv = r_specs.get(m_p[0], 0) if m_p else 0
-                            rows.append({"POM": p, "Target": v, "Reference": rv, "Diff": v - rv})
-                            final_ex.append({"Size": sz, "POM": p, "Target": v, "Reference": rv, "Diff": v - rv})
-                        st.table(pd.DataFrame(rows))
+                    sel = st.session_state['sel_audit']
+                    if sel:
+                        st.divider()
+                        st.success(f"📈 Comparing with: **{sel['file_name']}**")
+                        final_ex = []
+                        for sz, t_specs in target['all_specs'].items():
+                            with st.expander(f"SIZE: {sz}", expanded=True):
+                                # Tìm size tương ứng trong DB
+                                m_sz_list = get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4)
+                                r_specs = sel['spec_json'].get(m_sz_list[0], {}) if m_sz_list else {}
+                                
+                                rows = []
+                                for p, v in t_specs.items():
+                                    m_p_list = get_close_matches(p, list(r_specs.keys()), 1, 0.6)
+                                    rv = r_specs.get(m_p_list[0], 0) if m_p_list else 0
+                                    diff = v - rv
+                                    rows.append({"POM": p, "Target": v, "Reference": rv, "Diff": diff})
+                                    final_ex.append({"Size": sz, "POM": p, "Target": v, "Reference": rv, "Diff": diff})
+                                
+                                if rows:
+                                    st.table(pd.DataFrame(rows).style.format({"Diff": "{:+.2f}"}))
+            except Exception as e:
+                st.error(f"Lỗi truy vấn Database: {e}")
 
 elif mode == "🔄 Version Control":
     st.subheader("🔄 Compare Version A (Local) vs Version B (Local)")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # THAY ĐỔI: Cho phép upload file cũ thay vì chọn từ Repo
+    c1, c2 = st.columns(2)
+    with c1:
         file_a = st.file_uploader("Upload Version A (Old):", type="pdf", key="v_a")
-        data_a = None
-        if file_a:
-            data_a = extract_data(file_a.getvalue())
-            if data_a: st.image(data_a['img'], caption="VERSION A (OLD)", use_container_width=True)
-
-    with col2:
-        # THAY ĐỔI: Upload file mới
+        data_a = extract_data(file_a.getvalue()) if file_a else None
+        if data_a: st.image(data_a['img'], caption="VERSION A", use_container_width=True)
+    with c2:
         file_b = st.file_uploader("Upload Version B (New):", type="pdf", key="v_b")
-        data_b = None
-        if file_b:
-            data_b = extract_data(file_b.getvalue())
-            if data_b: st.image(data_b['img'], caption="VERSION B (NEW)", use_container_width=True)
+        data_b = extract_data(file_b.getvalue()) if file_b else None
+        if data_b: st.image(data_b['img'], caption="VERSION B", use_container_width=True)
 
     if data_a and data_b:
-        if st.button("RUN COMPARISON (ALL PAGES)", use_container_width=True):
+        if st.button("RUN COMPARISON", use_container_width=True):
             st.divider()
-            comp_data = []
+            results = []
             for sz, specs_b in data_b['all_specs'].items():
                 with st.expander(f"SIZE: {sz}", expanded=True):
                     specs_a = data_a['all_specs'].get(sz, {})
@@ -230,11 +239,8 @@ elif mode == "🔄 Version Control":
                         va = specs_a.get(m_p[0], 0) if m_p else 0
                         diff = vb - va
                         rows.append({"POM": p, "Old (A)": va, "New (B)": vb, "Diff": diff})
-                        comp_data.append({"Size": sz, "POM": p, "Old": va, "New": vb, "Diff": diff})
-                    
-                    if rows:
-                        st.table(pd.DataFrame(rows).style.format({"Diff": "{:+.2f}"}))
+                        results.append({"Size": sz, "POM": p, "Old": va, "New": vb, "Diff": diff})
+                    st.table(pd.DataFrame(rows).style.format({"Diff": "{:+.2f}"}))
             
-            if comp_data:
-                st.download_button("📥 Download Report", to_excel(pd.DataFrame(comp_data)), "version_comparison.xlsx")
-
+            if results:
+                st.download_button("📥 Tải báo cáo Excel", to_excel(pd.DataFrame(results)), "version_compare.xlsx")
