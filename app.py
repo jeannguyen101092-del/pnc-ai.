@@ -10,6 +10,7 @@ from difflib import get_close_matches
 # ================= 1. CONFIGURATION =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
+
 supabase = create_client(URL, KEY)
 BUCKET = "fashion-imgs"
 
@@ -42,16 +43,19 @@ def parse_val(t):
     try:
         if not t: return 0
         t = str(t).replace('"', '').strip().lower().replace(',', '.')
-        if any(x in t for x in ["wash", "color", "label", "style", "page", "tol", "+", "-"]): return 0
-        if re.match(r'^[a-z]\d+', t): return 0 
+        # Loại bỏ các ký tự gây nhiễu trong cột thông số
+        if any(x in t for x in ["wash", "color", "label", "page", "style"]): return 0
+        if re.match(r'^[a-z]\d+', t): return 0 # Bỏ qua mã POM B101...
+        
         mixed = re.match(r'(\d+)\s+(\d+)/(\d+)', t)
         if mixed: return float(mixed.group(1)) + int(mixed.group(2))/int(mixed.group(3))
         frac = re.match(r'(\d+)/(\d+)', t)
         if frac: return int(frac.group(1))/int(frac.group(2))
+        
         num = re.findall(r"[-+]?\d*\.\d+|\d+", t)
         if num:
             val = float(num[0])
-            return val if 0.1 <= val < 150 else 0
+            return val if 0.01 <= val < 200 else 0
         return 0
     except: return 0
 
@@ -62,17 +66,18 @@ def to_excel(df_list, sheet_names):
             df.to_excel(writer, index=False, sheet_name=str(name)[:31])
     return output.getvalue()
 
-# ================= 3. SCRAPER (LOGIC DÒ CỘT TỰ ĐỘNG) =================
+# ================= 3. SCRAPER (QUÉT SẠCH TRANG THÔNG SỐ) =================
 def extract_full_data(file_content):
     if not file_content: return None
     all_specs, img_bytes = {}, None
-    POM_KWS = ["WAIST", "HIP", "THIGH", "KNEE", "LEG", "INSEAM", "RISE", "LENGTH", "CHEST", "SHOULDER", "POM", "SPEC"]
-    SIZE_PATTERN = r'^(xs|s|m|l|xl|xxl|\d+|[a-z]?\d+-\d+|[a-z]?\d+\.\d+)$'
-
+    # Mẫu nhận diện Size cột: S, M, L, 2, 4, 30, 32...
+    SIZE_PATTERN = r'^(xs|s|m|l|xl|xxl|3xl|\d+|[a-z]?\d+-\d+|[a-z]?\d+\.\d+)$'
+    
     try:
         doc = fitz.open(stream=file_content, filetype="pdf")
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-        buf = io.BytesIO(); Image.open(io.BytesIO(pix.tobytes("png"))).save(buf, format="WEBP", quality=70); img_bytes = buf.getvalue(); doc.close()
+        img_pil = Image.open(io.BytesIO(pix.tobytes("png")))
+        buf = io.BytesIO(); img_pil.save(buf, format="WEBP", quality=70); img_bytes = buf.getvalue(); doc.close()
         
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
@@ -81,33 +86,45 @@ def extract_full_data(file_content):
                 df_w = pd.DataFrame(words)
                 df_w['y_grid'] = df_w['top'].round(0)
                 
-                # BƯỚC 1: Dò vị trí ngang (X) của các cột Size
+                # BƯỚC 1: Tìm dòng tiêu đề để xác định tọa độ các cột Size
                 size_cols = []
+                found_header = False
                 for y, group in df_w.groupby('y_grid'):
                     line_txt = " ".join(group.sort_values('x0')['text']).lower()
-                    if "size" in line_txt or "adopted" in line_txt:
+                    # Chỉ bắt đầu lấy từ trang có chữ Size, Spec hoặc Measurement
+                    if any(x in line_txt for x in ["size", "spec", "measurement", "adopted"]):
                         for _, row in group.iterrows():
                             txt = row['text'].strip().lower()
-                            if re.match(SIZE_PATTERN, txt) and not any(x in txt for x in ["tol", "+", "-"]):
-                                size_cols.append({"name": txt.upper(), "x_mid": (row['x0'] + row['x1']) / 2})
-                        if size_cols: break
+                            if re.match(SIZE_PATTERN, txt) and txt not in ["tol", "um", "(+)", "(-)"]:
+                                size_cols.append({"sz": txt.upper(), "x_mid": (row['x0'] + row['x1']) / 2})
+                        if size_cols: 
+                            found_header = True
+                            break
+                
+                if not found_header: continue # Nếu trang này không phải trang thông số thì bỏ qua
 
-                # BƯỚC 2: Hốt dữ liệu theo trục dọc của cột đã tìm thấy
+                # BƯỚC 2: Quét TẤT CẢ các dòng bên dưới tiêu đề
                 for y, group in df_w.groupby('y_grid'):
                     sorted_row = group.sort_values('x0')
-                    line_txt = " ".join(sorted_row['text']).upper()
-                    if any(kw in line_txt for kw in POM_KWS):
-                        # Lấy tên điểm đo (phần chữ bên trái)
-                        pom_name = re.sub(r'[\d./\s]+$', '', " ".join(sorted_row[sorted_row['x1'] < 300]['text'])).strip()
-                        if len(pom_name) > 3:
-                            for col in size_cols:
-                                # Tìm từ nào nằm đúng trục dọc của cột Size (sai số 15 pixel)
-                                cell_data = sorted_row[(sorted_row['x0'] < col['x_mid'] + 15) & (sorted_row['x1'] > col['x_mid'] - 15)]
-                                if not cell_data.empty:
-                                    val = parse_val(" ".join(cell_data['text']))
-                                    if val > 0:
-                                        if col['name'] not in all_specs: all_specs[col['name']] = {}
-                                        all_specs[col['name']][pom_name] = val
+                    # Tên điểm đo: tất cả chữ nằm bên trái (thường x1 < 350)
+                    pom_parts = sorted_row[sorted_row['x1'] < 380]['text'].tolist()
+                    pom_name = " ".join(pom_parts).strip()
+                    
+                    # Bỏ qua các dòng tiêu đề hoặc dòng trống
+                    if not pom_name or any(x in pom_name.lower() for x in ["cover page", "construction", "image", "date", "style"]):
+                        continue
+
+                    # Hốt tất cả các cột Size đã định vị
+                    found_any_val = False
+                    for col in size_cols:
+                        # Lấy số nằm đúng trục dọc của cột Size (sai số 20px)
+                        cell_data = sorted_row[(sorted_row['x0'] < col['x_mid'] + 20) & (sorted_row['x1'] > col['mid'] - 20) if 'mid' in col else (sorted_row['x0'] < col['x_mid'] + 20) & (sorted_row['x1'] > col['x_mid'] - 20)]
+                        val = parse_val(" ".join(cell_data['text']))
+                        if val > 0:
+                            if col['sz'] not in all_specs: all_specs[col['sz']] = {}
+                            all_specs[col['sz']][pom_name] = val
+                            found_any_val = True
+                            
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
@@ -115,9 +132,9 @@ def extract_full_data(file_content):
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
-    count = res_count.count or 0
-    st.metric("Models in Repo", f"{count} SKUs")
-    st.write(f"💾 **Storage:** {count*0.08:.1f}MB / 1024MB")
+    st.metric("Models in Repo", f"{res_count.count or 0} SKUs")
+    st.write(f"💾 **Storage:** {(res_count.count or 0)*0.08:.1f}MB / 1024MB")
+    st.progress(min((res_count.count or 0)*0.08/1024, 1.0))
     st.divider()
     new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"sy_{st.session_state['up_key']}")
     if new_files and st.button("🚀 SYNCHRONIZE", use_container_width=True):
@@ -168,14 +185,15 @@ if mode == "🔍 Audit Mode":
                         r_specs = sel['spec_json'].get(m_sz[0] if m_sz else "", {})
                         rows = [{"Point": p, "Target": v, "Ref": r_specs.get(get_close_matches(p, list(r_specs.keys()), 1, 0.6)[0] if get_close_matches(p, list(r_specs.keys()), 1, 0.6) else "", 0)} for p, v in t_specs.items()]
                         for r in rows: r['Diff'] = f"{r['Target'] - r['Ref']:+.3f}"
-                        df_sz = pd.DataFrame(rows); st.table(df_sz); audit_dfs.append(df_sz); sheet_names.append(sz)
-                st.download_button("📥 Xuất Excel", to_excel(audit_dfs, sheet_names), "Audit_Report.xlsx")
+                        df_sz = pd.DataFrame(rows); st.table(df_sz)
+                        audit_dfs.append(df_sz); sheet_names.append(sz)
+                st.download_button("📥 Xuất Excel Audit", to_excel(audit_dfs, sheet_names), "Audit_Report.xlsx")
 
 elif mode == "🔄 Version Control":
-    st.subheader("🔄 So sánh 2 file PDF")
+    st.subheader("🔄 So sánh 2 file PDF (Quét Toàn Bộ Dòng)")
     c1, c2 = st.columns(2)
-    f1, f2 = c1.file_uploader("Bản A:", type="pdf", key="v1"), c2.file_uploader("Bản B:", type="pdf", key="v2")
-    
+    f1 = c1.file_uploader("Bản cũ (A):", type="pdf", key="v1")
+    f2 = c2.file_uploader("Bản mới (B):", type="pdf", key="v2")
     if f1 and f2:
         if st.button("⚡ Bắt đầu so sánh toàn diện", use_container_width=True):
             d1, d2 = extract_full_data(f1.getvalue()), extract_full_data(f2.getvalue())
@@ -187,8 +205,7 @@ elif mode == "🔄 Version Control":
         st.divider(); col_a, col_b = st.columns(2)
         col_a.image(vr['d1']['img'], caption=f"A: {vr['f1_name']}", use_container_width=True)
         col_b.image(vr['d2']['img'], caption=f"B: {vr['f2_name']}", use_container_width=True)
-        
-        all_sz = sorted(list(set(vr['d1']['all_specs'].keys()) | set(vr['d2']['all_specs'].keys())))
+        all_sz = sorted(list(set(vr['d1']['all_specs'].keys()) | set(vr['d2']['all_specs'].keys())), key=lambda x: str(x))
         version_dfs, ver_sheets = [], []
         for sz in all_sz:
             with st.expander(f"SIZE: {sz}", expanded=True):
