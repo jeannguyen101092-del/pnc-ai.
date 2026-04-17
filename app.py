@@ -27,6 +27,7 @@ def load_model():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_model()
 
+# ================= 2. AI CORE (SỬA LỖI SYNTAX) =================
 def get_vector(img_bytes):
     if not img_bytes: return None
     try:
@@ -37,8 +38,64 @@ def get_vector(img_bytes):
             transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
         ])
         with torch.no_grad():
-            return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
+            vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
+            # Đảm bảo vector không chứa giá trị NaN hoặc Null
+            return [float(x) for x in vec] 
     except: return None
+
+# ================= 4. SIDEBAR (LÀM SẠCH ID VÀ DỮ LIỆU) =================
+with st.sidebar:
+    st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
+    try:
+        res = supabase.table("ai_data").select("id", count="exact").execute()
+        count = res.count or 0
+    except: count = 0
+    st.metric("Models in Repo", f"{count} SKUs")
+    st.divider()
+    
+    files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"s_{st.session_state['up_key']}")
+    if files and st.button("🚀 SYNCHRONIZE & REPAIR", use_container_width=True):
+        logs = []
+        for f in files:
+            try:
+                fb = f.getvalue()
+                # Nạp kho: CHỈ quét trang 1 để tránh quá tải payload JSON
+                data = extract_data(fb, scan_all=False) 
+                
+                vec = get_vector(data['img']) if data else None
+                
+                if data and vec:
+                    f_hash = hashlib.md5(fb).hexdigest()
+                    path = f"lib_{f_hash}.webp"
+                    
+                    # Làm sạch tên file để làm ID (Bỏ dấu ngoặc, khoảng trắng)
+                    clean_id = re.sub(r'[^a-zA-Z0-9]', '_', f.name)
+                    unique_id = f"{clean_id}_{f_hash[:6]}"
+                    
+                    # Tải ảnh lên Storage
+                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
+                    
+                    # Đẩy dữ liệu vào Table (Dùng dict trống nếu specs lỗi)
+                    specs = data['all_specs'] if isinstance(data['all_specs'], dict) else {}
+                    
+                    supabase.table("ai_data").upsert({
+                        "id": unique_id, 
+                        "file_name": f.name, 
+                        "vector": vec,
+                        "spec_json": specs, 
+                        "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                    }).execute()
+                    
+                    logs.append({"File": f.name, "Status": "✅ Success"})
+                else:
+                    logs.append({"File": f.name, "Status": "❌ Error: Invalid AI Vector"})
+            except Exception as e:
+                logs.append({"File": f.name, "Status": f"❌ {str(e)[:40]}"})
+        
+        st.session_state['sync_results'] = logs
+        st.session_state['up_key'] += 1
+        st.rerun() # Buộc app load lại để nhảy số SKU ngay lập tức
+
 
 def parse_val(t):
     try:
