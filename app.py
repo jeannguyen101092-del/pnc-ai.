@@ -132,28 +132,39 @@ with st.sidebar:
 st.title("👔 AI SMART AUDITOR PRO")
 mode = st.radio("Select Mode:", ["🔍 Audit Mode", "🔄 Version Control"], horizontal=True)
 
+# ================= 5. MAIN UI (CẬP NHẬT LOGIC PHÂN BIỆT QUẦN DÀI/SHORT) =================
 if mode == "🔍 Audit Mode":
     file_audit = st.file_uploader("Upload Target PDF:", type="pdf")
     if file_audit:
         target = extract_data(file_audit.getvalue())
         if target and target['img']:
-            all_db = supabase.table("ai_data").select("id, vector, file_name").execute().data
+            # 1. PHÂN LOẠI DỰA TRÊN HÌNH DÁNG (SHAPE ANALYSIS)
+            img_target = Image.open(io.BytesIO(target['img']))
+            tw, th = img_target.size
+            is_long_item = th / tw > 1.5  # Nếu dài gấp 1.5 lần rộng -> Quần dài
+            
+            res = supabase.table("ai_data").select("id, vector, file_name, image_url").execute()
+            all_db = res.data
+            
             if all_db:
                 t_vec_raw = get_vector(target['img'])
                 t_vec = np.array(t_vec_raw).reshape(1, -1)
                 
-                # --- PHÂN LOẠI THÔNG MINH ---
-                bottom_kws = ["PANT", "SHORT", "JEAN", "TROUSER", "LEG", "BOTTOM"]
-                is_bottom = any(kw in file_audit.name.upper() for kw in bottom_kws)
-                
-                # Lọc dữ liệu tương thích và cộng điểm ưu tiên theo loại
                 valid_data = []
                 for r in all_db:
                     if r['vector'] and len(r['vector']) == len(t_vec_raw):
+                        # Giả lập lấy tỷ lệ của ảnh trong DB (Để chính xác 100% bạn nên sync lại cột tỷ lệ)
+                        # Ở đây tạm thời kết hợp kiểm tra từ khóa trong tên file
+                        name = r['file_name'].upper()
+                        is_short_name = any(x in name for x in ["SHORT", "SKIRT", "BERMUDA"])
+                        is_long_name = any(x in name for x in ["PANT", "JEAN", "TROUSER", "LONG"])
+                        
                         score_bonus = 0
-                        # Nếu cùng là Quần hoặc cùng là Áo thì ưu tiên
-                        r_is_bottom = any(kw in r['file_name'].upper() for kw in bottom_kws)
-                        if is_bottom == r_is_bottom: score_bonus = 0.25 # Cộng 25% điểm ưu tiên
+                        if is_long_item:
+                            if is_long_name and not is_short_name: score_bonus = 0.4
+                        else:
+                            if is_short_name or "TOP" in name: score_bonus = 0.4
+                        
                         r['bonus'] = score_bonus
                         valid_data.append(r)
 
@@ -161,9 +172,26 @@ if mode == "🔍 Audit Mode":
                     df_db = pd.DataFrame(valid_data)
                     db_vecs = np.array([v for v in df_db['vector']])
                     raw_sims = cosine_similarity(t_vec, db_vecs).flatten()
+                    
+                    # Cộng điểm thưởng nặng cho đúng loại (Dài vs Ngắn)
                     df_db['sim'] = raw_sims + df_db['bonus']
+                    
+                    # Lọc bỏ bớt các kết quả sai loại rõ rệt nếu điểm quá thấp
                     top_3 = df_db.sort_values('sim', ascending=False).head(3)
                     
+                    # --- HIỂN THỊ ---
+                    st.subheader("🎯 AI Matches (Filtered by Shape)")
+                    cols = st.columns(4)
+                    cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
+                    for i, (idx, row) in enumerate(top_3.iterrows()):
+                        # Lấy spec_json chi tiết
+                        det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
+                        if det:
+                            with cols[i+1]:
+                                st.image(det[0]['image_url'], caption=f"Match: {min(row['sim'], 1.0):.1%}")
+                                if st.button(f"SELECT {i+1}", key=f"s_{idx}", use_container_width=True):
+                                    st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
+
                     st.subheader("🎯 AI Matches")
                     cols = st.columns(4)
                     cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
