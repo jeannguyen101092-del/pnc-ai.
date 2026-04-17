@@ -47,36 +47,63 @@ def parse_val(t):
     except: return 0
 
 # ================= 3. PPJ COORDINATE SCRAPER (UPDATED: SCAN ALL PAGES) =================
+# ================= 3. PPJ COORDINATE SCRAPER (TỐI ƯU CHO BẢNG SPEC) =================
 def extract_data(file_content):
     if not file_content: return None
     all_specs, img_bytes = {}, None
-    POM_KWS = ["WAIST", "HIP", "THIGH", "KNEE", "LEG", "INSEAM", "RISE", "LENGTH", "CHEST", "SHOULDER", "POM", "SPEC"]
+    # Mở rộng bộ từ khóa để nhận diện dòng thông số
+    POM_KWS = ["WAIST", "HIP", "THIGH", "KNEE", "LEG", "INSEAM", "RISE", "LENGTH", "CHEST", "SHOULDER", "POM", "SPEC", "BACK", "FRONT"]
+    
     try:
         doc = fitz.open(stream=file_content, filetype="pdf")
-        # Lấy ảnh trang đầu làm đại diện
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
         buf = io.BytesIO(); Image.open(io.BytesIO(pix.tobytes("png"))).save(buf, format="WEBP", quality=70)
         img_bytes = buf.getvalue(); doc.close()
 
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
-            # QUÉT TOÀN BỘ CÁC TRANG CỦA PDF
             for page in pdf.pages:
                 words = page.extract_words()
                 if not words: continue
                 df_w = pd.DataFrame(words)
+                
+                # Nhóm theo dòng (y_grid)
                 df_w['y_grid'] = (df_w['top'] / 2).round() * 2
+                
+                # Xác định chiều rộng trang để biết đâu là "phía bên phải" (thường chứa số)
+                page_width = page.width
+
                 for y, group in df_w.groupby('y_grid'):
-                    line_txt = " ".join(group.sort_values('x0')['text'])
-                    line_vals = [parse_val(w) for w in line_txt.split() if parse_val(w) > 0]
-                    if any(kw in line_txt.upper() for kw in POM_KWS) and line_vals:
-                        pom_name = re.sub(r'[0-9./\s]+$', '', line_txt).strip()
-                        if len(pom_name) > 3:
-                            for i, val in enumerate(line_vals):
-                                s_key = f"Size_{i+1}"
-                                if s_key not in all_specs: all_specs[s_key] = {}
-                                all_specs[s_key][pom_name] = val
+                    sorted_group = group.sort_values('x0')
+                    line_txt = " ".join(sorted_group['text'])
+                    
+                    # KIỂM TRA DÒNG CÓ CHỨA TỪ KHÓA THÔNG SỐ KHÔNG
+                    if any(kw in line_txt.upper() for kw in POM_KWS):
+                        # Tách phần chữ (tên POM) và phần số (nằm ở nửa bên phải trang giấy)
+                        # Thông thường các cột số Requested/Actual/New nằm từ khoảng 60% chiều rộng trang trở đi
+                        numeric_part = sorted_group[sorted_group['x0'] > (page_width * 0.55)]
+                        text_part = sorted_group[sorted_group['x0'] <= (page_width * 0.55)]
+                        
+                        pom_name = " ".join(text_part['text']).strip()
+                        # Loại bỏ mã POM code ở đầu nếu có (ví dụ: WST-011)
+                        pom_name = re.sub(r'^[A-Z0-9-]+\s+', '', pom_name)
+                        
+                        if len(pom_name) > 5:
+                            # Lấy các giá trị số từ phần bên phải
+                            vals = []
+                            for t in numeric_part['text']:
+                                v = parse_val(t)
+                                if v > 0: vals.append(v)
+                            
+                            if vals:
+                                # Gán vào các Size tương ứng (Cột 1 -> Size 1, Cột 2 -> Size 2...)
+                                for i, val in enumerate(vals):
+                                    s_key = f"Size_{i+1}"
+                                    if s_key not in all_specs: all_specs[s_key] = {}
+                                    all_specs[s_key][pom_name] = val
         return {"all_specs": all_specs, "img": img_bytes}
-    except: return None
+    except Exception as e:
+        print(f"Lỗi: {e}")
+        return None
 
 def to_excel(df):
     output = io.BytesIO()
