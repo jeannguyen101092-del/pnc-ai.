@@ -34,17 +34,31 @@ def get_vector(img_bytes):
 
 def parse_val(t):
     try:
+        # Làm sạch chuỗi
         t = str(t).replace('"', '').strip().lower()
         if not t or any(x in t for x in ["wash", "color", "label", "style", "page"]): return 0
         t = t.replace(',', '.')
-        mixed = re.match(r'(\d+)\s+(\d+)/(\d+)', t)
-        if mixed: return float(mixed.group(1)) + int(mixed.group(2))/int(mixed.group(3))
+
+        # 1. Xử lý số hỗn hợp (Ví dụ: "16 1/4" hoặc "16-1/4")
+        mixed = re.match(r'(\d+)[-\s]+(\d+)/(\d+)', t)
+        if mixed:
+            return float(mixed.group(1)) + int(mixed.group(2)) / int(mixed.group(3))
+
+        # 2. Xử lý phân số đứng một mình (Ví dụ: "1/2")
         frac = re.match(r'(\d+)/(\d+)', t)
-        if frac: return int(frac.group(1))/int(frac.group(2))
+        if frac:
+            return int(frac.group(1)) / int(frac.group(2))
+
+        # 3. Xử lý số thập phân hoặc số nguyên bình thường (Ví dụ: "16.5" hoặc "17")
         num = re.findall(r"[-+]?\d*\.\d+|\d+", t)
-        val = float(num) if num else 0
-        return val if val < 250 else 0
-    except: return 0
+        if num:
+            val = float(num[0])
+            return val if val < 500 else 0 # Tăng giới hạn lên 500 cho an toàn
+            
+        return 0
+    except:
+        return 0
+
 
 # ================= 3. PPJ COORDINATE SCRAPER (UPDATED: SCAN ALL PAGES) =================
 # ================= 3. PPJ COORDINATE SCRAPER (TỐI ƯU CHO BẢNG SPEC) =================
