@@ -20,20 +20,21 @@ if 'sel_audit' not in st.session_state: st.session_state['sel_audit'] = None
 if 'sync_results' not in st.session_state: st.session_state['sync_results'] = None
 if 'up_key' not in st.session_state: st.session_state['up_key'] = 0
 
-# ================= 2. AI CORE (OPTIMIZED) =================
+# ================= 2. AI CORE =================
 @st.cache_resource
 def load_model():
-    base_model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-    model = torch.nn.Sequential(*(list(base_model.children())[:-1]))
+    base = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+    model = torch.nn.Sequential(*(list(base.children())[:-1]))
     model.eval()
     return model
-
 model_ai = load_model()
 
 def get_vector(img_bytes):
     if not img_bytes: return None
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
+        w, h = img.size
+        img = img.crop((w*0.05, h*0.05, w*0.95, h*0.7))
         tf = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
@@ -42,21 +43,25 @@ def get_vector(img_bytes):
         with torch.no_grad():
             vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
             norm = np.linalg.norm(vec)
-            if norm > 0: vec = vec / norm # Chuẩn hóa để so sánh chính xác hơn
-            return vec.astype(float).tolist()
+            return (vec / norm).astype(float).tolist() if norm > 0 else vec.tolist()
     except: return None
 
+# ================= PHÂN LOẠI CỨNG (QUAN TRỌNG NHẤT) =================
+def detect_category(filename):
+    fname = filename.upper()
+    if any(k in fname for k in ["SHORT", "SKIRT", "BERMUDA"]): return "SHORT"
+    if any(k in fname for k in ["PANT", "JEAN", "TROUSER", "LEG", "BOTTOM"]): return "PANT"
+    if any(k in fname for k in ["TOP", "JACKET", "SHIRT", "TEE", "V-"]): return "TOP"
+    return "OTHER"
+
+# --- Các hàm helper giữ nguyên ---
 def parse_val(t):
     try:
         t = str(t).replace('"', '').strip().lower()
         if not t or any(x in t for x in ["wash", "color", "label", "style", "page"]): return 0
         t = t.replace(',', '.')
-        mixed = re.match(r'(\d+)\s+(\d+)/(\d+)', t)
-        if mixed: return float(mixed.group(1)) + int(mixed.group(2))/int(mixed.group(3))
-        frac = re.match(r'(\d+)/(\d+)', t)
-        if frac: return int(frac.group(1))/int(frac.group(2))
         num = re.findall(r"[-+]?\d*\.\d+|\d+", t)
-        return float(num[0]) if num else 0
+        return float(num) if num else 0
     except: return 0
 
 def to_excel(df_list, sheet_names):
@@ -66,7 +71,6 @@ def to_excel(df_list, sheet_names):
             df.to_excel(writer, index=False, sheet_name=name[:31])
     return output.getvalue()
 
-# ================= 3. SCRAPER =================
 def extract_data(file_content):
     if not file_content: return None
     all_specs, img_bytes = {}, None
@@ -87,7 +91,7 @@ def extract_data(file_content):
                     line_vals = [parse_val(w) for w in line_txt.split() if parse_val(w) > 0]
                     if any(kw in line_txt.upper() for kw in POM_KWS) and line_vals:
                         pom_name = re.sub(r'[0-9./\s]+$', '', line_txt).strip()
-                        if len(pom_name) > 3:
+                        if len(pom_name) > 2:
                             for i, val in enumerate(line_vals):
                                 s_key = f"Size_{i+1}"
                                 if s_key not in all_specs: all_specs[s_key] = {}
@@ -95,105 +99,73 @@ def extract_data(file_content):
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
-# ================= 4. SIDEBAR (SYNC) =================
+# ================= 4. SIDEBAR =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
-    try:
-        res_count = supabase.table("ai_data").select("id", count="exact").execute()
-        count = res_count.count or 0
-    except: count = 0
-    st.metric("Models in Repo", f"{count} SKUs")
+    res_count = supabase.table("ai_data").select("id", count="exact").execute()
+    st.metric("Models in Repo", f"{res_count.count or 0} SKUs")
     st.divider()
-    new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"sync_{st.session_state['up_key']}")
-    if new_files and st.button("🚀 SYNCHRONIZE", use_container_width=True):
-        logs = []
+    new_files = st.file_uploader("Sync Tech-Packs", accept_multiple_files=True, key=f"sync_{st.session_state['up_key']}")
+    if new_files and st.button("🚀 SYNCHRONIZE"):
         for f in new_files:
-            try:
-                fb = f.getvalue(); data = extract_data(fb)
-                if data and data['img']:
-                    file_hash = hashlib.md5(f.name.encode()).hexdigest()
-                    valid_uuid = str(uuid.UUID(file_hash))
-                    path = f"lib_{file_hash}.webp"
-                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
-                    supabase.table("ai_data").upsert({
-                        "id": valid_uuid, "file_name": f.name, "vector": get_vector(data['img']), 
-                        "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
-                    }).execute()
-                    logs.append({"File": f.name, "Status": "Success"})
-                else: logs.append({"File": f.name, "Status": "Failed"})
-            except Exception as e: logs.append({"File": f.name, "Status": str(e)})
-        st.session_state['sync_results'] = logs
+            fb = f.getvalue(); data = extract_data(fb)
+            if data and data['img']:
+                f_hash = hashlib.md5(f.name.encode()).hexdigest()
+                path = f"lib_{f_hash}.webp"
+                supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
+                supabase.table("ai_data").upsert({
+                    "id": str(uuid.UUID(f_hash)), "file_name": f.name, "vector": get_vector(data['img']),
+                    "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                }).execute()
         st.session_state['up_key'] += 1; st.rerun()
-    if st.session_state['sync_results']:
-        st.table(pd.DataFrame(st.session_state['sync_results']))
-        if st.button("Clear Report"): st.session_state['sync_results'] = None; st.rerun()
 
-# ================= 5. MAIN UI =================
+# ================= 5. MAIN UI (HÀM SO SÁNH ÁO RA ÁO QUẦN RA QUẦN) =================
 st.title("👔 AI SMART AUDITOR PRO")
 mode = st.radio("Select Mode:", ["🔍 Audit Mode", "🔄 Version Control"], horizontal=True)
 
-# ================= 5. MAIN UI (CẬP NHẬT LOGIC PHÂN BIỆT QUẦN DÀI/SHORT) =================
 if mode == "🔍 Audit Mode":
-    file_audit = st.file_uploader("Upload Target PDF:", type="pdf")
-    if file_audit:
-        target = extract_data(file_audit.getvalue())
+    f_audit = st.file_uploader("Upload Target PDF:", type="pdf")
+    if f_audit:
+        target = extract_data(f_audit.getvalue())
         if target and target['img']:
-            # 1. PHÂN LOẠI DỰA TRÊN HÌNH DÁNG (SHAPE ANALYSIS)
-            img_target = Image.open(io.BytesIO(target['img']))
-            tw, th = img_target.size
-            is_long_item = th / tw > 1.5  # Nếu dài gấp 1.5 lần rộng -> Quần dài
+            # XÁC ĐỊNH LOẠI CỦA FILE ĐANG KIỂM TRA
+            target_cat = detect_category(f_audit.name)
             
-            res = supabase.table("ai_data").select("id, vector, file_name, image_url").execute()
-            all_db = res.data
-            
-            if all_db:
+            res = supabase.table("ai_data").select("id, vector, file_name").execute()
+            if res.data:
                 t_vec_raw = get_vector(target['img'])
-                t_vec = np.array(t_vec_raw).reshape(1, -1)
                 
-                valid_data = []
-                for r in all_db:
-                    if r['vector'] and len(r['vector']) == len(t_vec_raw):
-                        # Giả lập lấy tỷ lệ của ảnh trong DB (Để chính xác 100% bạn nên sync lại cột tỷ lệ)
-                        # Ở đây tạm thời kết hợp kiểm tra từ khóa trong tên file
-                        name = r['file_name'].upper()
-                        is_short_name = any(x in name for x in ["SHORT", "SKIRT", "BERMUDA"])
-                        is_long_name = any(x in name for x in ["PANT", "JEAN", "TROUSER", "LONG"])
-                        
-                        score_bonus = 0
-                        if is_long_item:
-                            if is_long_name and not is_short_name: score_bonus = 0.4
-                        else:
-                            if is_short_name or "TOP" in name: score_bonus = 0.4
-                        
-                        r['bonus'] = score_bonus
-                        valid_data.append(r)
-                    # --- HIỂN THỊ ---
-                    st.subheader("🎯 AI Matches (Filtered by Shape)")
-                    cols = st.columns(4)
-                    cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
-                    for i, (idx, row) in enumerate(top_3.iterrows()):
-                        # Lấy spec_json chi tiết
-                        det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
-                        if det:
-                            with cols[i+1]:
-                                st.image(det[0]['image_url'], caption=f"Match: {min(row['sim'], 1.0):.1%}")
-                                if st.button(f"SELECT {i+1}", key=f"s_{idx}", use_container_width=True):
-                                    st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
-
-                    st.subheader("🎯 AI Matches")
+                # --- BỘ LỌC CỨNG (CHỈ LẤY CÙNG LOẠI) ---
+                # Nếu file up lên là SHORT, chỉ lấy những file trong DB cũng là SHORT
+                filtered_db = [r for r in res.data if detect_category(r['file_name']) == target_cat]
+                
+                if not filtered_db: # Nếu không có cùng loại thì mới hiện mẫu khác
+                    filtered_db = res.data
+                
+                df = pd.DataFrame(filtered_db)
+                # Kiểm tra chiều vector để tránh lỗi đỏ
+                df = df[df['vector'].apply(lambda v: len(v) == len(t_vec_raw))]
+                
+                if not df.empty:
+                    db_vecs = np.array(df['vector'].tolist())
+                    t_vec = np.array(t_vec_raw).reshape(1, -1)
+                    df['sim'] = cosine_similarity(t_vec, db_vecs).flatten()
+                    top_3 = df.sort_values('sim', ascending=False).head(3)
+                    
+                    st.subheader(f"🎯 AI Matches (Nhóm: {target_cat})")
                     cols = st.columns(4)
                     cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
                     for i, (idx, row) in enumerate(top_3.iterrows()):
                         det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
                         if det:
                             with cols[i+1]:
-                                st.image(det[0]['image_url'], caption=f"Match: {min(row['sim'], 1.0):.1%}")
+                                st.image(det[0]['image_url'], caption=f"Match: {row['sim']:.1%}")
                                 if st.button(f"SELECT {i+1}", key=f"s_{idx}", use_container_width=True):
                                     st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
                 
                 sel = st.session_state['sel_audit']
                 if sel:
-                    st.divider(); st.success(f"📈 Comparing: **{sel['file_name']}**")
+                    st.divider(); st.success(f"📈 So sánh với: **{sel['file_name']}**")
                     all_dfs, sheet_names = [], []
                     for sz, t_specs in target['all_specs'].items():
                         with st.expander(f"SIZE: {sz}", expanded=True):
@@ -206,8 +178,7 @@ if mode == "🔍 Audit Mode":
                                 rows.append({"Point": p, "Target": v, "Ref": rv, "Diff": f"{v-rv:+.3f}"})
                             df_sz = pd.DataFrame(rows); st.table(df_sz)
                             all_dfs.append(df_sz); sheet_names.append(sz)
-                    st.download_button("📥 Download Excel Report", to_excel(all_dfs, sheet_names), f"Audit_{sel['file_name']}.xlsx")
-
+                    st.download_button("📥 Xuất Excel", to_excel(all_dfs, sheet_names), f"Audit_{sel['file_name']}.xlsx")
 elif mode == "🔄 Version Control":
     st.subheader("🔄 Compare Two New Versions")
     c_up1, c_up2 = st.columns(2)
