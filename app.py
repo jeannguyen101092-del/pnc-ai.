@@ -69,8 +69,8 @@ def extract_data(file_content, scan_all=False):
         img_bytes = buf.getvalue(); doc.close()
 
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
-            pages_list = pdf.pages if scan_all else [pdf.pages[0]]
-            for page in pages_list:
+            pages_to_scan = pdf.pages if scan_all else [pdf.pages[0]]
+            for page in pages_to_scan:
                 words = page.extract_words()
                 if not words: continue
                 df_w = pd.DataFrame(words)
@@ -98,15 +98,19 @@ def to_excel(df):
         df.to_excel(writer, index=False, sheet_name='Comparison')
     return output.getvalue()
 
-# ================= 4. SIDEBAR (CẬP NHẬT SKU) =================
+# ================= 4. SIDEBAR (ÉP CẬP NHẬT SKU) =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     
-    # Ép lấy số lượng mới nhất từ Database
-    res_sku = supabase.table("ai_data").select("id", count="exact").execute()
-    sku_count = res_sku.count if res_sku.count else 0
-    
+    # 1. Ép lấy số lượng thực tế mỗi lần load
+    def refresh_sku():
+        try:
+            return supabase.table("ai_data").select("id", count="exact").execute().count
+        except: return 0
+
+    sku_count = refresh_sku()
     st.metric("Models in Repo", f"{sku_count} SKUs")
+    
     used_mb = sku_count * 0.08
     st.write(f"💾 **Storage:** {used_mb:.1f}MB / 1024MB")
     st.progress(min(used_mb/1024, 1.0))
@@ -125,21 +129,22 @@ with st.sidebar:
                     path = f"lib_{f_hash}.webp"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
                     
-                    # LÀM SẠCH ID (Bắt buộc để nhảy số): Bỏ dấu ngoặc, khoảng trắng, tiếng Việt
+                    # LÀM SẠCH ID VÀ THÊM TIME ĐỂ ÉP TĂNG SỐ LƯỢNG
                     clean_id = re.sub(r'[^a-zA-Z0-9]', '_', f.name)
-                    unique_id = f"{clean_id[:30]}_{f_hash[:6]}"
+                    unique_id = f"{clean_id[:20]}_{int(time.time())}"
                     
-                    supabase.table("ai_data").upsert({
+                    supabase.table("ai_data").insert({
                         "id": unique_id, "file_name": f.name, "vector": vec,
                         "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                     }).execute()
-                    logs.append({"File": f.name, "Status": "✅ Thành công"})
+                    logs.append({"File": f.name, "Status": "✅ Success"})
             except Exception as e:
-                logs.append({"File": f.name, "Status": "❌ Lỗi Syntax"})
+                logs.append({"File": f.name, "Status": "❌ Lỗi"})
         
         st.session_state['sync_results'] = logs
         st.session_state['up_key'] += 1
-        st.rerun() # Refresh app để nhảy số SKU ngay lập tức
+        st.cache_data.clear() # Xóa cache dữ liệu
+        st.rerun() # Refresh app
 
 # ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
@@ -150,6 +155,7 @@ if mode == "🔍 Audit Mode":
     if f_audit:
         target = extract_data(f_audit.getvalue(), scan_all=False)
         if target and target['img']:
+            # Lấy data so sánh
             all_db = [r for i in range(0, sku_count, 1000) for r in supabase.table("ai_data").select("id, vector, file_name").range(i, i+999).execute().data]
             if all_db:
                 df_db = pd.DataFrame(all_db)
@@ -160,9 +166,9 @@ if mode == "🔍 Audit Mode":
                 cols = st.columns(4)
                 cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
                 for i, (idx, row) in enumerate(top_3.iterrows()):
-                    det_data = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
-                    if det_data:
-                        det = det_data[0]
+                    det_res = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
+                    if det_res:
+                        det = det_res[0]
                         with cols[i+1]:
                             st.image(det['image_url'], caption=f"Match: {row['sim']:.1%}")
                             if st.button(f"SELECT {i+1}", key=row['id']):
