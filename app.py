@@ -30,24 +30,37 @@ model_ai = load_model()
 def get_vector(img_bytes):
     if not img_bytes: return None
     try:
-        img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-        # Cắt bỏ lề nhiễu, tập trung vào Sketch giữa trang
+        img = Image.open(io.BytesIO(img_bytes)).convert('L') # Chuyển sang ảnh xám ngay từ đầu
+        
+        # 1. CROP CHẶT: Loại bỏ 20% lề mỗi bên (nơi thường chứa text, tiêu đề, số trang)
         w, h = img.size
-        img = img.crop((w*0.15, h*0.1, w*0.85, h*0.55)) 
-        # Tăng tương phản để làm nổi nét phác thảo
-        img = ImageOps.grayscale(img)
-        img = ImageEnhance.Contrast(img).enhance(2.0).convert('RGB')
+        left, top, right, bottom = w*0.2, h*0.15, w*0.8, h*0.6
+        img = img.crop((left, top, right, bottom))
+        
+        # 2. XỬ LÝ AI-VISION: Biến ảnh thành đen trắng tuyệt đối (Otsu) 
+        # Cách này sẽ triệt tiêu các dòng text mờ, chỉ giữ lại nét vẽ đậm của Sketch
+        img_np = np.array(img)
+        thresh = 200 # Ngưỡng lọc: Chỉ giữ lại những nét thực sự đậm
+        img_np = np.where(img_np > thresh, 255, img_np) 
+        img = Image.fromarray(img_np).convert('RGB')
+        
+        # 3. TĂNG CƯỜNG CHI TIẾT NÉT VẼ
+        img = ImageEnhance.Sharpness(img).enhance(2.0)
 
         tf = transforms.Compose([
             transforms.Resize((224, 224)),
+            # Thêm Grayscale ở đây để AI không bị đánh lừa bởi màu giấy hay màu mực
+            transforms.Grayscale(num_output_channels=3), 
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
+        
         with torch.no_grad():
             vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
             norm = np.linalg.norm(vec)
             return (vec / norm).astype(float).tolist() if norm > 0 else vec.tolist()
     except: return None
+
 
 def parse_val(t):
     try:
