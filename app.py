@@ -1,7 +1,7 @@
 import streamlit as st
 import io, fitz, pdfplumber, re, pandas as pd, numpy as np
 import torch, hashlib, time, uuid, json
-from PIL import Image, ImageOps, ImageEnhance
+from PIL import Image
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
@@ -14,13 +14,13 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase = create_client(URL, KEY)
 BUCKET = "fashion-imgs"
 
-st.set_page_config(layout="wide", page_title="PPJ AI DNA Auditor Pro", page_icon="👔")
+st.set_page_config(layout="wide", page_title="PPJ AI Premium Auditor", page_icon="👔")
 
 if 'sel_audit' not in st.session_state: st.session_state['sel_audit'] = None
 if 'ver_results' not in st.session_state: st.session_state['ver_results'] = None
 if 'up_key' not in st.session_state: st.session_state['up_key'] = 0
 
-# ================= 2. AI CORE (IMPROVED) =================
+# ================= 2. AI CORE (STABLE & SECURE) =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -31,7 +31,6 @@ def get_vector(img_bytes):
     if not img_bytes: return None
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-        # Cắt ảnh tập trung vào mẫu vẽ trung tâm để tránh nhiễu lề
         w, h = img.size; img = img.crop((w*0.1, h*0.05, w*0.9, h*0.6))
         tf = transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
         with torch.no_grad():
@@ -42,51 +41,58 @@ def get_vector(img_bytes):
 
 def get_dna_logic(item):
     """Suy luận DNA thông minh từ dữ liệu cũ hoặc lấy dữ liệu mới"""
-    if item.get("dna_json"): return item["dna_json"]
+    if item.get("dna_json") and isinstance(item["dna_json"], dict): 
+        return item["dna_json"]
+    
     specs = item.get("spec_json", {})
     all_p = ""
-    for sz in specs: all_p += " ".join(specs[sz].keys()).upper()
+    if isinstance(specs, dict):
+        for sz in specs: 
+            if isinstance(specs[sz], dict):
+                all_p += " ".join(specs[sz].keys()).upper()
+    
     return {
         "pockets": {
             "front": "slanted" if "SLANT" in all_p else ("curved" if "CURVE" in all_p else "patch"),
             "back": "patch" if "BACK" in all_p else "none",
             "extra": "coin" if "COIN" in all_p else ("cargo" if "CARGO" in all_p else "none")
         },
-        "construction": {"closure": "zipper" if "ZIP" in all_p else "button"},
-        "fit": {"shape": "regular"}
+        "construction": {"closure": "zipper" if "ZIP" in all_p else "button"}
     }
 
 def calculate_similarity_engine(target_data, repo_item):
-    """Công cụ so khớp 3 lớp: DNA + Hình ảnh + Từ khóa"""
+    """Công cụ so khớp 3 lớp an toàn: DNA + Hình ảnh + Từ khóa"""
     # 1. Điểm DNA (Trọng số 0.4)
     sim_dna = 0.0
-    t_dna = target_data['dna']
+    t_dna = target_data.get('dna', {})
     r_dna = get_dna_logic(repo_item)
     p_score = 0
-    if t_dna["pockets"]["front"] == r_dna["pockets"]["front"]: p_score += 0.4
-    if t_dna["pockets"]["back"] == r_dna["pockets"]["back"]: p_score += 0.4
-    if t_dna["pockets"]["extra"] == r_dna["pockets"]["extra"]: p_score += 0.2
+    if t_dna.get("pockets", {}).get("front") == r_dna.get("pockets", {}).get("front"): p_score += 0.4
+    if t_dna.get("pockets", {}).get("back") == r_dna.get("pockets", {}).get("back"): p_score += 0.4
+    if t_dna.get("pockets", {}).get("extra") == r_dna.get("pockets", {}).get("extra"): p_score += 0.2
     sim_dna = p_score
 
-    # 2. Điểm Hình ảnh (Trọng số 0.3)
+    # 2. Điểm Hình ảnh (Trọng số 0.3) - ĐÃ FIX LỖI TYPEERROR
     sim_visual = 0.0
-    if target_data.get('vector') and repo_item.get('vector'):
-        sim_visual = float(cosine_similarity(np.array(target_data['vector']).reshape(1,-1), np.array(repo_item['vector']).reshape(1,-1)))
+    t_vec = target_data.get('vector')
+    r_vec = repo_item.get('vector')
+    if t_vec and r_vec and len(t_vec) == len(r_vec):
+        try:
+            sim_visual = float(cosine_similarity(np.array(t_vec).reshape(1,-1), np.array(r_vec).reshape(1,-1))[0][0])
+        except: sim_visual = 0.0
 
-    # 3. Điểm Từ khóa Tên file (Trọng số 0.3)
+    # 3. Điểm Từ khóa (Trọng số 0.3)
     sim_kw = 0.0
-    t_name = target_data['name'].upper()
-    r_name = repo_item['file_name'].upper()
+    t_name = target_data.get('name', "").upper()
+    r_name = repo_item.get('file_name', "").upper()
     keywords = ["SHORT", "PANT", "JEAN", "JACKET", "SHIRT"]
     for kw in keywords:
         if (kw in t_name) and (kw in r_name):
             sim_kw = 1.0; break
     
-    # TỔNG HỢP ĐIỂM CUỐI CÙNG
-    final_score = (sim_dna * 0.4) + (sim_visual * 0.3) + (sim_kw * 0.3)
-    return final_score
+    return (sim_dna * 0.4) + (sim_visual * 0.3) + (sim_kw * 0.3)
 
-# ================= 3. SCRAPER =================
+# ================= 3. SCRAPER & PARSER =================
 def parse_val(t):
     try:
         t = str(t).replace('"', '').strip().lower().replace(',', '.')
@@ -97,7 +103,7 @@ def parse_val(t):
         frac = re.match(r'(\d+)/(\d+)', t)
         if frac: return int(frac.group(1))/int(frac.group(2))
         num = re.findall(r"[-+]?\d*\.\d+|\d+", t)
-        return float(num) if num else 0
+        return float(num[0]) if num else 0
     except: return 0
 
 def extract_full_data(file_content, filename=""):
@@ -162,11 +168,12 @@ with st.sidebar:
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
     count = res_count.count or 0
     st.metric("Models in Repo", f"{count} SKUs")
-    st.write(f"💾 **Storage:** {count*0.08:.1f}MB / 1024MB")
-    st.progress(min(count*0.08/1024, 1.0))
+    storage_mb = count * 0.08
+    st.write(f"💾 **Storage:** {storage_mb:.1f}MB / 1024MB")
+    st.progress(min(storage_mb/1024, 1.0))
     st.divider()
     new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"sy_{st.session_state['up_key']}")
-    if new_files and st.button("🚀 SYNCHRONIZE", use_container_width=True):
+    if new_files and st.button("🚀 SYNCHRONIZE"):
         prog = st.progress(0); p_text = st.empty()
         for i, f in enumerate(new_files):
             data = extract_full_data(f.getvalue(), f.name)
@@ -182,7 +189,7 @@ with st.sidebar:
         st.session_state['up_key'] += 1; st.rerun()
 
 # ================= 5. MAIN UI =================
-st.title("👔 AI SMART AUDITOR (PREMIUM SEARCH)")
+st.title("👔 AI SMART AUDITOR (DNA LOGIC)")
 mode = st.radio("Chế độ:", ["🔍 Audit Mode", "🔄 Version Control"], horizontal=True)
 
 if mode == "🔍 Audit Mode":
@@ -190,19 +197,20 @@ if mode == "🔍 Audit Mode":
     if f_audit:
         target = extract_full_data(f_audit.getvalue(), f_audit.name)
         if target:
+            # LẤY TOÀN BỘ DỮ LIỆU ĐỂ SO KHỚP 3 LỚP
             res = supabase.table("ai_data").select("*").execute()
             if res.data:
                 valid_matches = []
                 for r in res.data:
-                    # DÙNG CÔNG CỤ SO KHỚP 3 LỚP (TRIPLE CHECK)
+                    # TÍNH TOÁN ĐIỂM TỔNG HỢP AN TOÀN
                     sim = calculate_similarity_engine(target, r)
                     valid_matches.append({**r, "sim_score": sim})
                 
                 df_db = pd.DataFrame(valid_matches).sort_values('sim_score', ascending=False).head(3)
                 
-                st.subheader("🎯 Top Matches (Verified by DNA & Vision)")
+                st.subheader("🎯 Top Matches (DNA & Visual Analysis)")
                 cols = st.columns(4)
-                cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
+                cols.image(target['img'], caption="TARGET PDF", use_container_width=True)
                 for i, (idx, row) in enumerate(df_db.iterrows()):
                     with cols[i+1]:
                         st.image(row['image_url'], caption=f"Match: {row['sim_score']:.1%}")
@@ -216,19 +224,17 @@ if mode == "🔍 Audit Mode":
                 audit_dfs, sheet_names = [], []
                 for sz, t_specs in target['all_specs'].items():
                     with st.expander(f"SIZE: {sz}", expanded=True):
-                        m_sz = get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4)
-                        r_specs = sel['spec_json'].get(m_sz[0] if m_sz else "", {})
-                        rows = [{"Point": p, "Target": v, "Ref": r_specs.get(get_close_matches(p, list(r_specs.keys()), 1, 0.6)[0] if get_close_matches(p, list(r_specs.keys()), 1, 0.6) else "", 0)} for p, v in t_specs.items()]
+                        r_specs = sel.get('spec_json', {}).get(get_close_matches(sz, list(sel.get('spec_json', {}).keys()), 1, 0.4) if get_close_matches(sz, list(sel.get('spec_json', {}).keys()), 1, 0.4) else "", {})
+                        rows = [{"Point": p, "Target": v, "Ref": r_specs.get(get_close_matches(p, list(r_specs.keys()), 1, 0.6) if get_close_matches(p, list(r_specs.keys()), 1, 0.6) else "", 0)} for p, v in t_specs.items()]
                         for r in rows: r['Diff'] = f"{r['Target'] - r['Ref']:+.3f}"
                         df_sz = pd.DataFrame(rows); st.table(df_sz); audit_dfs.append(df_sz); sheet_names.append(sz)
                 st.download_button("📥 Xuất Excel Audit", to_excel(audit_dfs, sheet_names), f"Audit_{sel['file_name']}.xlsx")
 
 elif mode == "🔄 Version Control":
-    # Giữ nguyên code Version Control đã chuẩn của bạn
+    # Phần Version Control chuẩn của bạn
     st.subheader("🔄 So sánh 2 file PDF mới")
     c1, c2 = st.columns(2)
-    f1 = c1.file_uploader("Bản cũ (A):", type="pdf", key="v1")
-    f2 = c2.file_uploader("Bản mới (B):", type="pdf", key="v2")
+    f1, f2 = c1.file_uploader("Bản cũ (A):", type="pdf", key="v1"), c2.file_uploader("Bản mới (B):", type="pdf", key="v2")
     if f1 and f2:
         if st.button("⚡ Bắt đầu so sánh toàn diện", use_container_width=True):
             d1, d2 = extract_full_data(f1.getvalue(), f1.name), extract_full_data(f2.getvalue(), f2.name)
@@ -242,7 +248,6 @@ elif mode == "🔄 Version Control":
         for sz in all_sz:
             with st.expander(f"SIZE: {sz}", expanded=True):
                 s1, s2 = vr['d1']['all_specs'].get(sz, {}), vr['d2']['all_specs'].get(sz, {})
-                poms = sorted(list(set(s1.keys()) | set(s2.keys())))
-                rows = [{"Point": p, "Ver A": s1.get(p,0), "Ver B": s2.get(p,0), "Diff": f"{s2.get(p,0)-s1.get(p,0):+.3f}", "Status": "✅" if s1.get(p,0)==s2.get(p,0) else "⚠️"} for p in poms]
+                rows = [{"Point": p, "Ver A": s1.get(p,0), "Ver B": s2.get(p,0), "Diff": f"{s2.get(p,0)-s1.get(p,0):+.3f}", "Status": "✅" if s1.get(p,0)==s2.get(p,0) else "⚠️"} for p in sorted(list(set(s1.keys()) | set(s2.keys())))]
                 df_sz = pd.DataFrame(rows); st.table(df_sz); version_dfs.append(df_sz); ver_sheets.append(sz)
         st.download_button("📥 Xuất Excel So Sánh", to_excel(version_dfs, ver_sheets), "Comparison.xlsx")
