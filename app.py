@@ -10,7 +10,6 @@ from difflib import get_close_matches
 # ================= 1. CONFIGURATION =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
-
 supabase = create_client(URL, KEY)
 BUCKET = "fashion-imgs"
 
@@ -20,7 +19,7 @@ if 'sel_audit' not in st.session_state: st.session_state['sel_audit'] = None
 if 'ver_results' not in st.session_state: st.session_state['ver_results'] = None
 if 'up_key' not in st.session_state: st.session_state['up_key'] = 0
 
-# ================= 2. AI CORE (SIÊU NHẬN DIỆN) =================
+# ================= 2. AI CORE (SIẾU NHẬN DIỆN & CHỐNG LỖI) =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -31,14 +30,12 @@ def get_vector(img_bytes):
     if not img_bytes: return None
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-        # BƯỚC 1: Cắt bỏ 25% phía trên (Bảng biểu) và 10% lề để lấy đúng Sketch
+        # Cắt ảnh cực sâu: Bỏ 25% đầu trang (Bảng biểu) và lấy vùng trung tâm
         w, h = img.size
         img = img.crop((w*0.1, h*0.25, w*0.9, h*0.75)) 
-        
-        # BƯỚC 2: Tăng độ tương phản cực đại để làm nổi bật nét vẽ đen
+        # Tăng tương phản tối đa để AI thấy rõ đường nét áo/quần
         img = ImageOps.grayscale(img)
-        img = ImageEnhance.Contrast(img).enhance(3.0) 
-        img = img.convert('RGB')
+        img = ImageEnhance.Contrast(img).enhance(3.0).convert('RGB')
 
         tf = transforms.Compose([
             transforms.Resize((224, 224)),
@@ -60,36 +57,41 @@ def get_category_tags(name):
     return "UNKNOWN"
 
 def calculate_similarity_engine(target_data, repo_item):
-    """So khớp với Bộ lọc Cứng (Hard Filter)"""
-    t_cat = get_category_tags(target_data.get('name', ""))
-    r_cat = get_category_tags(repo_item.get('file_name', ""))
-    
-    # RULE CỨNG: Nếu xác định rõ loại mà khác nhau thì loại bỏ ngay (điểm = 0)
-    if t_cat != "UNKNOWN" and r_cat != "UNKNOWN" and t_cat != r_cat:
-        return 0.0
-
+    """Hàm so khớp 3 lớp với bộ lọc lỗi TYPEERROR cực mạnh"""
     t_vec = target_data.get('vector')
     r_vec = repo_item.get('vector')
-    if isinstance(t_vec, list) and isinstance(r_vec, list) and len(t_vec) == len(r_vec):
-        sim = float(cosine_similarity(np.array(t_vec).reshape(1,-1), np.array(r_vec).reshape(1,-1)))
-        
-        # Thưởng điểm nếu cùng tên loại cụ thể (Ví dụ cùng là SHORT)
-        if t_cat == r_cat and t_cat != "UNKNOWN": sim += 0.2
-        return min(1.0, sim)
-    return 0.0
+    
+    # KIỂM TRA AN TOÀN TUYỆT ĐỐI: Bỏ qua nếu dữ liệu không phải là list số
+    if not isinstance(t_vec, list) or not isinstance(r_vec, list) or len(t_vec) != len(r_vec):
+        return 0.0
 
-# ================= 3. SCRAPER (BẢN CHUẨN CỦA BẠN) =================
+    try:
+        # Tính độ tương đồng hình ảnh
+        sim_visual = float(cosine_similarity(np.array(t_vec).reshape(1,-1), np.array(r_vec).reshape(1,-1)))
+        
+        # Logic lọc cứng loại sản phẩm (Hard Filter)
+        t_cat = get_category_tags(target_data.get('name', ""))
+        r_cat = get_category_tags(repo_item.get('file_name', ""))
+        
+        # Nếu đã xác định rõ loại mà khác nhau thì loại bỏ ngay
+        if t_cat != "UNKNOWN" and r_cat != "UNKNOWN" and t_cat != r_cat:
+            return 0.0
+            
+        # Thưởng điểm nếu cùng loại cụ thể
+        if t_cat == r_cat and t_cat != "UNKNOWN": sim_visual += 0.2
+        
+        return min(1.0, sim_visual)
+    except:
+        return 0.0
+
+# ================= 3. SCRAPER (BẢN CHUẨN) =================
 def parse_val(t):
     try:
         t = str(t).replace('"', '').strip().lower().replace(',', '.')
         if not t or any(x in t for x in ["wash", "color", "label", "page", "tol", "+", "-"]): return 0
         if re.match(r'^[a-z]\d+', t): return 0 
-        mixed = re.match(r'(\d+)\s+(\d+)/(\d+)', t)
-        if mixed: return float(mixed.group(1)) + int(mixed.group(2))/int(mixed.group(3))
-        frac = re.match(r'(\d+)/(\d+)', t)
-        if frac: return int(frac.group(1))/int(frac.group(2))
         num = re.findall(r"[-+]?\d*\.\d+|\d+", t)
-        return float(num) if num else 0
+        return float(num[0]) if num else 0
     except: return 0
 
 def extract_full_data(file_content, filename=""):
@@ -144,8 +146,9 @@ with st.sidebar:
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
     count = res_count.count or 0
     st.metric("Models in Repo", f"{count} SKUs")
-    st.write(f"💾 **Storage:** {count*0.08:.1f}MB / 1024MB")
-    st.progress(min(count*0.08/1024, 1.0))
+    storage_mb = count * 0.08
+    st.write(f"💾 **Storage:** {storage_mb:.1f}MB / 1024MB")
+    st.progress(min(storage_mb/1024, 1.0))
     st.divider()
     new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"sy_{st.session_state['up_key']}")
     if new_files and st.button("🚀 SYNCHRONIZE", use_container_width=True):
@@ -164,7 +167,7 @@ with st.sidebar:
         st.session_state['up_key'] += 1; st.rerun()
 
 # ================= 5. MAIN UI =================
-st.title("👔 AI SMART AUDITOR (ADVANCED FILTER)")
+st.title("👔 AI SMART AUDITOR PRO")
 mode = st.radio("Chế độ:", ["🔍 Audit Mode", "🔄 Version Control"], horizontal=True)
 
 if mode == "🔍 Audit Mode":
@@ -172,19 +175,20 @@ if mode == "🔍 Audit Mode":
     if f_audit:
         target = extract_full_data(f_audit.getvalue(), f_audit.name)
         if target:
+            # LẤY DỮ LIỆU VÀ SO KHỚP AN TOÀN
             res = supabase.table("ai_data").select("*").execute()
             if res.data:
                 valid_matches = []
                 for r in res.data:
                     sim = calculate_similarity_engine(target, r)
-                    if sim > 0: # Chỉ lấy các mẫu cùng loại (Hard Filter)
+                    if sim > 0: # Chỉ hiển thị những mẫu cùng loại
                         valid_matches.append({**r, "sim_score": sim})
                 
                 df_db = pd.DataFrame(valid_matches).sort_values('sim_score', ascending=False).head(3)
                 
                 st.subheader(f"🎯 AI Matches (Detected: {get_category_tags(f_audit.name)})")
                 cols = st.columns(4)
-                cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
+                cols.image(target['img'], caption="TARGET PDF", use_container_width=True)
                 for i, (idx, row) in enumerate(df_db.iterrows()):
                     with cols[i+1]:
                         st.image(row['image_url'], caption=f"Match: {row['sim_score']:.1%}")
@@ -205,7 +209,7 @@ if mode == "🔍 Audit Mode":
                 st.download_button("📥 Xuất Excel Audit", to_excel(audit_dfs, sheet_names), f"Audit_{sel['file_name']}.xlsx")
 
 elif mode == "🔄 Version Control":
-    # Giữ nguyên code Version Control chuẩn của bạn
+    # Phần Version Control chuẩn của bạn
     st.subheader("🔄 So sánh 2 file PDF mới")
     c1, c2 = st.columns(2)
     f1, f2 = c1.file_uploader("Bản cũ (A):", type="pdf", key="v1"), c2.file_uploader("Bản mới (B):", type="pdf", key="v2")
