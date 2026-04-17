@@ -21,19 +21,42 @@ if 'sync_results' not in st.session_state: st.session_state['sync_results'] = No
 if 'up_key' not in st.session_state: st.session_state['up_key'] = 0
 
 # ================= 2. AI CORE & HELPER =================
+# ================= 2. AI CORE (IMPROVED FOR SKETCH) =================
 @st.cache_resource
 def load_model():
-    model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-    return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
+    # Sử dụng ResNet50 để có nhiều đặc trưng chi tiết hơn ResNet18
+    base_model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+    # Loại bỏ lớp phân loại cuối cùng, giữ lại lớp trích xuất đặc trưng
+    model = torch.nn.Sequential(*(list(base_model.children())[:-1]))
+    model.eval()
+    return model
+
 model_ai = load_model()
 
 def get_vector(img_bytes):
     if not img_bytes: return None
     try:
-        img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-        tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
-        with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
-    except: return None
+        # Mở ảnh và chuyển sang ảnh xám (Grayscale) để tập trung vào đường nét
+        img = Image.open(io.BytesIO(img_bytes)).convert('L').convert('RGB')
+        
+        tf = transforms.Compose([
+            transforms.Resize((224, 224)),
+            # Thêm tăng cường độ tương phản nhẹ để làm rõ nét vẽ
+            transforms.Grayscale(num_output_channels=3), 
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+        
+        with torch.no_grad():
+            vec = model_ai(tf(img).unsqueeze(0))
+            # Làm phẳng vector và chuẩn hóa (Normalize) để so sánh Cosine chính xác hơn
+            vec = vec.flatten().cpu().numpy()
+            unit_vec = vec / np.linalg.norm(vec) 
+            return unit_vec.tolist()
+    except Exception as e:
+        st.error(f"Lỗi AI Vector: {e}")
+        return None
+
 
 def parse_val(t):
     try:
