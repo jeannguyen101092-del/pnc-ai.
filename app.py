@@ -22,40 +22,53 @@ if 'up_key' not in st.session_state: st.session_state['up_key'] = 0
 
 # ================= 2. AI CORE & HELPER =================
 # ================= 2. AI CORE (IMPROVED FOR SKETCH) =================
+# ================= 2. AI CORE (STABLE VERSION) =================
 @st.cache_resource
 def load_model():
-    # Sử dụng ResNet50 để có nhiều đặc trưng chi tiết hơn ResNet18
-    base_model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-    # Loại bỏ lớp phân loại cuối cùng, giữ lại lớp trích xuất đặc trưng
+    # Sử dụng ResNet18 để đồng bộ với dữ liệu cũ (512 chiều)
+    # Nếu muốn dùng ResNet50, bạn PHẢI nhấn Sync lại toàn bộ kho dữ liệu
+    base_model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     model = torch.nn.Sequential(*(list(base_model.children())[:-1]))
     model.eval()
     return model
-
 model_ai = load_model()
 
 def get_vector(img_bytes):
     if not img_bytes: return None
     try:
-        # Mở ảnh và chuyển sang ảnh xám (Grayscale) để tập trung vào đường nét
-        img = Image.open(io.BytesIO(img_bytes)).convert('L').convert('RGB')
-        
+        img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
         tf = transforms.Compose([
             transforms.Resize((224, 224)),
-            # Thêm tăng cường độ tương phản nhẹ để làm rõ nét vẽ
-            transforms.Grayscale(num_output_channels=3), 
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
-        
         with torch.no_grad():
-            vec = model_ai(tf(img).unsqueeze(0))
-            # Làm phẳng vector và chuẩn hóa (Normalize) để so sánh Cosine chính xác hơn
-            vec = vec.flatten().cpu().numpy()
-            unit_vec = vec / np.linalg.norm(vec) 
-            return unit_vec.tolist()
-    except Exception as e:
-        st.error(f"Lỗi AI Vector: {e}")
-        return None
+            vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
+            # Chuẩn hóa để so sánh chính xác hơn
+            norm = np.linalg.norm(vec)
+            if norm > 0: vec = vec / norm
+            return vec.astype(float).tolist()
+    except: return None
+
+# ================= 5. MAIN UI (SO SÁNH AN TOÀN) =================
+# Tìm đoạn code "df_db['sim'] = cosine_similarity..." và thay bằng đoạn này:
+
+            t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
+            
+            # Lọc bỏ các dòng có Vector lỗi hoặc sai kích thước
+            valid_rows = [r for r in all_db if r['vector'] and len(r['vector']) == t_vec.shape[1]]
+            
+            if valid_rows:
+                df_db = pd.DataFrame(valid_rows)
+                db_vecs = np.array([v for v in df_db['vector']])
+                
+                # Thực hiện so sánh
+                df_db['sim'] = cosine_similarity(t_vec, db_vecs).flatten()
+                top_3 = df_db.sort_values('sim', ascending=False).head(3)
+                
+                # Hiển thị kết quả... (giữ nguyên phần UI bên dưới)
+            else:
+                st.error("Không tìm thấy dữ liệu phù hợp hoặc kích thước Vector không đồng nhất. Vui lòng nhấn SYNCHRONIZE lại kho dữ liệu.")
 
 
 def parse_val(t):
