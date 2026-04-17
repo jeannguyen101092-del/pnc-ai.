@@ -30,7 +30,6 @@ model_ai = load_model()
 def get_vector(img_bytes):
     if not img_bytes: return None
     img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-    # Cắt lề để AI tập trung vào hình vẽ, tránh nhiễu bảng biểu
     w, h = img.size; img = img.crop((w*0.05, h*0.05, w*0.95, h*0.7))
     tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
     with torch.no_grad():
@@ -42,8 +41,7 @@ def parse_val(t):
     try:
         t = str(t).replace('"', '').strip().lower()
         if not t or any(x in t for x in ["wash", "color", "label", "style", "page"]): return 0
-        # BỎ QUA MÃ POM (B101, D200...) ĐỂ KHÔNG BỊ SỐ TO
-        if re.match(r'^[a-z]\d+', t): return 0
+        if re.match(r'^[a-z]\d+', t): return 0 # Bỏ qua mã POM (B101...)
         t = t.replace(',', '.')
         mixed = re.match(r'(\d+)\s+(\d+)/(\d+)', t)
         if mixed: return float(mixed.group(1)) + int(mixed.group(2))/int(mixed.group(3))
@@ -52,7 +50,7 @@ def parse_val(t):
         num = re.findall(r"[-+]?\d*\.\d+|\d+", t)
         if num:
             val = float(num[0])
-            return val if val < 150 else 0 # Chặn số rác > 150
+            return val if val < 150 else 0
         return 0
     except: return 0
 
@@ -92,12 +90,18 @@ def extract_data(file_content):
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
-# ================= 4. SIDEBAR =================
+# ================= 4. SIDEBAR (HIỂN THỊ DUNG LƯỢNG) =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
-    st.metric("Models in Repo", f"{res_count.count or 0} SKUs")
+    count = res_count.count or 0
+    st.metric("Models in Repo", f"{count} SKUs")
+    
+    # --- PHẦN HIỂN THỊ DUNG LƯỢNG DATA ---
+    st.write(f"💾 **Storage:** {count*0.08:.1f}MB / 1024MB")
+    st.progress(min(count*0.08/1024, 1.0))
     st.divider()
+    
     new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"sync_{st.session_state['up_key']}")
     if new_files and st.button("🚀 SYNCHRONIZE", use_container_width=True):
         for f in new_files:
@@ -121,10 +125,9 @@ if mode == "🔍 Audit Mode":
     if file_audit:
         target = extract_data(file_audit.getvalue())
         if target and target['img']:
-            # PHÂN TÍCH HÌNH DÁNG (AO RA AO, QUAN RA QUAN)
             img_obj = Image.open(io.BytesIO(target['img']))
             tw, th = img_obj.size
-            is_long = (th / tw) > 1.4 # Tỷ lệ quần dài
+            is_long = (th / tw) > 1.4
             
             res = supabase.table("ai_data").select("id, vector, file_name").execute()
             if res.data:
@@ -133,24 +136,18 @@ if mode == "🔍 Audit Mode":
                 for r in res.data:
                     if r['vector'] and len(r['vector']) == 512:
                         name = r['file_name'].upper()
-                        bonus = 0
-                        # Thưởng điểm nếu đúng loại dựa trên tên file và hình dáng
-                        if is_long and any(x in name for x in ["PANT", "JEAN", "TROUSER"]): bonus = 0.5
-                        if not is_long and any(x in name for x in ["SHORT", "TOP", "SHIRT", "TEE"]): bonus = 0.5
-                        r['sim_score'] = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1))[0][0] + bonus
+                        bonus = 0.5 if (is_long and any(x in name for x in ["PANT", "JEAN"])) or (not is_long and any(x in name for x in ["SHORT", "TOP"])) else 0
+                        r['sim_score'] = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1)) + bonus
                         valid_rows.append(r)
                 
-                df_db = pd.DataFrame(valid_rows)
-                top_3 = df_db.sort_values('sim_score', ascending=False).head(3)
-                
-                st.subheader("🎯 AI Matches")
+                df_db = pd.DataFrame(valid_rows).sort_values('sim_score', ascending=False).head(3)
                 cols = st.columns(4)
-                cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
-                for i, (idx, row) in enumerate(top_3.iterrows()):
+                cols.image(target['img'], caption="TARGET PDF", use_container_width=True)
+                for i, (idx, row) in enumerate(df_db.iterrows()):
                     det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
                     if det:
                         with cols[i+1]:
-                            st.image(det[0]['image_url'], caption=f"Match: {min(row['sim_score'], 1.0):.1%}")
+                            st.image(det[0]['image_url'], caption=f"Match: {min(row['sim_score'][0][0], 1.0):.1%}")
                             if st.button(f"SELECT {i+1}", key=f"s_{idx}", use_container_width=True):
                                 st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
 
@@ -187,11 +184,7 @@ elif mode == "🔄 Version Control":
                 for sz in all_sz:
                     with st.expander(f"SIZE: {sz}", expanded=True):
                         s1, s2 = d1['all_specs'].get(sz, {}), d2['all_specs'].get(sz, {})
-                        rows = []
-                        for p in sorted(list(set(s1.keys()) | set(s2.keys()))):
-                            v1, v2 = s1.get(p, 0), s2.get(p, 0)
-                            diff = v2 - v1
-                            rows.append({"Point": p, "Ver A": v1, "Ver B": v2, "Diff": f"{diff:+.3f}", "Status": "✅" if diff==0 else "⚠️"})
+                        rows = [{"Point": p, "Ver A": s1.get(p,0), "Ver B": s2.get(p,0), "Diff": f"{s2.get(p,0)-s1.get(p,0):+.3f}", "Status": "✅" if s1.get(p,0)==s2.get(p,0) else "⚠️"} for p in sorted(list(set(s1.keys()) | set(s2.keys())))]
                         df_sz = pd.DataFrame(rows); st.table(df_sz)
                         version_dfs.append(df_sz); ver_sheets.append(sz)
                 st.download_button("📥 Export Comparison Excel", to_excel(version_dfs, ver_sheets), "Version_Comparison.xlsx")
