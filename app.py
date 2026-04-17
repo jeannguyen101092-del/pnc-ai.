@@ -14,13 +14,13 @@ KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase = create_client(URL, KEY)
 BUCKET = "fashion-imgs"
 
-st.set_page_config(layout="wide", page_title="PPJ AI Logic Auditor Pro", page_icon="👔")
+st.set_page_config(layout="wide", page_title="PPJ AI Premium Auditor", page_icon="👔")
 
 if 'sel_audit' not in st.session_state: st.session_state['sel_audit'] = None
 if 'ver_results' not in st.session_state: st.session_state['ver_results'] = None
 if 'up_key' not in st.session_state: st.session_state['up_key'] = 0
 
-# ================= 2. AI CORE (IMPROVED FOR CATEGORY) =================
+# ================= 2. AI CORE (FIXED TYPEERROR) =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -28,20 +28,16 @@ def load_model():
 model_ai = load_model()
 
 def get_product_category(img_bytes):
-    """Phân loại Áo/Quần dựa trên tỷ lệ khung hình của hình vẽ"""
     try:
         img = Image.open(io.BytesIO(img_bytes))
         w, h = img.size
-        ratio = h / w
-        if ratio > 1.3: return "BOTTOM" # Quần dài
-        return "TOP_SHORT" # Áo hoặc Quần short (dáng vuông)
+        return "BOTTOM" if (h / w) > 1.3 else "TOP_SHORT"
     except: return "UNKNOWN"
 
 def get_vector(img_bytes):
     if not img_bytes: return None
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-        # Tập trung vào vùng chứa sản phẩm (bỏ qua header bảng)
         w, h = img.size; img = img.crop((w*0.1, h*0.05, w*0.9, h*0.6))
         tf = transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor(), transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
         with torch.no_grad():
@@ -51,42 +47,38 @@ def get_vector(img_bytes):
     except: return None
 
 def calculate_similarity_engine(target_data, repo_item):
-    """So khớp 3 lớp với bộ lọc loại sản phẩm cứng"""
-    # 1. Điểm Hình ảnh (Trọng số 0.4)
+    """Hàm so khớp 3 lớp - ĐÃ SỬA LỖI TYPEERROR"""
     sim_visual = 0.0
     t_vec = target_data.get('vector')
     r_vec = repo_item.get('vector')
-    if t_vec and r_vec and len(t_vec) == len(r_vec):
-        sim_visual = float(cosine_similarity(np.array(t_vec).reshape(1,-1), np.array(r_vec).reshape(1,-1)))
-
-    # 2. Điểm Từ khóa & Loại sản phẩm (Trọng số 0.6 - Tăng mạnh để lọc Áo/Quần)
-    sim_cat = 0.0
-    t_name = target_data.get('name', "").upper()
-    r_name = repo_item.get('file_name', "").upper()
     
-    # Check từ khóa đặc trưng
-    top_kws = ["TOP", "SHIRT", "JACKET", "TEE", "VEST", "COAT"]
-    btm_kws = ["PANT", "SHORT", "JEAN", "LEG", "TROUSER", "SKIRT"]
+    # KIỂM TRA AN TOÀN: Chỉ tính toán nếu cả 2 vector đều hợp lệ
+    if isinstance(t_vec, list) and isinstance(r_vec, list) and len(t_vec) == len(r_vec):
+        try:
+            v1 = np.array(t_vec).reshape(1, -1)
+            v2 = np.array(r_vec).reshape(1, -1)
+            sim_visual = float(cosine_similarity(v1, v2)[0][0])
+        except: sim_visual = 0.0
+
+    # Logic lọc loại sản phẩm (Áo/Quần)
+    t_name = str(target_data.get('name', "")).upper()
+    r_name = str(repo_item.get('file_name', "")).upper()
+    
+    top_kws = ["TOP", "SHIRT", "JACKET", "TEE", "POLO"]
+    btm_kws = ["PANT", "SHORT", "JEAN", "LEG", "TROUSER"]
     
     is_t_top = any(k in t_name for k in top_kws)
     is_r_top = any(k in r_name for k in top_kws)
     is_t_btm = any(k in t_name for k in btm_kws)
     is_r_btm = any(k in r_name for k in btm_kws)
 
-    # Nếu cùng loại (Áo-Áo hoặc Quần-Quần) -> Thưởng điểm cực nặng
-    if (is_t_top and is_r_top) or (is_t_btm and is_r_btm):
-        sim_cat = 1.0
-    elif (is_t_top and is_r_btm) or (is_t_btm and is_r_top):
-        sim_cat = -0.5 # Phạt điểm nếu Áo so với Quần
-    else:
-        # Nếu không có từ khóa, dùng tỷ lệ hình ảnh để đoán
-        if target_data.get('cat') == get_product_category(repo_item.get('image_url')): # Cần thêm logic lưu cat vào DB
-            sim_cat = 0.5
+    sim_cat = 0.0
+    if (is_t_top and is_r_top) or (is_t_btm and is_r_btm): sim_cat = 1.0
+    elif (is_t_top and is_r_btm) or (is_t_btm and is_r_top): sim_cat = -0.8 # Phạt nặng nếu sai loại
+    
+    return max(0, (sim_visual * 0.4) + (sim_cat * 0.6))
 
-    final_score = (sim_visual * 0.4) + (sim_cat * 0.6)
-    return max(0, final_score)
-
-# ================= 3. SCRAPER (BỎ TOL, LẤY ĐÚNG CỘT SIZE) =================
+# ================= 3. SCRAPER & PARSER =================
 def parse_val(t):
     try:
         t = str(t).replace('"', '').strip().lower().replace(',', '.')
@@ -97,12 +89,12 @@ def parse_val(t):
         frac = re.match(r'(\d+)/(\d+)', t)
         if frac: return int(frac.group(1))/int(frac.group(2))
         num = re.findall(r"[-+]?\d*\.\d+|\d+", t)
-        return float(num) if num else 0
+        return float(num[0]) if num else 0
     except: return 0
 
 def extract_full_data(file_content, filename=""):
     if not file_content: return None
-    all_specs, all_text = {}, ""
+    all_specs = {}
     SIZE_PATTERN = r'^(xs|s|m|l|xl|xxl|\d+|[a-z]?\d+-\d+|[a-z]?\d+\.\d+)$'
     try:
         doc = fitz.open(stream=file_content, filetype="pdf")
@@ -112,7 +104,6 @@ def extract_full_data(file_content, filename=""):
         
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
-                all_text += (page.extract_text() or "") + " "
                 words = page.extract_words()
                 if not words: continue
                 df_w = pd.DataFrame(words); df_w['y_grid'] = df_w['top'].round(0)
@@ -138,10 +129,7 @@ def extract_full_data(file_content, filename=""):
                                 if val > 0:
                                     if col['sz'] not in all_specs: all_specs[col['sz']] = {}
                                     all_specs[col['sz']][pom_name] = val
-        return {
-            "all_specs": all_specs, "img": img_data, 
-            "vector": get_vector(img_data), "cat": get_product_category(img_data), "name": filename
-        }
+        return {"all_specs": all_specs, "img": img_data, "vector": get_vector(img_data), "name": filename}
     except: return None
 
 def to_excel(df_list, sheet_names):
@@ -150,7 +138,7 @@ def to_excel(df_list, sheet_names):
         for df, name in zip(df_list, sheet_names): df.to_excel(writer, index=False, sheet_name=str(name)[:31])
     return output.getvalue()
 
-# ================= 4. SIDEBAR =================
+# ================= 4. SIDEBAR (STALL & PROGRESS) =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
@@ -177,7 +165,7 @@ with st.sidebar:
         st.session_state['up_key'] += 1; st.rerun()
 
 # ================= 5. MAIN UI =================
-st.title("👔 AI SMART AUDITOR PRO (SHAPE FILTER)")
+st.title("👔 AI SMART AUDITOR PRO")
 mode = st.radio("Chế độ:", ["🔍 Audit Mode", "🔄 Version Control"], horizontal=True)
 
 if mode == "🔍 Audit Mode":
@@ -189,15 +177,14 @@ if mode == "🔍 Audit Mode":
             if res.data:
                 valid_matches = []
                 for r in res.data:
-                    # SO KHỚP 3 LỚP: HÌNH ẢNH + TỪ KHÓA + HÌNH DÁNG
                     sim = calculate_similarity_engine(target, r)
                     valid_matches.append({**r, "sim_score": sim})
                 
                 df_db = pd.DataFrame(valid_matches).sort_values('sim_score', ascending=False).head(3)
                 
-                st.subheader(f"🎯 AI Matches (Detected: {target['cat']})")
+                st.subheader("🎯 AI Matches (Category Priority)")
                 cols = st.columns(4)
-                cols.image(target['img'], caption="TARGET PDF", use_container_width=True)
+                cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
                 for i, (idx, row) in enumerate(df_db.iterrows()):
                     with cols[i+1]:
                         st.image(row['image_url'], caption=f"Match: {row['sim_score']:.1%}")
@@ -211,7 +198,7 @@ if mode == "🔍 Audit Mode":
                 audit_dfs, sheet_names = [], []
                 for sz, t_specs in target['all_specs'].items():
                     with st.expander(f"SIZE: {sz}", expanded=True):
-                        r_specs = sel['spec_json'].get(get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4) if get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4) else "", {})
+                        r_specs = sel.get('spec_json', {}).get(get_close_matches(sz, list(sel.get('spec_json', {}).keys()), 1, 0.4) if get_close_matches(sz, list(sel.get('spec_json', {}).keys()), 1, 0.4) else "", {})
                         rows = [{"Point": p, "Target": v, "Ref": r_specs.get(get_close_matches(p, list(r_specs.keys()), 1, 0.6) if get_close_matches(p, list(r_specs.keys()), 1, 0.6) else "", 0)} for p, v in t_specs.items()]
                         for r in rows: r['Diff'] = f"{r['Target'] - r['Ref']:+.3f}"
                         df_sz = pd.DataFrame(rows); st.table(df_sz); audit_dfs.append(df_sz); sheet_names.append(sz)
@@ -220,10 +207,9 @@ if mode == "🔍 Audit Mode":
 elif mode == "🔄 Version Control":
     st.subheader("🔄 So sánh 2 file PDF mới")
     c1, c2 = st.columns(2)
-    f1 = c1.file_uploader("Bản cũ (A):", type="pdf", key="v1")
-    f2 = c2.file_uploader("Bản mới (B):", type="pdf", key="v2")
+    f1, f2 = c1.file_uploader("Bản cũ (A):", type="pdf", key="v1"), c2.file_uploader("Bản mới (B):", type="pdf", key="v2")
     if f1 and f2:
-        if st.button("⚡ Bắt đầu so sánh toàn diện", use_container_width=True):
+        if st.button("⚡ Bắt đầu so sánh", use_container_width=True):
             d1, d2 = extract_full_data(f1.getvalue(), f1.name), extract_full_data(f2.getvalue(), f2.name)
             if d1 and d2: st.session_state['ver_results'] = {"d1": d1, "d2": d2, "f1_name": f1.name, "f2_name": f2.name}
     if st.session_state.get('ver_results'):
