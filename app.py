@@ -104,27 +104,47 @@ with st.sidebar:
     st.divider()
     
     files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"s_{st.session_state['up_key']}")
-    if files and st.button("🚀 SYNCHRONIZE & REPAIR", use_container_width=True):
-        logs = []
-        for f in files:
-            try:
-                fb = f.getvalue(); data = extract_data(fb, scan_all=False) # Nạp kho chỉ 1 trang
-                if data:
-                    f_hash = hashlib.md5(fb).hexdigest()
-                    path = f"lib_{f_hash}.webp"
-                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
-                    supabase.table("ai_data").upsert({
-                        "id": f"{f.name}_{f_hash[:6]}", "file_name": f.name, "vector": get_vector(data['img']),
-                        "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
-                    }).execute()
-                    logs.append({"File": f.name, "Status": "✅ Success"})
-            except Exception as e: logs.append({"File": f.name, "Status": f"❌ {str(e)[:30]}"})
-        st.session_state['sync_results'] = logs
-        st.session_state['up_key'] += 1
-        st.rerun()
-    if st.session_state['sync_results']:
-        st.table(pd.DataFrame(st.session_state['sync_results']))
-        if st.button("Clear History"): st.session_state['sync_results'] = None; st.rerun()
+    # Tìm đến đoạn nạp dữ liệu trong Sidebar và thay bằng logic làm sạch này:
+
+if files and st.button("🚀 SYNCHRONIZE & REPAIR", use_container_width=True):
+    logs = []
+    for f in files:
+        try:
+            fb = f.getvalue()
+            data = extract_data(fb, scan_all=False)
+            
+            if data and data['img']:
+                # LÀM SẠCH ID: Loại bỏ ký tự đặc biệt (khoảng trắng, ngoặc đơn...)
+                clean_name = re.sub(r'[^a-zA-Z0-9]', '_', f.name)
+                f_hash = hashlib.md5(fb).hexdigest()
+                unique_id = f"{clean_name}_{f_hash[:6]}"
+                
+                # KIỂM TRA VECTOR: Đảm bảo vector hợp lệ trước khi gửi
+                vec = get_vector(data['img'])
+                if not vec or len(vec) == 0:
+                    raise ValueError("Không tạo được vector AI cho hình ảnh này")
+
+                path = f"lib_{f_hash}.webp"
+                supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
+                
+                # GỬI DỮ LIỆU
+                supabase.table("ai_data").upsert({
+                    "id": unique_id, 
+                    "file_name": f.name, 
+                    "vector": vec,
+                    "spec_json": data['all_specs'] if data['all_specs'] else {}, # Đảm bảo luôn là dict
+                    "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                }).execute()
+                
+                logs.append({"File": f.name, "Status": "✅ Success"})
+            else:
+                logs.append({"File": f.name, "Status": "❌ No Data Extracted"})
+        except Exception as e:
+            # Ghi lại lỗi chi tiết để kiểm tra
+            logs.append({"File": f.name, "Status": f"⚠️ Error: {str(e)}"})
+            
+    st.session_state['sync_results'] = logs
+    st.rerun() # Refresh để cập nhật số SKU ngay lập tức
 
 # ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
