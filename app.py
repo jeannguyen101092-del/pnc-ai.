@@ -69,7 +69,6 @@ def extract_data(file_content, scan_all=False):
         img_bytes = buf.getvalue(); doc.close()
 
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
-            # Audit/Sync: 1 trang | Version Control: Toàn bộ các trang
             pages_list = pdf.pages if scan_all else [pdf.pages[0]]
             for page in pages_list:
                 words = page.extract_words()
@@ -99,19 +98,15 @@ def to_excel(df):
         df.to_excel(writer, index=False, sheet_name='Comparison')
     return output.getvalue()
 
-# ================= 4. SIDEBAR (CẬP NHẬT SKU TỨC THÌ) =================
+# ================= 4. SIDEBAR (CẬP NHẬT SKU) =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     
-    # LẤY SKU TRỰC TIẾP - KHÔNG CACHING
-    def get_sku_count():
-        try:
-            return supabase.table("ai_data").select("id", count="exact").execute().count
-        except: return 0
-
-    sku_count = get_sku_count()
-    st.metric("Models in Repo", f"{sku_count} SKUs")
+    # Ép lấy số lượng mới nhất từ Database
+    res_sku = supabase.table("ai_data").select("id", count="exact").execute()
+    sku_count = res_sku.count if res_sku.count else 0
     
+    st.metric("Models in Repo", f"{sku_count} SKUs")
     used_mb = sku_count * 0.08
     st.write(f"💾 **Storage:** {used_mb:.1f}MB / 1024MB")
     st.progress(min(used_mb/1024, 1.0))
@@ -123,28 +118,28 @@ with st.sidebar:
         for f in files:
             try:
                 fb = f.getvalue()
-                data = extract_data(fb, scan_all=False) # Nạp kho 1 trang cho nhẹ
+                data = extract_data(fb, scan_all=False) # Nạp kho chỉ 1 trang
                 vec = get_vector(data['img']) if data else None
                 if data and vec:
                     f_hash = hashlib.md5(fb).hexdigest()
                     path = f"lib_{f_hash}.webp"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
                     
-                    # Làm sạch ID để tránh lỗi Syntax
+                    # LÀM SẠCH ID (Bắt buộc để nhảy số): Bỏ dấu ngoặc, khoảng trắng, tiếng Việt
                     clean_id = re.sub(r'[^a-zA-Z0-9]', '_', f.name)
-                    unique_id = f"{clean_id}_{f_hash[:6]}"
+                    unique_id = f"{clean_id[:30]}_{f_hash[:6]}"
                     
                     supabase.table("ai_data").upsert({
                         "id": unique_id, "file_name": f.name, "vector": vec,
                         "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                     }).execute()
-                    logs.append({"File": f.name, "Status": "✅ Success"})
+                    logs.append({"File": f.name, "Status": "✅ Thành công"})
             except Exception as e:
-                logs.append({"File": f.name, "Status": f"⚠️ Lỗi"})
+                logs.append({"File": f.name, "Status": "❌ Lỗi Syntax"})
         
         st.session_state['sync_results'] = logs
         st.session_state['up_key'] += 1
-        st.rerun() # Ép toàn bộ ứng dụng chạy lại để cập nhật SKU
+        st.rerun() # Refresh app để nhảy số SKU ngay lập tức
 
 # ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
@@ -155,7 +150,6 @@ if mode == "🔍 Audit Mode":
     if f_audit:
         target = extract_data(f_audit.getvalue(), scan_all=False)
         if target and target['img']:
-            # Lấy data so sánh từ kho
             all_db = [r for i in range(0, sku_count, 1000) for r in supabase.table("ai_data").select("id, vector, file_name").range(i, i+999).execute().data]
             if all_db:
                 df_db = pd.DataFrame(all_db)
@@ -177,16 +171,16 @@ if mode == "🔍 Audit Mode":
             if st.session_state['sel_audit']:
                 sel = st.session_state['sel_audit']
                 st.divider()
-                st.success(f"Comparing: {sel['file_name']}")
+                st.success(f"Comparing with: {sel['file_name']}")
                 for sz, t_specs in target['all_specs'].items():
                     with st.expander(f"SIZE: {sz}", expanded=True):
                         m_sz = get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4)
                         r_specs = sel['spec_json'].get(m_sz[0] if m_sz else "", {})
                         rows = [{"POM": p, "Target": v, "Ref": r_specs.get(get_close_matches(p, list(r_specs.keys()), 1, 0.6)[0] if get_close_matches(p, list(r_specs.keys()), 1, 0.6) else "", 0)} for p, v in t_specs.items()]
-                        st.table(pd.DataFrame(rows).style.format({"Ref": "{:.2f}", "Target": "{:.2f}"}))
+                        st.table(pd.DataFrame(rows).style.format("{:.2f}", subset=["Target", "Ref"]))
 
 elif mode == "🔄 Version Control":
-    st.subheader("🔄 So sánh trực tiếp 2 file (Toàn bộ trang)")
+    st.subheader("🔄 So sánh trực tiếp 2 file (Tất cả trang)")
     c1, c2 = st.columns(2)
     with c1: f_a = st.file_uploader("File A (Cũ):", type="pdf", key="fa")
     with c2: f_b = st.file_uploader("File B (Mới):", type="pdf", key="fb")
@@ -206,4 +200,4 @@ elif mode == "🔄 Version Control":
                             rows.append({"POM": p, "Old (A)": va, "New (B)": vb, "Diff": vb - va})
                             results.append({"Size": sz, "POM": p, "Old": va, "New": vb, "Diff": vb - va})
                         st.table(pd.DataFrame(rows).style.format({"Diff": "{:+.2f}"}))
-                st.download_button("📥 Xuất báo cáo Excel", to_excel(pd.DataFrame(results)), "result.xlsx")
+                st.download_button("📥 Tải báo cáo Excel", to_excel(pd.DataFrame(results)), "result.xlsx")
