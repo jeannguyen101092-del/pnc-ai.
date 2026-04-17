@@ -47,17 +47,20 @@ def parse_val(t):
     except: return 0
 
 # ================= 3. PPJ COORDINATE SCRAPER =================
+# ================= 3. PPJ COORDINATE SCRAPER (CẬP NHẬT: QUÉT TẤT CẢ TRANG) =================
 def extract_data(file_content):
     if not file_content: return None
     all_specs, img_bytes = {}, None
     POM_KWS = ["WAIST", "HIP", "THIGH", "KNEE", "LEG", "INSEAM", "RISE", "LENGTH", "CHEST", "SHOULDER", "POM", "SPEC"]
     try:
         doc = fitz.open(stream=file_content, filetype="pdf")
+        # Vẫn lấy ảnh trang đầu làm đại diện hiển thị
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
         buf = io.BytesIO(); Image.open(io.BytesIO(pix.tobytes("png"))).save(buf, format="WEBP", quality=70)
         img_bytes = buf.getvalue(); doc.close()
 
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
+            # THAY ĐỔI: Vòng lặp quét qua TOÀN BỘ các trang trong file PDF
             for page in pdf.pages:
                 words = page.extract_words()
                 if not words: continue
@@ -75,6 +78,53 @@ def extract_data(file_content):
                                 all_specs[s_key][pom_name] = val
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
+
+# ================= 5. MAIN UI (CẬP NHẬT PHẦN VERSION CONTROL) =================
+# ... (Phần Audit Mode giữ nguyên) ...
+
+if mode == "🔄 Version Control":
+    st.subheader("🔄 Compare Version A (New Upload) vs Version B (New Upload)")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # THAY ĐỔI: Chỗ này trước đây là selectbox lấy từ Repo, giờ đổi thành file_uploader
+        file_a = st.file_uploader("Upload Version A (Old/Reference):", type="pdf", key="up_a")
+        data_a = None
+        if file_a:
+            data_a = extract_data(file_a.getvalue())
+            if data_a: st.image(data_a['img'], caption="VERSION A", use_container_width=True)
+
+    with col2:
+        file_b = st.file_uploader("Upload Version B (New/Target):", type="pdf", key="up_b")
+        data_b = None
+        if file_b:
+            data_b = extract_data(file_b.getvalue())
+            if data_b: st.image(data_b['img'], caption="VERSION B", use_container_width=True)
+
+    if data_a and data_b:
+        if st.button("RUN COMPARISON", use_container_width=True):
+            st.divider()
+            final_report = []
+            # So sánh dữ liệu dựa trên các Size quét được từ cả 2 file
+            for sz, specs_b in data_b['all_specs'].items():
+                with st.expander(f"SIZE: {sz}", expanded=True):
+                    specs_a = data_a['all_specs'].get(sz, {})
+                    rows = []
+                    for p, vb in specs_b.items():
+                        # Tìm POM tương ứng ở file A
+                        m_p = get_close_matches(p, list(specs_a.keys()), 1, 0.6)
+                        va = specs_a.get(m_p[0], 0) if m_p else 0
+                        diff = vb - va
+                        rows.append({"POM": p, "Ver A": va, "Ver B": vb, "Diff": diff})
+                        final_report.append({"Size": sz, "POM": p, "Ver A": va, "Ver B": vb, "Diff": diff})
+                    
+                    df_res = pd.DataFrame(rows)
+                    if not df_res.empty:
+                        st.table(df_res.style.format({"Diff": "{:+.2f}"}))
+            
+            # Nút tải báo cáo Excel cho kết quả vừa so sánh
+            st.download_button("Download Comparison", to_excel(pd.DataFrame(final_report)), "audit_report.xlsx")
+
 
 def to_excel(df):
     output = io.BytesIO()
