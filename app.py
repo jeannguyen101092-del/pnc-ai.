@@ -96,35 +96,68 @@ def to_excel(df):
     return output.getvalue()
 
 # ================= 4. SIDEBAR =================
+# ================= 4. SIDEBAR (SỬA LỖI API ERROR) =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
-    res_count = supabase.table("ai_data").select("id", count="exact").execute()
-    count = res_count.count or 0
+    
+    # Kiểm tra kết nối Database an toàn
+    try:
+        res_count = supabase.table("ai_data").select("id", count="exact").execute()
+        count = res_count.count or 0
+    except:
+        count = 0
+        st.error("Không thể kết nối Supabase. Vui lòng kiểm tra KEY/URL.")
+
     st.metric("Models in Repo", f"{count} SKUs")
     st.divider()
     
     new_files = st.file_uploader("Upload Tech-Packs to Sync", accept_multiple_files=True, key=f"sync_{st.session_state['up_key']}")
+    
     if new_files and st.button("🚀 SYNCHRONIZE & REPAIR", use_container_width=True):
         logs = []
-        with st.spinner("AI is storing data..."):
+        with st.spinner("AI đang xử lý và nạp dữ liệu..."):
             for f in new_files:
-                fb = f.getvalue()
-                # Nạp kho: scan_all=False để giảm tải
-                data = extract_data(fb, scan_all=False)
-                if data and data['img']:
-                    path = f"lib_{hashlib.md5(fb).hexdigest()}.webp"
-                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
-                    # Dùng ID duy nhất để tránh lỗi API Primary Key
-                    unique_id = f"{f.name}_{int(time.time())}"
-                    supabase.table("ai_data").upsert({
-                        "id": unique_id, "file_name": f.name, "vector": get_vector(data['img']),
-                        "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
-                    }).execute()
-                    logs.append({"File": f.name, "Status": "Success"})
-                else: logs.append({"File": f.name, "Status": "Failed"})
+                try:
+                    fb = f.getvalue()
+                    # Nạp vào kho: CHỈ quét trang đầu (scan_all=False) để tránh quá tải API
+                    data = extract_data(fb, scan_all=False)
+                    
+                    if data and data['img']:
+                        # 1. Tạo path ảnh duy nhất
+                        file_hash = hashlib.md5(fb).hexdigest()
+                        path = f"lib_{file_hash}.webp"
+                        
+                        # 2. Upload ảnh lên Storage
+                        supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
+                        
+                        # 3. Tạo ID duy nhất bằng cách kết hợp tên file và hash (Tránh lỗi API ID trùng)
+                        unique_id = f"{f.name}_{file_hash[:8]}"
+                        
+                        # 4. Upsert vào Table
+                        supabase.table("ai_data").upsert({
+                            "id": unique_id, 
+                            "file_name": f.name, 
+                            "vector": get_vector(data['img']),
+                            "spec_json": data['all_specs'], 
+                            "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                        }).execute()
+                        
+                        logs.append({"File": f.name, "Status": "✅ Success"})
+                    else:
+                        logs.append({"File": f.name, "Status": "❌ Failed (No Data)"})
+                except Exception as e:
+                    logs.append({"File": f.name, "Status": f"⚠️ Error: {str(e)[:50]}"})
+        
         st.session_state['sync_results'] = logs
         st.session_state['up_key'] += 1
         st.rerun()
+
+    if st.session_state['sync_results']:
+        st.table(pd.DataFrame(st.session_state['sync_results']))
+        if st.button("Clear History"): 
+            st.session_state['sync_results'] = None
+            st.rerun()
+
 
 # ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
