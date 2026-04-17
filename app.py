@@ -20,7 +20,7 @@ if 'sel_audit' not in st.session_state: st.session_state['sel_audit'] = None
 if 'sync_results' not in st.session_state: st.session_state['sync_results'] = None
 if 'up_key' not in st.session_state: st.session_state['up_key'] = 0
 
-# ================= 2. AI CORE =================
+# ================= 2. AI CORE & HELPER =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -31,13 +31,8 @@ def get_vector(img_bytes):
     if not img_bytes: return None
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-        tf = transforms.Compose([
-            transforms.Resize((224,224)), 
-            transforms.ToTensor(), 
-            transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
-        ])
-        with torch.no_grad(): 
-            return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
+        tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor(), transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
+        with torch.no_grad(): return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
     except: return None
 
 def parse_val(t):
@@ -49,12 +44,16 @@ def parse_val(t):
         if mixed: return float(mixed.group(1)) + int(mixed.group(2))/int(mixed.group(3))
         frac = re.match(r'(\d+)/(\d+)', t)
         if frac: return int(frac.group(1))/int(frac.group(2))
-        
         num = re.findall(r"[-+]?\d*\.\d+|\d+", t)
-        if num:
-            return float(num[0]) # Sửa lỗi lấy phần tử đầu tiên
-        return 0
+        return float(num[0]) if num else 0
     except: return 0
+
+def to_excel(df_list, sheet_names):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        for df, name in zip(df_list, sheet_names):
+            df.to_excel(writer, index=False, sheet_name=name[:31])
+    return output.getvalue()
 
 # ================= 3. SCRAPER =================
 def extract_data(file_content):
@@ -65,11 +64,7 @@ def extract_data(file_content):
         doc = fitz.open(stream=file_content, filetype="pdf")
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
         img_pil = Image.open(io.BytesIO(pix.tobytes("png")))
-        buf = io.BytesIO()
-        img_pil.save(buf, format="WEBP", quality=70)
-        img_bytes = buf.getvalue()
-        doc.close()
-
+        buf = io.BytesIO(); img_pil.save(buf, format="WEBP", quality=70); img_bytes = buf.getvalue(); doc.close()
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
                 words = page.extract_words()
@@ -87,10 +82,9 @@ def extract_data(file_content):
                                 if s_key not in all_specs: all_specs[s_key] = {}
                                 all_specs[s_key][pom_name] = val
         return {"all_specs": all_specs, "img": img_bytes}
-    except Exception as e:
-        return None
+    except: return None
 
-# ================= 4. SIDEBAR (CHỨA PHẦN FIX LỖI UUID) =================
+# ================= 4. SIDEBAR (SYNC) =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     try:
@@ -99,39 +93,23 @@ with st.sidebar:
     except: count = 0
     st.metric("Models in Repo", f"{count} SKUs")
     st.divider()
-    
     new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"sync_{st.session_state['up_key']}")
     if new_files and st.button("🚀 SYNCHRONIZE", use_container_width=True):
         logs = []
-        with st.spinner("AI is processing..."):
-            for f in new_files:
-                try:
-                    fb = f.getvalue()
-                    data = extract_data(fb)
-                    if data and data['img']:
-                        # FIX LỖI UUID: Tạo ID từ hash của tên file để đúng định dạng UUID
-                        file_hash = hashlib.md5(f.name.encode()).hexdigest()
-                        valid_uuid = str(uuid.UUID(file_hash))
-                        
-                        path = f"lib_{file_hash}.webp"
-                        supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
-                        img_url = supabase.storage.from_(BUCKET).get_public_url(path)
-                        
-                        supabase.table("ai_data").upsert({
-                            "id": valid_uuid, # Gửi mã UUID thay vì tên file trực tiếp
-                            "file_name": f.name, 
-                            "vector": get_vector(data['img']),
-                            "spec_json": data['all_specs'], 
-                            "image_url": img_url
-                        }).execute()
-                        logs.append({"File": f.name, "Status": "Success"})
-                    else: logs.append({"File": f.name, "Status": "Failed (No Data)"})
-                except Exception as e:
-                    logs.append({"File": f.name, "Status": f"Error: {str(e)}"})
+        for f in new_files:
+            try:
+                fb = f.getvalue(); data = extract_data(fb)
+                if data and data['img']:
+                    file_hash = hashlib.md5(f.name.encode()).hexdigest()
+                    valid_uuid = str(uuid.UUID(file_hash))
+                    path = f"lib_{file_hash}.webp"
+                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
+                    supabase.table("ai_data").upsert({"id": valid_uuid, "file_name": f.name, "vector": get_vector(data['img']), "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)}).execute()
+                    logs.append({"File": f.name, "Status": "Success"})
+                else: logs.append({"File": f.name, "Status": "Failed"})
+            except Exception as e: logs.append({"File": f.name, "Status": str(e)})
         st.session_state['sync_results'] = logs
-        st.session_state['up_key'] += 1
-        st.rerun()
-
+        st.session_state['up_key'] += 1; st.rerun()
     if st.session_state['sync_results']:
         st.table(pd.DataFrame(st.session_state['sync_results']))
         if st.button("Clear Report"): st.session_state['sync_results'] = None; st.rerun()
@@ -149,10 +127,8 @@ if mode == "🔍 Audit Mode":
             if all_db:
                 df_db = pd.DataFrame(all_db)
                 t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
-                db_vecs = np.array([v for v in df_db['vector']])
-                df_db['sim'] = cosine_similarity(t_vec, db_vecs).flatten()
+                df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
                 top_3 = df_db.sort_values('sim', ascending=False).head(3)
-
                 st.subheader("🎯 AI Matches")
                 cols = st.columns(4)
                 cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
@@ -163,11 +139,11 @@ if mode == "🔍 Audit Mode":
                             st.image(det[0]['image_url'], caption=f"Match: {row['sim']:.1%}")
                             if st.button(f"SELECT {i+1}", key=f"s_{idx}", use_container_width=True):
                                 st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
-
                 sel = st.session_state['sel_audit']
                 if sel:
                     st.divider()
-                    st.success(f"📈 Comparing with: **{sel['file_name']}**")
+                    st.success(f"📈 Comparing: **{sel['file_name']}**")
+                    all_dfs, sheet_names = [], []
                     for sz, t_specs in target['all_specs'].items():
                         with st.expander(f"SIZE: {sz}", expanded=True):
                             m_sz = get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4)
@@ -177,4 +153,37 @@ if mode == "🔍 Audit Mode":
                                 m_p = get_close_matches(p, list(r_specs.keys()), 1, 0.6)
                                 rv = r_specs.get(m_p[0], 0) if m_p else 0
                                 rows.append({"Point": p, "Target": v, "Ref": rv, "Diff": f"{v-rv:+.3f}"})
-                            st.table(pd.DataFrame(rows))
+                            df_sz = pd.DataFrame(rows)
+                            st.table(df_sz); all_dfs.append(df_sz); sheet_names.append(sz)
+                    st.download_button("📥 Download Excel Report", to_excel(all_dfs, sheet_names), f"Audit_{sel['file_name']}.xlsx")
+
+elif mode == "🔄 Version Control":
+    st.subheader("🔄 Compare Two New Versions")
+    c_up1, c_up2 = st.columns(2)
+    f1 = c_up1.file_uploader("Upload Version A (Old):", type="pdf", key="va")
+    f2 = c_up2.file_uploader("Upload Version B (New):", type="pdf", key="vb")
+    if f1 and f2:
+        if st.button("⚡ Start Visual & Spec Comparison", use_container_width=True):
+            d1, d2 = extract_data(f1.getvalue()), extract_data(f2.getvalue())
+            if d1 and d2:
+                st.divider(); im1, im2 = st.columns(2)
+                im1.image(d1['img'], caption=f"Ver A: {f1.name}", use_container_width=True)
+                im2.image(d2['img'], caption=f"Ver B: {f2.name}", use_container_width=True)
+                st.divider(); st.markdown("### 📊 Full Spec Comparison")
+                all_sz = sorted(list(set(d1['all_specs'].keys()) | set(d2['all_specs'].keys())))
+                all_dfs, sheet_names = [], []
+                for sz in all_sz:
+                    with st.expander(f"SIZE: {sz}", expanded=True):
+                        s1, s2 = d1['all_specs'].get(sz, {}), d2['all_specs'].get(sz, {})
+                        all_p = sorted(list(set(s1.keys()) | set(s2.keys())))
+                        res = []
+                        for p in all_p:
+                            v1, v2 = s1.get(p, 0), s2.get(p, 0)
+                            diff = v2 - v1
+                            stt = "✅" if diff == 0 else "⚠️"
+                            if v1 == 0: stt = "🆕"
+                            if v2 == 0: stt = "❌"
+                            res.append({"Point": p, "Ver A": v1, "Ver B": v2, "Diff": f"{diff:+.3f}", "Status": stt})
+                        df_sz = pd.DataFrame(res)
+                        st.table(df_sz); all_dfs.append(df_sz); sheet_names.append(sz)
+                st.download_button("📥 Download Excel Comparison", to_excel(all_dfs, sheet_names), "Comparison_Report.xlsx")
