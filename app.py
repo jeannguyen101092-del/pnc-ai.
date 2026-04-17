@@ -10,6 +10,7 @@ from difflib import get_close_matches
 # ================= 1. CONFIGURATION =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
+
 supabase = create_client(URL, KEY)
 BUCKET = "fashion-imgs"
 
@@ -19,10 +20,9 @@ if 'sel_audit' not in st.session_state: st.session_state['sel_audit'] = None
 if 'sync_results' not in st.session_state: st.session_state['sync_results'] = None
 if 'up_key' not in st.session_state: st.session_state['up_key'] = 0
 
-# ================= 2. AI CORE (IMPROVED & STABLE) =================
+# ================= 2. AI CORE (OPTIMIZED) =================
 @st.cache_resource
 def load_model():
-    # Sử dụng ResNet18 để đảm bảo tốc độ và tương thích 512 chiều
     base_model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     model = torch.nn.Sequential(*(list(base_model.children())[:-1]))
     model.eval()
@@ -33,7 +33,6 @@ model_ai = load_model()
 def get_vector(img_bytes):
     if not img_bytes: return None
     try:
-        # Xử lý ảnh: Chuyển về RGB và Resize chuẩn
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
         tf = transforms.Compose([
             transforms.Resize((224, 224)),
@@ -42,9 +41,8 @@ def get_vector(img_bytes):
         ])
         with torch.no_grad():
             vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
-            # CHUẨN HÓA VECTOR: Giúp so sánh dáng Sketch chính xác hơn rất nhiều
             norm = np.linalg.norm(vec)
-            if norm > 0: vec = vec / norm
+            if norm > 0: vec = vec / norm # Chuẩn hóa để so sánh chính xác hơn
             return vec.astype(float).tolist()
     except: return None
 
@@ -139,22 +137,31 @@ if mode == "🔍 Audit Mode":
     if file_audit:
         target = extract_data(file_audit.getvalue())
         if target and target['img']:
-            res = supabase.table("ai_data").select("id, vector, file_name").execute()
-            all_db = res.data
+            all_db = supabase.table("ai_data").select("id, vector, file_name").execute().data
             if all_db:
-                # 1. Tạo Vector cho file target
                 t_vec_raw = get_vector(target['img'])
                 t_vec = np.array(t_vec_raw).reshape(1, -1)
                 
-                # 2. Lọc bỏ dữ liệu lỗi kích thước (Tránh lỗi ValueError)
-                valid_data = [r for r in all_db if r['vector'] and len(r['vector']) == len(t_vec_raw)]
+                # --- PHÂN LOẠI THÔNG MINH ---
+                bottom_kws = ["PANT", "SHORT", "JEAN", "TROUSER", "LEG", "BOTTOM"]
+                is_bottom = any(kw in file_audit.name.upper() for kw in bottom_kws)
                 
+                # Lọc dữ liệu tương thích và cộng điểm ưu tiên theo loại
+                valid_data = []
+                for r in all_db:
+                    if r['vector'] and len(r['vector']) == len(t_vec_raw):
+                        score_bonus = 0
+                        # Nếu cùng là Quần hoặc cùng là Áo thì ưu tiên
+                        r_is_bottom = any(kw in r['file_name'].upper() for kw in bottom_kws)
+                        if is_bottom == r_is_bottom: score_bonus = 0.25 # Cộng 25% điểm ưu tiên
+                        r['bonus'] = score_bonus
+                        valid_data.append(r)
+
                 if valid_data:
                     df_db = pd.DataFrame(valid_data)
                     db_vecs = np.array([v for v in df_db['vector']])
-                    
-                    # 3. So sánh tương đồng
-                    df_db['sim'] = cosine_similarity(t_vec, db_vecs).flatten()
+                    raw_sims = cosine_similarity(t_vec, db_vecs).flatten()
+                    df_db['sim'] = raw_sims + df_db['bonus']
                     top_3 = df_db.sort_values('sim', ascending=False).head(3)
                     
                     st.subheader("🎯 AI Matches")
@@ -164,12 +171,10 @@ if mode == "🔍 Audit Mode":
                         det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
                         if det:
                             with cols[i+1]:
-                                st.image(det[0]['image_url'], caption=f"Match: {row['sim']:.1%}")
+                                st.image(det[0]['image_url'], caption=f"Match: {min(row['sim'], 1.0):.1%}")
                                 if st.button(f"SELECT {i+1}", key=f"s_{idx}", use_container_width=True):
                                     st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
-                else:
-                    st.warning("Kho dữ liệu hiện tại không tương thích với Model AI mới. Vui lòng nhấn SYNCHRONIZE lại.")
-
+                
                 sel = st.session_state['sel_audit']
                 if sel:
                     st.divider(); st.success(f"📈 Comparing: **{sel['file_name']}**")
