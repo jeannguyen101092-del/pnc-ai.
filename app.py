@@ -27,7 +27,6 @@ def load_model():
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_model()
 
-# ================= 2. AI CORE (SỬA LỖI SYNTAX) =================
 def get_vector(img_bytes):
     if not img_bytes: return None
     try:
@@ -39,76 +38,21 @@ def get_vector(img_bytes):
         ])
         with torch.no_grad():
             vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
-            # Đảm bảo vector không chứa giá trị NaN hoặc Null
-            return [float(x) for x in vec] 
+            return [float(x) for x in vec] # Đảm bảo đúng định dạng double cho Database
     except: return None
-
-# ================= 4. SIDEBAR (LÀM SẠCH ID VÀ DỮ LIỆU) =================
-with st.sidebar:
-    st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
-    try:
-        res = supabase.table("ai_data").select("id", count="exact").execute()
-        count = res.count or 0
-    except: count = 0
-    st.metric("Models in Repo", f"{count} SKUs")
-    st.divider()
-    
-    files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"s_{st.session_state['up_key']}")
-    if files and st.button("🚀 SYNCHRONIZE & REPAIR", use_container_width=True):
-        logs = []
-        for f in files:
-            try:
-                fb = f.getvalue()
-                # Nạp kho: CHỈ quét trang 1 để tránh quá tải payload JSON
-                data = extract_data(fb, scan_all=False) 
-                
-                vec = get_vector(data['img']) if data else None
-                
-                if data and vec:
-                    f_hash = hashlib.md5(fb).hexdigest()
-                    path = f"lib_{f_hash}.webp"
-                    
-                    # Làm sạch tên file để làm ID (Bỏ dấu ngoặc, khoảng trắng)
-                    clean_id = re.sub(r'[^a-zA-Z0-9]', '_', f.name)
-                    unique_id = f"{clean_id}_{f_hash[:6]}"
-                    
-                    # Tải ảnh lên Storage
-                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
-                    
-                    # Đẩy dữ liệu vào Table (Dùng dict trống nếu specs lỗi)
-                    specs = data['all_specs'] if isinstance(data['all_specs'], dict) else {}
-                    
-                    supabase.table("ai_data").upsert({
-                        "id": unique_id, 
-                        "file_name": f.name, 
-                        "vector": vec,
-                        "spec_json": specs, 
-                        "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
-                    }).execute()
-                    
-                    logs.append({"File": f.name, "Status": "✅ Success"})
-                else:
-                    logs.append({"File": f.name, "Status": "❌ Error: Invalid AI Vector"})
-            except Exception as e:
-                logs.append({"File": f.name, "Status": f"❌ {str(e)[:40]}"})
-        
-        st.session_state['sync_results'] = logs
-        st.session_state['up_key'] += 1
-        st.rerun() # Buộc app load lại để nhảy số SKU ngay lập tức
-
 
 def parse_val(t):
     try:
         t = str(t).replace('"', '').strip().lower()
         if not t or any(x in t for x in ["wash", "color", "label", "style", "page"]): return 0
         t = t.replace(',', '.')
-        # 1. Xử lý số hỗn hợp (Ví dụ: 16 1/4 hoặc 16-1/4)
+        # Xử lý số hỗn hợp (16 1/4)
         mixed = re.match(r'(\d+)[-\s]+(\d+)/(\d+)', t)
         if mixed: return float(mixed.group(1)) + int(mixed.group(2)) / int(mixed.group(3))
-        # 2. Xử lý phân số đứng một mình (1/2)
+        # Xử lý phân số (1/2)
         frac = re.match(r'(\d+)/(\d+)', t)
         if frac: return int(frac.group(1)) / int(frac.group(2))
-        # 3. Số thực/nguyên bình thường
+        # Số thực/nguyên
         num = re.findall(r"[-+]?\d*\.\d+|\d+", t)
         if num:
             val = float(num[0])
@@ -116,7 +60,7 @@ def parse_val(t):
         return 0
     except: return 0
 
-# ================= 3. PPJ SCRAPER (QUY TẮC QUÉT THÔNG MINH) =================
+# ================= 3. SCRAPER (THÔNG MINH) =================
 def extract_data(file_content, scan_all=False):
     if not file_content: return None
     all_specs, img_bytes = {}, None
@@ -128,7 +72,7 @@ def extract_data(file_content, scan_all=False):
         img_bytes = buf.getvalue(); doc.close()
 
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
-            # QUY TẮC: Nạp kho chỉ quét trang 1 để nhẹ DB, Version Control quét hết
+            # Audit/Nạp kho: Chỉ quét trang 1 | Version Control: Quét toàn bộ
             pages_to_scan = pdf.pages if scan_all else [pdf.pages[0]]
             
             for page in pages_to_scan:
@@ -139,23 +83,19 @@ def extract_data(file_content, scan_all=False):
                 page_width = page.width
 
                 for y, group in df_w.groupby('y_grid'):
-                    sorted_group = group.sort_values('x0')
-                    line_txt = " ".join(sorted_group['text'])
-                    
+                    sorted_g = group.sort_values('x0')
+                    line_txt = " ".join(sorted_g['text'])
                     if any(kw in line_txt.upper() for kw in POM_KWS):
-                        # Phân vùng tọa độ: POM bên trái, Thông số bên phải (>55% trang)
-                        numeric_part = sorted_group[sorted_group['x0'] > (page_width * 0.55)]
-                        text_part = sorted_group[sorted_group['x0'] <= (page_width * 0.55)]
-                        
-                        pom_name = " ".join(text_part['text']).strip()
-                        pom_name = re.sub(r'^[A-Z0-9-]+\s+', '', pom_name) # Bỏ mã POM
+                        numeric_part = sorted_g[sorted_g['x0'] > (page_width * 0.55)]
+                        text_part = sorted_g[sorted_g['x0'] <= (page_width * 0.55)]
+                        pom_name = re.sub(r'^[A-Z0-9-]+\s+', '', " ".join(text_part['text']).strip())
                         
                         if len(pom_name) > 3:
                             vals = [parse_val(t) for t in numeric_part['text'] if parse_val(t) > 0]
-                            for i, val in enumerate(vals):
+                            for i, v in enumerate(vals):
                                 s_key = f"Size_{i+1}"
                                 if s_key not in all_specs: all_specs[s_key] = {}
-                                all_specs[s_key][pom_name] = val
+                                all_specs[s_key][pom_name] = v
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
@@ -165,12 +105,12 @@ def to_excel(df):
         df.to_excel(writer, index=False, sheet_name='Comparison')
     return output.getvalue()
 
-# ================= 4. SIDEBAR (SYNCHRONIZE) =================
+# ================= 4. SIDEBAR (LÀM SẠCH & ĐỒNG BỘ) =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     try:
-        res_count = supabase.table("ai_data").select("id", count="exact").execute()
-        count = res_count.count or 0
+        res = supabase.table("ai_data").select("id", count="exact").execute()
+        count = res.count or 0
     except: count = 0
     st.metric("Models in Repo", f"{count} SKUs")
     st.divider()
@@ -178,28 +118,29 @@ with st.sidebar:
     new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"sync_{st.session_state['up_key']}")
     if new_files and st.button("🚀 SYNCHRONIZE & REPAIR", use_container_width=True):
         logs = []
-        with st.spinner("AI is storing data..."):
-            for f in new_files:
-                try:
-                    fb = f.getvalue()
-                    data = extract_data(fb, scan_all=False) # Nạp vào kho chỉ 1 trang
-                    if data and data['img']:
-                        f_hash = hashlib.md5(fb).hexdigest()
-                        path = f"lib_{f_hash}.webp"
-                        supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
-                        
-                        # Làm sạch ID để tránh lỗi Invalid Syntax (bỏ ký tự lạ)
-                        clean_id = re.sub(r'[^a-zA-Z0-9]', '_', f.name)
-                        unique_id = f"{clean_id}_{f_hash[:6]}"
-                        
-                        supabase.table("ai_data").upsert({
-                            "id": unique_id, "file_name": f.name, "vector": get_vector(data['img']),
-                            "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
-                        }).execute()
-                        logs.append({"File": f.name, "Status": "✅ Success"})
-                    else: logs.append({"File": f.name, "Status": "❌ No Data"})
-                except Exception as e:
-                    logs.append({"File": f.name, "Status": f"⚠️ Error: {str(e)[:40]}"})
+        for f in new_files:
+            try:
+                fb = f.getvalue()
+                data = extract_data(fb, scan_all=False) # Nạp kho chỉ 1 trang
+                vec = get_vector(data['img']) if data else None
+                
+                if data and vec:
+                    f_hash = hashlib.md5(fb).hexdigest()
+                    path = f"lib_{f_hash}.webp"
+                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
+                    
+                    # Làm sạch ID tránh lỗi syntax (bỏ dấu ngoặc, khoảng trắng)
+                    clean_id = re.sub(r'[^a-zA-Z0-9]', '_', f.name)
+                    unique_id = f"{clean_id}_{f_hash[:6]}"
+                    
+                    supabase.table("ai_data").upsert({
+                        "id": unique_id, "file_name": f.name, "vector": vec,
+                        "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                    }).execute()
+                    logs.append({"File": f.name, "Status": "✅ Success"})
+                else: logs.append({"File": f.name, "Status": "❌ Failed"})
+            except Exception as e:
+                logs.append({"File": f.name, "Status": f"⚠️ {str(e)[:40]}"})
         st.session_state['sync_results'] = logs
         st.session_state['up_key'] += 1
         st.rerun()
@@ -213,9 +154,9 @@ st.title("👔 AI SMART AUDITOR PRO")
 mode = st.radio("Chế độ:", ["🔍 Audit Mode", "🔄 Version Control"], horizontal=True)
 
 if mode == "🔍 Audit Mode":
-    file_audit = st.file_uploader("Upload Target PDF:", type="pdf")
-    if file_audit:
-        target = extract_data(file_audit.getvalue(), scan_all=False)
+    f_audit = st.file_uploader("Upload Target PDF:", type="pdf")
+    if f_audit:
+        target = extract_data(f_audit.getvalue(), scan_all=False)
         if target and target['img']:
             all_db = [r for i in range(0, count, 1000) for r in supabase.table("ai_data").select("id, vector, file_name").range(i, i+999).execute().data]
             df_db = pd.DataFrame(all_db)
@@ -223,7 +164,6 @@ if mode == "🔍 Audit Mode":
             df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
             top_3 = df_db.sort_values('sim', ascending=False).head(3)
 
-            st.subheader("🎯 AI Matches")
             cols = st.columns(4)
             cols[0].image(target['img'], caption="TARGET PDF")
             for i, (idx, row) in enumerate(top_3.iterrows()):
@@ -231,33 +171,27 @@ if mode == "🔍 Audit Mode":
                 if det:
                     with cols[i+1]:
                         st.image(det[0]['image_url'], caption=f"Match: {row['sim']:.1%}")
-                        if st.button(f"SELECT {i+1}", key=f"s_{row['id']}"):
+                        if st.button(f"SELECT {i+1}", key=row['id']):
                             st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
 
-            sel = st.session_state['sel_audit']
-            if sel:
-                st.divider()
-                st.success(f"Comparing with: {sel['file_name']}")
+            if st.session_state['sel_audit']:
+                sel = st.session_state['sel_audit']
+                st.success(f"Comparing: {sel['file_name']}")
                 for sz, t_specs in target['all_specs'].items():
-                    with st.expander(f"SIZE: {sz}", expanded=True):
+                    with st.expander(f"SIZE: {sz}"):
                         m_sz = get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4)
                         r_specs = sel['spec_json'].get(m_sz[0], {}) if m_sz else {}
-                        rows = []
-                        for p, v in t_specs.items():
-                            m_p = get_close_matches(p, list(r_specs.keys()), 1, 0.6)
-                            rv = r_specs.get(m_p[0], 0) if m_p else 0
-                            rows.append({"POM": p, "Target": v, "Ref": rv, "Diff": v - rv})
-                        st.table(pd.DataFrame(rows).style.format({"Diff": "{:+.2f}"}))
+                        rows = [{"POM": p, "Target": v, "Ref": r_specs.get(get_close_matches(p, list(r_specs.keys()), 1, 0.6)[0] if get_close_matches(p, list(r_specs.keys()), 1, 0.6) else "", 0)} for p, v in t_specs.items()]
+                        st.table(pd.DataFrame(rows))
 
 elif mode == "🔄 Version Control":
-    st.subheader("🔄 So sánh 2 file mới (Quét toàn bộ các trang)")
+    st.subheader("🔄 So sánh trực tiếp 2 file (Quét toàn bộ trang)")
     c1, c2 = st.columns(2)
-    with c1: f_a = st.file_uploader("Upload File A (Old):", type="pdf", key="fa")
-    with c2: f_b = st.file_uploader("Upload File B (New):", type="pdf", key="fb")
-
+    with c1: f_a = st.file_uploader("File A (Cũ):", type="pdf", key="fa")
+    with c2: f_b = st.file_uploader("File B (Mới):", type="pdf", key="fb")
     if f_a and f_b:
         if st.button("RUN COMPARISON (ALL PAGES)", use_container_width=True):
-            d_a = extract_data(f_a.getvalue(), scan_all=True) # So sánh mới: quét hết trang
+            d_a = extract_data(f_a.getvalue(), scan_all=True)
             d_b = extract_data(f_b.getvalue(), scan_all=True)
             if d_a and d_b:
                 report = []
@@ -271,4 +205,4 @@ elif mode == "🔄 Version Control":
                             rows.append({"POM": p, "Old (A)": va, "New (B)": vb, "Diff": vb - va})
                             report.append({"Size": sz, "POM": p, "Old": va, "New": vb, "Diff": vb - va})
                         st.table(pd.DataFrame(rows).style.format({"Diff": "{:+.2f}"}))
-                st.download_button("📥 Tải báo cáo Excel", to_excel(pd.DataFrame(report)), "compare_result.xlsx")
+                st.download_button("📥 Tải báo cáo Excel", to_excel(pd.DataFrame(report)), "result.xlsx")
