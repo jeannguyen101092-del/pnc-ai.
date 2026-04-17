@@ -9,7 +9,7 @@ from difflib import get_close_matches
 
 # ================= 1. CONFIGURATION =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
-
+KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 
 supabase = create_client(URL, KEY)
 BUCKET = "fashion-imgs"
