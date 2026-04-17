@@ -9,7 +9,7 @@ from difflib import get_close_matches
 
 # ================= 1. CONFIGURATION =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
-KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
+
 
 supabase = create_client(URL, KEY)
 BUCKET = "fashion-imgs"
@@ -17,6 +17,7 @@ BUCKET = "fashion-imgs"
 st.set_page_config(layout="wide", page_title="PPJ AI Auditor Pro", page_icon="👔")
 
 if 'sel_audit' not in st.session_state: st.session_state['sel_audit'] = None
+if 'ver_results' not in st.session_state: st.session_state['ver_results'] = None
 if 'up_key' not in st.session_state: st.session_state['up_key'] = 0
 
 # ================= 2. AI CORE (SIẾT CHẶT TÌM KIẾM) =================
@@ -30,10 +31,13 @@ def get_vector(img_bytes):
     if not img_bytes: return None
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-        # Cắt bỏ lề nhiễu, tập trung vào Sketch giữa trang (Quan trọng)
+        # Cắt bỏ lề nhiễu, tập trung vào Sketch giữa trang
         w, h = img.size
         img = img.crop((w*0.15, h*0.1, w*0.85, h*0.55)) 
-        
+        # Tăng tương phản để làm nổi nét phác thảo
+        img = ImageOps.grayscale(img)
+        img = ImageEnhance.Contrast(img).enhance(2.0).convert('RGB')
+
         tf = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
@@ -50,6 +54,10 @@ def parse_val(t):
         t = str(t).replace('"', '').strip().lower().replace(',', '.')
         if not t or any(x in t for x in ["wash", "color", "label", "page", "tol", "+", "-"]): return 0
         if re.match(r'^[a-z]\d+', t): return 0 
+        mixed = re.match(r'(\d+)\s+(\d+)/(\d+)', t)
+        if mixed: return float(mixed.group(1)) + int(mixed.group(2))/int(mixed.group(3))
+        frac = re.match(r'(\d+)/(\d+)', t)
+        if frac: return int(frac.group(1))/int(frac.group(2))
         num = re.findall(r"[-+]?\d*\.\d+|\d+", t)
         if num:
             val = float(num[0])
@@ -57,11 +65,19 @@ def parse_val(t):
         return 0
     except: return 0
 
-# ================= 3. SCRAPER =================
+def to_excel(df_list, sheet_names):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        for df, name in zip(df_list, sheet_names):
+            df.to_excel(writer, index=False, sheet_name=str(name)[:31])
+    return output.getvalue()
+
+# ================= 3. SCRAPER (FULL PAGE & NO TOL) =================
 def extract_full_data(file_content):
     if not file_content: return None
     all_specs, img_bytes = {}, None
     SIZE_PATTERN = r'^(xs|s|m|l|xl|xxl|\d+|[a-z]?\d+-\d+|[a-z]?\d+\.\d+)$'
+    
     try:
         doc = fitz.open(stream=file_content, filetype="pdf")
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
@@ -74,17 +90,23 @@ def extract_full_data(file_content):
                 if not words: continue
                 df_w = pd.DataFrame(words)
                 df_w['y_grid'] = df_w['top'].round(0)
+                
                 size_cols = []
                 for y, group in df_w.groupby('y_grid'):
                     line_txt = " ".join(group.sort_values('x0')['text']).lower()
                     if "size" in line_txt or "adopted" in line_txt:
                         for _, row in group.iterrows():
                             txt = row['text'].strip().lower()
-                            if re.match(SIZE_PATTERN, txt):
+                            if re.match(SIZE_PATTERN, txt) and txt not in ["tol", "um", "(+)", "(-)"]:
                                 size_cols.append({"sz": txt.upper(), "x0": row['x0']-5, "x1": row['x1']+5})
                         if size_cols: break
+
                 for y, group in df_w.groupby('y_grid'):
                     sorted_group = group.sort_values('x0')
+                    line_txt = " ".join(sorted_group['text']).upper()
+                    # Bỏ qua các dòng tiêu đề hoặc rác
+                    if any(x in line_txt for x in ["COVER", "IMAGE", "DATE", "CONSTRUCTION"]): continue
+                    
                     pom_name = re.sub(r'[\d./\s]+$', '', " ".join(sorted_group[sorted_group['x1'] < 350]['text'])).strip()
                     if len(pom_name) > 3:
                         for col in size_cols:
@@ -97,14 +119,26 @@ def extract_full_data(file_content):
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
-# ================= 4. SIDEBAR =================
+# ================= 4. SIDEBAR (DUNG LƯỢNG & TIẾN ĐỘ) =================
 with st.sidebar:
-    st.header("PPJ GROUP")
+    st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     res_count = supabase.table("ai_data").select("id", count="exact").execute()
-    st.metric("Models in Repo", f"{res_count.count or 0} SKUs")
+    count = res_count.count or 0
+    st.metric("Models in Repo", f"{count} SKUs")
+    
+    # Hiển thị dung lượng lưu trữ
+    storage_mb = count * 0.08
+    st.write(f"💾 **Storage:** {storage_mb:.1f}MB / 1024MB")
+    st.progress(min(storage_mb/1024, 1.0))
+    st.divider()
+    
     new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"sy_{st.session_state['up_key']}")
-    if new_files and st.button("🚀 SYNCHRONIZE"):
-        for f in new_files:
+    if new_files and st.button("🚀 SYNCHRONIZE", use_container_width=True):
+        # Thanh tiến độ nạp kho
+        prog_bar = st.progress(0)
+        prog_text = st.empty()
+        
+        for i, f in enumerate(new_files):
             data = extract_full_data(f.getvalue())
             if data and data['img']:
                 f_hash = hashlib.md5(f.name.encode()).hexdigest()
@@ -114,43 +148,125 @@ with st.sidebar:
                     "id": str(uuid.UUID(f_hash)), "file_name": f.name, "vector": get_vector(data['img']),
                     "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                 }).execute()
-        st.success("Done!"); st.session_state['up_key'] += 1; st.rerun()
+            
+            # Cập nhật thanh phần trăm
+            percent = (i + 1) / len(new_files)
+            prog_bar.progress(percent)
+            prog_text.markdown(f"**⚡ Đang xử lý:** {int(percent*100)}% ({i+1}/{len(new_files)} file)")
+        
+        st.success("✅ Đồng bộ hoàn tất!")
+        time.sleep(1)
+        st.session_state['up_key'] += 1
+        st.rerun()
 
-# ================= 5. MAIN UI (PHẦN TIỀM KIẾM THÔNG MINH) =================
+# ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
 mode = st.radio("Chế độ:", ["🔍 Audit Mode", "🔄 Version Control"], horizontal=True)
+
+# ... (Giữ nguyên toàn bộ phần trên của bạn)
 
 if mode == "🔍 Audit Mode":
     f_audit = st.file_uploader("Upload Target PDF:", type="pdf")
     if f_audit:
         target = extract_full_data(f_audit.getvalue())
         if target and target['img']:
+            # Phân loại để ưu tiên so khớp (Áo vs Quần)
+            target_name = f_audit.name.upper()
             res = supabase.table("ai_data").select("id, vector, file_name, image_url, spec_json").execute()
+            
             if res.data:
-                # Tính toán tương đồng
+                # 1. Lấy vector của ảnh cần kiểm tra
                 t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
-                db_vecs = np.array([r['vector'] for r in res.data])
-                sims = cosine_similarity(t_vec, db_vecs)[0]
                 
-                # Sắp xếp và hiển thị kết quả thông minh nhất (Top 3)
-                top_idx = np.argsort(sims)[::-1][:3]
+                # 2. Xử lý tìm kiếm tương đồng thông minh
+                records = []
+                for row in res.data:
+                    if row['vector']:
+                        db_vec = np.array(row['vector']).reshape(1, -1)
+                        # Tính toán độ tương đồng Cosine
+                        score = cosine_similarity(t_vec, db_vec)[0][0]
+                        records.append({**row, "score": score})
                 
-                col1, col2 = st.columns(2)
-                col1.image(target['img'], caption="Target Sketch")
-                with col2:
-                    st.write("### Top Similar Models:")
-                    for i in top_idx:
-                        m = res.data[i]
-                        score = sims[i]
-                        if score > 0.7: # Chỉ hiện nếu độ tương đồng > 70%
-                            with st.expander(f"{m['file_name']} (Khớp: {score:.1%})"):
-                                st.image(m['image_url'])
-                                if st.button("So sánh thông số", key=m['id']):
-                                    st.session_state['sel_audit'] = m
-            else: st.warning("Kho lưu trữ đang trống.")
+                # Sắp xếp kết quả theo độ khớp giảm dần
+                records = sorted(records, key=lambda x: x['score'], reverse=True)
 
+                # 3. Giao diện hiển thị so sánh
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("🎯 Bản vẽ cần kiểm tra")
+                    st.image(target['img'], use_container_width=True)
+                
+                with col2:
+                    st.subheader("📂 Kết quả AI tìm kiếm")
+                    if records and records[0]['score'] > 0.5: # Ngưỡng tối thiểu 50%
+                        for top in records[:3]: # Lấy top 3 mẫu giống nhất
+                            with st.expander(f"⭐ Độ khớp: {top['score']:.1%} - {top['file_name']}"):
+                                st.image(top['image_url'], use_container_width=True)
+                                if st.button(f"Chọn mẫu này để đối soát", key=top['id']):
+                                    st.session_state['sel_audit'] = top
+                    else:
+                        st.error("❌ Không tìm thấy mẫu nào tương đồng trong kho dữ liệu.")
+
+# ================= 6. CHI TIẾT ĐỐI SOÁT THÔNG SỐ (AUDIT DETAIL) =================
 if st.session_state['sel_audit']:
     st.divider()
     m = st.session_state['sel_audit']
-    st.write(f"### 📊 Audit: {f_audit.name} vs {m['file_name']}")
-    # Chỗ này bạn có thể thêm bảng so sánh Pandas dataframe như code cũ
+    st.header(f"📊 Báo cáo đối soát: {m['file_name']}")
+    
+    # Lấy thông số từ target và mẫu được chọn
+    db_spec = m['spec_json']
+    tg_spec = target['all_specs']
+    
+    # Tìm các size chung để so sánh
+    common_sizes = sorted(list(set(db_spec.keys()) & set(tg_spec.keys())))
+    
+    if common_sizes:
+        selected_sz = st.selectbox("Chọn Size để kiểm tra chi tiết:", common_sizes)
+        
+        # Tạo bảng so sánh
+        d1 = pd.DataFrame(db_spec[selected_sz].items(), columns=['POM', 'Standard'])
+        d2 = pd.DataFrame(tg_spec[selected_sz].items(), columns=['POM', 'Actual'])
+        
+        # Merge dữ liệu dựa trên tên POM (Điểm đo)
+        df_audit = pd.merge(d1, d2, on='POM', how='inner')
+        df_audit['Sai lệch'] = (df_audit['Actual'] - df_audit['Standard']).round(3)
+        
+        # Định dạng màu sắc: Sai lệch > 0.25 inch báo đỏ
+        def highlight_diff(s):
+            return ['background-color: #ffcccc' if abs(v) > 0.25 else 'background-color: #ccffcc' for v in s]
+
+        st.dataframe(df_audit.style.apply(highlight_diff, subset=['Sai lệch']), use_container_width=True)
+        
+        # Xuất file báo cáo
+        if st.button("📥 Xuất báo cáo Excel"):
+            xlsx = to_excel([df_audit], ["Audit_Result"])
+            st.download_button("Tải xuống Excel", xlsx, f"Audit_{m['file_name']}.xlsx")
+    else:
+        st.warning("⚠️ Hai tài liệu không có Size tương ứng để so sánh tự động.")
+
+
+elif mode == "🔄 Version Control":
+    st.subheader("🔄 So sánh 2 file PDF mới")
+    c1, c2 = st.columns(2)
+    f1, f2 = c1.file_uploader("Bản cũ (A):", type="pdf", key="v1"), c2.file_uploader("Bản mới (B):", type="pdf", key="v2")
+    if f1 and f2:
+        if st.button("⚡ Bắt đầu so sánh toàn diện", use_container_width=True):
+            with st.spinner("Đang quét toàn bộ dữ liệu..."):
+                d1, d2 = extract_full_data(f1.getvalue()), extract_full_data(f2.getvalue())
+                if d1 and d2:
+                    st.session_state['ver_results'] = {"d1": d1, "d2": d2, "f1_name": f1.name, "f2_name": f2.name}
+
+    if st.session_state.get('ver_results'):
+        vr = st.session_state['ver_results']
+        st.divider(); col_a, col_b = st.columns(2)
+        col_a.image(vr['d1']['img'], caption=f"Bản A", use_container_width=True)
+        col_b.image(vr['d2']['img'], caption=f"Bản B", use_container_width=True)
+        all_sz = sorted(list(set(vr['d1']['all_specs'].keys()) | set(vr['d2']['all_specs'].keys())), key=lambda x: str(x))
+        version_dfs, ver_sheets = [], []
+        for sz in all_sz:
+            with st.expander(f"SIZE: {sz}", expanded=True):
+                s1, s2 = vr['d1']['all_specs'].get(sz, {}), vr['d2']['all_specs'].get(sz, {})
+                poms = sorted(list(set(s1.keys()) | set(s2.keys())))
+                rows = [{"Point": p, "Ver A": s1.get(p,0), "Ver B": s2.get(p,0), "Diff": f"{s2.get(p,0)-s1.get(p,0):+.3f}", "Status": "✅" if s1.get(p,0)==s2.get(p,0) else "⚠️"} for p in poms]
+                df_sz = pd.DataFrame(rows); st.table(df_sz); version_dfs.append(df_sz); ver_sheets.append(sz)
+        st.download_button("📥 Xuất Excel So Sánh", to_excel(version_dfs, ver_sheets), "Comparison.xlsx")
