@@ -1,6 +1,6 @@
 import streamlit as st
 import io, fitz, pdfplumber, re, pandas as pd, numpy as np
-import torch, hashlib, time
+import torch, hashlib, time, uuid
 from PIL import Image
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
@@ -37,8 +37,7 @@ def get_vector(img_bytes):
             transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
         ])
         with torch.no_grad(): 
-            vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
-            return vec
+            return model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
     except: return None
 
 def parse_val(t):
@@ -53,28 +52,24 @@ def parse_val(t):
         
         num = re.findall(r"[-+]?\d*\.\d+|\d+", t)
         if num:
-            val = float(num[0]) # SỬA LỖI: Lấy phần tử đầu tiên của list
-            return val if val < 250 else 0
+            return float(num[0]) # Sửa lỗi lấy phần tử đầu tiên
         return 0
     except: return 0
 
-# ================= 3. PPJ COORDINATE SCRAPER =================
+# ================= 3. SCRAPER =================
 def extract_data(file_content):
     if not file_content: return None
     all_specs, img_bytes = {}, None
     POM_KWS = ["WAIST", "HIP", "THIGH", "KNEE", "LEG", "INSEAM", "RISE", "LENGTH", "CHEST", "SHOULDER", "POM", "SPEC"]
     try:
-        # Load PDF for Image
         doc = fitz.open(stream=file_content, filetype="pdf")
-        page = doc.load_page(0)
-        pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+        pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
         img_pil = Image.open(io.BytesIO(pix.tobytes("png")))
         buf = io.BytesIO()
         img_pil.save(buf, format="WEBP", quality=70)
         img_bytes = buf.getvalue()
         doc.close()
 
-        # Load PDF for Data
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
                 words = page.extract_words()
@@ -93,63 +88,53 @@ def extract_data(file_content):
                                 all_specs[s_key][pom_name] = val
         return {"all_specs": all_specs, "img": img_bytes}
     except Exception as e:
-        st.error(f"Lỗi phân tích PDF: {e}")
         return None
 
-# ================= 4. SIDEBAR (SYNC LOGIC) =================
+# ================= 4. SIDEBAR (CHỨA PHẦN FIX LỖI UUID) =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     try:
         res_count = supabase.table("ai_data").select("id", count="exact").execute()
         count = res_count.count or 0
     except: count = 0
-    
     st.metric("Models in Repo", f"{count} SKUs")
-    st.write(f"💾 **Storage:** {count*0.08:.1f}MB / 1024MB")
-    st.progress(min(count*0.08/1024, 1.0))
     st.divider()
     
     new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"sync_{st.session_state['up_key']}")
     if new_files and st.button("🚀 SYNCHRONIZE", use_container_width=True):
         logs = []
-        progress_bar = st.progress(0)
-        for idx, f in enumerate(new_files):
-            try:
-                fb = f.getvalue()
-                data = extract_data(fb)
-                if data and data['img']:
-                    path = f"lib_{hashlib.md5(fb).hexdigest()}.webp"
-                    # Upload Image
-                    supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
-                    img_url = supabase.storage.from_(BUCKET).get_public_url(path)
-                    
-                    # AI Vector
-                    vector = get_vector(data['img'])
-                    
-                    # Upsert Database
-                    supabase.table("ai_data").upsert({
-                        "id": f.name, 
-                        "file_name": f.name, 
-                        "vector": vector,
-                        "spec_json": data['all_specs'], 
-                        "image_url": img_url
-                    }).execute()
-                    logs.append({"File": f.name, "Status": "Success"})
-                else:
-                    logs.append({"File": f.name, "Status": "Failed (No Data)"})
-            except Exception as e:
-                logs.append({"File": f.name, "Status": f"Error: {str(e)}"})
-            progress_bar.progress((idx + 1) / len(new_files))
-            
+        with st.spinner("AI is processing..."):
+            for f in new_files:
+                try:
+                    fb = f.getvalue()
+                    data = extract_data(fb)
+                    if data and data['img']:
+                        # FIX LỖI UUID: Tạo ID từ hash của tên file để đúng định dạng UUID
+                        file_hash = hashlib.md5(f.name.encode()).hexdigest()
+                        valid_uuid = str(uuid.UUID(file_hash))
+                        
+                        path = f"lib_{file_hash}.webp"
+                        supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
+                        img_url = supabase.storage.from_(BUCKET).get_public_url(path)
+                        
+                        supabase.table("ai_data").upsert({
+                            "id": valid_uuid, # Gửi mã UUID thay vì tên file trực tiếp
+                            "file_name": f.name, 
+                            "vector": get_vector(data['img']),
+                            "spec_json": data['all_specs'], 
+                            "image_url": img_url
+                        }).execute()
+                        logs.append({"File": f.name, "Status": "Success"})
+                    else: logs.append({"File": f.name, "Status": "Failed (No Data)"})
+                except Exception as e:
+                    logs.append({"File": f.name, "Status": f"Error: {str(e)}"})
         st.session_state['sync_results'] = logs
         st.session_state['up_key'] += 1
         st.rerun()
 
     if st.session_state['sync_results']:
         st.table(pd.DataFrame(st.session_state['sync_results']))
-        if st.button("Clear Report"): 
-            st.session_state['sync_results'] = None
-            st.rerun()
+        if st.button("Clear Report"): st.session_state['sync_results'] = None; st.rerun()
 
 # ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
@@ -160,22 +145,17 @@ if mode == "🔍 Audit Mode":
     if file_audit:
         target = extract_data(file_audit.getvalue())
         if target and target['img']:
-            # Lấy data từ DB để so sánh
-            res = supabase.table("ai_data").select("id, vector, file_name").execute()
-            all_db = res.data
-            
+            all_db = supabase.table("ai_data").select("id, vector, file_name").execute().data
             if all_db:
                 df_db = pd.DataFrame(all_db)
                 t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
                 db_vecs = np.array([v for v in df_db['vector']])
-                
                 df_db['sim'] = cosine_similarity(t_vec, db_vecs).flatten()
                 top_3 = df_db.sort_values('sim', ascending=False).head(3)
 
                 st.subheader("🎯 AI Matches")
                 cols = st.columns(4)
                 cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
-                
                 for i, (idx, row) in enumerate(top_3.iterrows()):
                     det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
                     if det:
@@ -188,18 +168,13 @@ if mode == "🔍 Audit Mode":
                 if sel:
                     st.divider()
                     st.success(f"📈 Comparing with: **{sel['file_name']}**")
-                    
                     for sz, t_specs in target['all_specs'].items():
                         with st.expander(f"SIZE: {sz}", expanded=True):
                             m_sz = get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4)
                             r_specs = sel['spec_json'].get(m_sz[0], {}) if m_sz else {}
-                            
-                            res_list = []
+                            rows = []
                             for p, v in t_specs.items():
                                 m_p = get_close_matches(p, list(r_specs.keys()), 1, 0.6)
                                 rv = r_specs.get(m_p[0], 0) if m_p else 0
-                                diff = v - rv
-                                res_list.append({"Point": p, "Target": v, "Ref": rv, "Diff": f"{diff:+.3f}"})
-                            st.table(pd.DataFrame(res_list))
-            else:
-                st.warning("Kho dữ liệu trống. Vui lòng Sync dữ liệu ở Sidebar trước.")
+                                rows.append({"Point": p, "Target": v, "Ref": rv, "Diff": f"{v-rv:+.3f}"})
+                            st.table(pd.DataFrame(rows))
