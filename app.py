@@ -10,7 +10,6 @@ from difflib import get_close_matches
 # ================= 1. CONFIGURATION =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
-
 supabase = create_client(URL, KEY)
 BUCKET = "fashion-imgs"
 
@@ -20,22 +19,21 @@ if 'sel_audit' not in st.session_state: st.session_state['sel_audit'] = None
 if 'sync_results' not in st.session_state: st.session_state['sync_results'] = None
 if 'up_key' not in st.session_state: st.session_state['up_key'] = 0
 
-# ================= 2. AI CORE & HELPER =================
-# ================= 2. AI CORE (IMPROVED FOR SKETCH) =================
-# ================= 2. AI CORE (STABLE VERSION) =================
+# ================= 2. AI CORE (IMPROVED & STABLE) =================
 @st.cache_resource
 def load_model():
-    # Sử dụng ResNet18 để đồng bộ với dữ liệu cũ (512 chiều)
-    # Nếu muốn dùng ResNet50, bạn PHẢI nhấn Sync lại toàn bộ kho dữ liệu
+    # Sử dụng ResNet18 để đảm bảo tốc độ và tương thích 512 chiều
     base_model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     model = torch.nn.Sequential(*(list(base_model.children())[:-1]))
     model.eval()
     return model
+
 model_ai = load_model()
 
 def get_vector(img_bytes):
     if not img_bytes: return None
     try:
+        # Xử lý ảnh: Chuyển về RGB và Resize chuẩn
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
         tf = transforms.Compose([
             transforms.Resize((224, 224)),
@@ -44,32 +42,11 @@ def get_vector(img_bytes):
         ])
         with torch.no_grad():
             vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
-            # Chuẩn hóa để so sánh chính xác hơn
+            # CHUẨN HÓA VECTOR: Giúp so sánh dáng Sketch chính xác hơn rất nhiều
             norm = np.linalg.norm(vec)
             if norm > 0: vec = vec / norm
             return vec.astype(float).tolist()
     except: return None
-
-# ================= 5. MAIN UI (SO SÁNH AN TOÀN) =================
-# Tìm đoạn code "df_db['sim'] = cosine_similarity..." và thay bằng đoạn này:
-
-            t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
-            
-            # Lọc bỏ các dòng có Vector lỗi hoặc sai kích thước
-            valid_rows = [r for r in all_db if r['vector'] and len(r['vector']) == t_vec.shape[1]]
-            
-            if valid_rows:
-                df_db = pd.DataFrame(valid_rows)
-                db_vecs = np.array([v for v in df_db['vector']])
-                
-                # Thực hiện so sánh
-                df_db['sim'] = cosine_similarity(t_vec, db_vecs).flatten()
-                top_3 = df_db.sort_values('sim', ascending=False).head(3)
-                
-                # Hiển thị kết quả... (giữ nguyên phần UI bên dưới)
-            else:
-                st.error("Không tìm thấy dữ liệu phù hợp hoặc kích thước Vector không đồng nhất. Vui lòng nhấn SYNCHRONIZE lại kho dữ liệu.")
-
 
 def parse_val(t):
     try:
@@ -140,7 +117,10 @@ with st.sidebar:
                     valid_uuid = str(uuid.UUID(file_hash))
                     path = f"lib_{file_hash}.webp"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
-                    supabase.table("ai_data").upsert({"id": valid_uuid, "file_name": f.name, "vector": get_vector(data['img']), "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)}).execute()
+                    supabase.table("ai_data").upsert({
+                        "id": valid_uuid, "file_name": f.name, "vector": get_vector(data['img']), 
+                        "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+                    }).execute()
                     logs.append({"File": f.name, "Status": "Success"})
                 else: logs.append({"File": f.name, "Status": "Failed"})
             except Exception as e: logs.append({"File": f.name, "Status": str(e)})
@@ -159,26 +139,40 @@ if mode == "🔍 Audit Mode":
     if file_audit:
         target = extract_data(file_audit.getvalue())
         if target and target['img']:
-            all_db = supabase.table("ai_data").select("id, vector, file_name").execute().data
+            res = supabase.table("ai_data").select("id, vector, file_name").execute()
+            all_db = res.data
             if all_db:
-                df_db = pd.DataFrame(all_db)
-                t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
-                df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
-                top_3 = df_db.sort_values('sim', ascending=False).head(3)
-                st.subheader("🎯 AI Matches")
-                cols = st.columns(4)
-                cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
-                for i, (idx, row) in enumerate(top_3.iterrows()):
-                    det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
-                    if det:
-                        with cols[i+1]:
-                            st.image(det[0]['image_url'], caption=f"Match: {row['sim']:.1%}")
-                            if st.button(f"SELECT {i+1}", key=f"s_{idx}", use_container_width=True):
-                                st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
+                # 1. Tạo Vector cho file target
+                t_vec_raw = get_vector(target['img'])
+                t_vec = np.array(t_vec_raw).reshape(1, -1)
+                
+                # 2. Lọc bỏ dữ liệu lỗi kích thước (Tránh lỗi ValueError)
+                valid_data = [r for r in all_db if r['vector'] and len(r['vector']) == len(t_vec_raw)]
+                
+                if valid_data:
+                    df_db = pd.DataFrame(valid_data)
+                    db_vecs = np.array([v for v in df_db['vector']])
+                    
+                    # 3. So sánh tương đồng
+                    df_db['sim'] = cosine_similarity(t_vec, db_vecs).flatten()
+                    top_3 = df_db.sort_values('sim', ascending=False).head(3)
+                    
+                    st.subheader("🎯 AI Matches")
+                    cols = st.columns(4)
+                    cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
+                    for i, (idx, row) in enumerate(top_3.iterrows()):
+                        det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
+                        if det:
+                            with cols[i+1]:
+                                st.image(det[0]['image_url'], caption=f"Match: {row['sim']:.1%}")
+                                if st.button(f"SELECT {i+1}", key=f"s_{idx}", use_container_width=True):
+                                    st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
+                else:
+                    st.warning("Kho dữ liệu hiện tại không tương thích với Model AI mới. Vui lòng nhấn SYNCHRONIZE lại.")
+
                 sel = st.session_state['sel_audit']
                 if sel:
-                    st.divider()
-                    st.success(f"📈 Comparing: **{sel['file_name']}**")
+                    st.divider(); st.success(f"📈 Comparing: **{sel['file_name']}**")
                     all_dfs, sheet_names = [], []
                     for sz, t_specs in target['all_specs'].items():
                         with st.expander(f"SIZE: {sz}", expanded=True):
@@ -189,8 +183,8 @@ if mode == "🔍 Audit Mode":
                                 m_p = get_close_matches(p, list(r_specs.keys()), 1, 0.6)
                                 rv = r_specs.get(m_p[0], 0) if m_p else 0
                                 rows.append({"Point": p, "Target": v, "Ref": rv, "Diff": f"{v-rv:+.3f}"})
-                            df_sz = pd.DataFrame(rows)
-                            st.table(df_sz); all_dfs.append(df_sz); sheet_names.append(sz)
+                            df_sz = pd.DataFrame(rows); st.table(df_sz)
+                            all_dfs.append(df_sz); sheet_names.append(sz)
                     st.download_button("📥 Download Excel Report", to_excel(all_dfs, sheet_names), f"Audit_{sel['file_name']}.xlsx")
 
 elif mode == "🔄 Version Control":
@@ -220,6 +214,6 @@ elif mode == "🔄 Version Control":
                             if v1 == 0: stt = "🆕"
                             if v2 == 0: stt = "❌"
                             res.append({"Point": p, "Ver A": v1, "Ver B": v2, "Diff": f"{diff:+.3f}", "Status": stt})
-                        df_sz = pd.DataFrame(res)
-                        st.table(df_sz); all_dfs.append(df_sz); sheet_names.append(sz)
+                        df_sz = pd.DataFrame(res); st.table(df_sz)
+                        all_dfs.append(df_sz); sheet_names.append(sz)
                 st.download_button("📥 Download Excel Comparison", to_excel(all_dfs, sheet_names), "Comparison_Report.xlsx")
