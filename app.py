@@ -10,7 +10,6 @@ from difflib import get_close_matches
 # ================= 1. CONFIGURATION =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
-
 supabase = create_client(URL, KEY)
 BUCKET = "fashion-imgs"
 
@@ -43,15 +42,12 @@ def parse_val(t):
     try:
         if not t: return 0
         t = str(t).replace('"', '').strip().lower().replace(',', '.')
-        # Bỏ qua các chuỗi không phải số đo
         if any(x in t for x in ["wash", "color", "label", "style", "page", "tol", "+", "-"]): return 0
         if re.match(r'^[a-z]\d+', t): return 0 
-        
         mixed = re.match(r'(\d+)\s+(\d+)/(\d+)', t)
         if mixed: return float(mixed.group(1)) + int(mixed.group(2))/int(mixed.group(3))
         frac = re.match(r'(\d+)/(\d+)', t)
         if frac: return int(frac.group(1))/int(frac.group(2))
-        
         num = re.findall(r"[-+]?\d*\.\d+|\d+", t)
         if num:
             val = float(num[0])
@@ -63,72 +59,65 @@ def to_excel(df_list, sheet_names):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         for df, name in zip(df_list, sheet_names):
-            df.to_excel(writer, index=False, sheet_name=name[:31])
+            df.to_excel(writer, index=False, sheet_name=str(name)[:31])
     return output.getvalue()
 
-# ================= 3. SCRAPER (BỘ QUÉT BẢNG TỰ ĐỘNG CHUẨN) =================
+# ================= 3. SCRAPER (LOGIC DÒ CỘT TỰ ĐỘNG) =================
 def extract_full_data(file_content):
     if not file_content: return None
     all_specs, img_bytes = {}, None
     POM_KWS = ["WAIST", "HIP", "THIGH", "KNEE", "LEG", "INSEAM", "RISE", "LENGTH", "CHEST", "SHOULDER", "POM", "SPEC"]
-    # Regex nhận diện cột Size
     SIZE_PATTERN = r'^(xs|s|m|l|xl|xxl|\d+|[a-z]?\d+-\d+|[a-z]?\d+\.\d+)$'
 
     try:
-        # Lấy ảnh trang 1
         doc = fitz.open(stream=file_content, filetype="pdf")
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-        img_pil = Image.open(io.BytesIO(pix.tobytes("png")))
-        buf = io.BytesIO(); img_pil.save(buf, format="WEBP", quality=70); img_bytes = buf.getvalue(); doc.close()
+        buf = io.BytesIO(); Image.open(io.BytesIO(pix.tobytes("png"))).save(buf, format="WEBP", quality=70); img_bytes = buf.getvalue(); doc.close()
         
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
-                # SỬ DỤNG extract_tables ĐỂ TỰ ĐỘNG NHẬN DIỆN Ô TRONG PDF
-                tables = page.extract_tables()
-                for table in tables:
-                    if not table or len(table) < 2: continue
-                    df_t = pd.DataFrame(table)
-                    
-                    # Tìm dòng tiêu đề (Header) chứa các Size
-                    header_row_idx = -1
-                    size_cols = {} # Lưu index của các cột là Size
-                    
-                    for idx, row in df_t.iterrows():
-                        row_txt = " ".join([str(c) for c in row if c]).lower()
-                        if "size" in row_txt or "adopted" in row_txt:
-                            header_row_idx = idx
-                            for col_idx, col_val in enumerate(row):
-                                val = str(col_val).strip().lower()
-                                if re.match(SIZE_PATTERN, val) and val not in ["tol", "um", "(+)", "(-)"]:
-                                    size_cols[col_idx] = val.upper()
-                            break
-                    
-                    if header_row_idx != -1 and size_cols:
-                        # Quét các dòng dữ liệu bên dưới dòng tiêu đề
-                        for idx, row in df_t.iloc[header_row_idx+1:].iterrows():
-                            # Kiểm tra nếu dòng này là dòng thông số (POM)
-                            line_txt = " ".join([str(c) for c in row if c]).upper()
-                            if any(kw in line_txt for kw in POM_KWS):
-                                # Lấy tên điểm đo (thường ở cột 0 hoặc 1)
-                                pom_name = str(row[1] if row[1] else row[0]).strip()
-                                pom_name = re.sub(r'[\d./\s]+$', '', pom_name).strip()
-                                
-                                if len(pom_name) > 3:
-                                    for col_idx, sz_name in size_cols.items():
-                                        val = parse_val(row[col_idx])
-                                        if val > 0:
-                                            if sz_name not in all_specs: all_specs[sz_name] = {}
-                                            all_specs[sz_name][pom_name] = val
+                words = page.extract_words()
+                if not words: continue
+                df_w = pd.DataFrame(words)
+                df_w['y_grid'] = df_w['top'].round(0)
+                
+                # BƯỚC 1: Dò vị trí ngang (X) của các cột Size
+                size_cols = []
+                for y, group in df_w.groupby('y_grid'):
+                    line_txt = " ".join(group.sort_values('x0')['text']).lower()
+                    if "size" in line_txt or "adopted" in line_txt:
+                        for _, row in group.iterrows():
+                            txt = row['text'].strip().lower()
+                            if re.match(SIZE_PATTERN, txt) and not any(x in txt for x in ["tol", "+", "-"]):
+                                size_cols.append({"name": txt.upper(), "x_mid": (row['x0'] + row['x1']) / 2})
+                        if size_cols: break
+
+                # BƯỚC 2: Hốt dữ liệu theo trục dọc của cột đã tìm thấy
+                for y, group in df_w.groupby('y_grid'):
+                    sorted_row = group.sort_values('x0')
+                    line_txt = " ".join(sorted_row['text']).upper()
+                    if any(kw in line_txt for kw in POM_KWS):
+                        # Lấy tên điểm đo (phần chữ bên trái)
+                        pom_name = re.sub(r'[\d./\s]+$', '', " ".join(sorted_row[sorted_row['x1'] < 300]['text'])).strip()
+                        if len(pom_name) > 3:
+                            for col in size_cols:
+                                # Tìm từ nào nằm đúng trục dọc của cột Size (sai số 15 pixel)
+                                cell_data = sorted_row[(sorted_row['x0'] < col['x_mid'] + 15) & (sorted_row['x1'] > col['x_mid'] - 15)]
+                                if not cell_data.empty:
+                                    val = parse_val(" ".join(cell_data['text']))
+                                    if val > 0:
+                                        if col['name'] not in all_specs: all_specs[col['name']] = {}
+                                        all_specs[col['name']][pom_name] = val
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
 # ================= 4. SIDEBAR =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
-    try:
-        res_count = supabase.table("ai_data").select("id", count="exact").execute()
-        st.metric("Models in Repo", f"{res_count.count or 0} SKUs")
-    except: st.write("Connecting...")
+    res_count = supabase.table("ai_data").select("id", count="exact").execute()
+    count = res_count.count or 0
+    st.metric("Models in Repo", f"{count} SKUs")
+    st.write(f"💾 **Storage:** {count*0.08:.1f}MB / 1024MB")
     st.divider()
     new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"sy_{st.session_state['up_key']}")
     if new_files and st.button("🚀 SYNCHRONIZE", use_container_width=True):
@@ -160,7 +149,7 @@ if mode == "🔍 Audit Mode":
                     df['sim'] = cosine_similarity(t_vec, np.array(df['vector'].tolist())).flatten()
                     top_3 = df.sort_values('sim', ascending=False).head(3)
                     cols = st.columns(4)
-                    cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
+                    cols[0].image(target['img'], caption="TARGET", use_container_width=True)
                     for i, (idx, row) in enumerate(top_3.iterrows()):
                         det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
                         if det:
@@ -179,14 +168,14 @@ if mode == "🔍 Audit Mode":
                         r_specs = sel['spec_json'].get(m_sz[0] if m_sz else "", {})
                         rows = [{"Point": p, "Target": v, "Ref": r_specs.get(get_close_matches(p, list(r_specs.keys()), 1, 0.6)[0] if get_close_matches(p, list(r_specs.keys()), 1, 0.6) else "", 0)} for p, v in t_specs.items()]
                         for r in rows: r['Diff'] = f"{r['Target'] - r['Ref']:+.3f}"
-                        df_sz = pd.DataFrame(rows); st.table(df_sz)
-                        audit_dfs.append(df_sz); sheet_names.append(sz)
+                        df_sz = pd.DataFrame(rows); st.table(df_sz); audit_dfs.append(df_sz); sheet_names.append(sz)
                 st.download_button("📥 Xuất Excel", to_excel(audit_dfs, sheet_names), "Audit_Report.xlsx")
 
 elif mode == "🔄 Version Control":
-    st.subheader("🔄 So sánh 2 file PDF (Bao gồm mọi trang)")
+    st.subheader("🔄 So sánh 2 file PDF")
     c1, c2 = st.columns(2)
     f1, f2 = c1.file_uploader("Bản A:", type="pdf", key="v1"), c2.file_uploader("Bản B:", type="pdf", key="v2")
+    
     if f1 and f2:
         if st.button("⚡ Bắt đầu so sánh toàn diện", use_container_width=True):
             d1, d2 = extract_full_data(f1.getvalue()), extract_full_data(f2.getvalue())
