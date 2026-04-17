@@ -46,21 +46,20 @@ def parse_val(t):
         return val if val < 250 else 0
     except: return 0
 
-# ================= 3. PPJ COORDINATE SCRAPER =================
-# ================= 3. PPJ COORDINATE SCRAPER (CẬP NHẬT: QUÉT TẤT CẢ TRANG) =================
+# ================= 3. PPJ COORDINATE SCRAPER (UPDATED: SCAN ALL PAGES) =================
 def extract_data(file_content):
     if not file_content: return None
     all_specs, img_bytes = {}, None
     POM_KWS = ["WAIST", "HIP", "THIGH", "KNEE", "LEG", "INSEAM", "RISE", "LENGTH", "CHEST", "SHOULDER", "POM", "SPEC"]
     try:
         doc = fitz.open(stream=file_content, filetype="pdf")
-        # Vẫn lấy ảnh trang đầu làm đại diện hiển thị
+        # Lấy ảnh trang đầu làm đại diện
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
         buf = io.BytesIO(); Image.open(io.BytesIO(pix.tobytes("png"))).save(buf, format="WEBP", quality=70)
         img_bytes = buf.getvalue(); doc.close()
 
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
-            # THAY ĐỔI: Vòng lặp quét qua TOÀN BỘ các trang trong file PDF
+            # QUÉT TOÀN BỘ CÁC TRANG CỦA PDF
             for page in pdf.pages:
                 words = page.extract_words()
                 if not words: continue
@@ -78,53 +77,6 @@ def extract_data(file_content):
                                 all_specs[s_key][pom_name] = val
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
-
-# ================= 5. MAIN UI (CẬP NHẬT PHẦN VERSION CONTROL) =================
-# ... (Phần Audit Mode giữ nguyên) ...
-
-if mode == "🔄 Version Control":
-    st.subheader("🔄 Compare Version A (New Upload) vs Version B (New Upload)")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # THAY ĐỔI: Chỗ này trước đây là selectbox lấy từ Repo, giờ đổi thành file_uploader
-        file_a = st.file_uploader("Upload Version A (Old/Reference):", type="pdf", key="up_a")
-        data_a = None
-        if file_a:
-            data_a = extract_data(file_a.getvalue())
-            if data_a: st.image(data_a['img'], caption="VERSION A", use_container_width=True)
-
-    with col2:
-        file_b = st.file_uploader("Upload Version B (New/Target):", type="pdf", key="up_b")
-        data_b = None
-        if file_b:
-            data_b = extract_data(file_b.getvalue())
-            if data_b: st.image(data_b['img'], caption="VERSION B", use_container_width=True)
-
-    if data_a and data_b:
-        if st.button("RUN COMPARISON", use_container_width=True):
-            st.divider()
-            final_report = []
-            # So sánh dữ liệu dựa trên các Size quét được từ cả 2 file
-            for sz, specs_b in data_b['all_specs'].items():
-                with st.expander(f"SIZE: {sz}", expanded=True):
-                    specs_a = data_a['all_specs'].get(sz, {})
-                    rows = []
-                    for p, vb in specs_b.items():
-                        # Tìm POM tương ứng ở file A
-                        m_p = get_close_matches(p, list(specs_a.keys()), 1, 0.6)
-                        va = specs_a.get(m_p[0], 0) if m_p else 0
-                        diff = vb - va
-                        rows.append({"POM": p, "Ver A": va, "Ver B": vb, "Diff": diff})
-                        final_report.append({"Size": sz, "POM": p, "Ver A": va, "Ver B": vb, "Diff": diff})
-                    
-                    df_res = pd.DataFrame(rows)
-                    if not df_res.empty:
-                        st.table(df_res.style.format({"Diff": "{:+.2f}"}))
-            
-            # Nút tải báo cáo Excel cho kết quả vừa so sánh
-            st.download_button("Download Comparison", to_excel(pd.DataFrame(final_report)), "audit_report.xlsx")
-
 
 def to_excel(df):
     output = io.BytesIO()
@@ -160,10 +112,6 @@ with st.sidebar:
         st.session_state['sync_results'] = logs
         st.session_state['up_key'] += 1
         st.sidebar.success("Process Completed!"); time.sleep(1); st.rerun()
-
-    if st.session_state['sync_results']:
-        st.table(pd.DataFrame(st.session_state['sync_results']))
-        if st.button("Clear Report"): st.session_state['sync_results'] = None; st.rerun()
 
 # ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
@@ -204,43 +152,48 @@ if mode == "🔍 Audit Mode":
                         for p, v in t_specs.items():
                             m_p = get_close_matches(p, list(r_specs.keys()), 1, 0.6)
                             rv = r_specs.get(m_p[0], 0) if m_p else 0
-                            diff = v - rv
-                            rows.append({"Point": p, "Target": v, "Ref": rv, "Diff": f"{diff:+.3f}"})
-                            final_ex.append({"Size": sz, "Point": p, "Target": v, "Ref": rv, "Diff": diff})
+                            rows.append({"POM": p, "Target": v, "Reference": rv, "Diff": v - rv})
+                            final_ex.append({"Size": sz, "POM": p, "Target": v, "Reference": rv, "Diff": v - rv})
                         st.table(pd.DataFrame(rows))
-                if final_ex:
-                    st.download_button("📥 DOWNLOAD AUDIT REPORT (.XLSX)", to_excel(pd.DataFrame(final_ex)), f"Audit_{sel['file_name']}.xlsx", use_container_width=True)
 
-else: # Mode Version Control
-    st.subheader("🔄 Compare Version A (Repo) vs Version B (Local)")
-    all_n = list(set([r['file_name'] for i in range(0, count, 1000) for r in supabase.table("ai_data").select("file_name").range(i, i+999).execute().data]))
+elif mode == "🔄 Version Control":
+    st.subheader("🔄 Compare Version A (Local) vs Version B (Local)")
+    col1, col2 = st.columns(2)
     
-    col_a, col_b = st.columns(2)
-    with col_a:
-        v_a_name = st.selectbox("Style A (Repo):", all_n)
-        res_a = supabase.table("ai_data").select("*").eq("file_name", v_a_name).execute()
-        data_a = res_a.data[0] if res_a.data else None
-        if data_a: st.image(data_a['image_url'], width=350, caption="Round A (Repo)")
-    with col_b:
-        file_b = st.file_uploader("Style B (New Upload):", type="pdf", key="fb_r")
-        data_b = extract_data(file_b.getvalue()) if file_b else None
-        if data_b: st.image(data_b['img'], width=350, caption="Round B (New)")
+    with col1:
+        # THAY ĐỔI: Cho phép upload file cũ thay vì chọn từ Repo
+        file_a = st.file_uploader("Upload Version A (Old):", type="pdf", key="v_a")
+        data_a = None
+        if file_a:
+            data_a = extract_data(file_a.getvalue())
+            if data_a: st.image(data_a['img'], caption="VERSION A (OLD)", use_container_width=True)
 
-    if file_b and data_b and data_a:
-        if st.button("RUN COMPARISON", use_container_width=True):
+    with col2:
+        # THAY ĐỔI: Upload file mới
+        file_b = st.file_uploader("Upload Version B (New):", type="pdf", key="v_b")
+        data_b = None
+        if file_b:
+            data_b = extract_data(file_b.getvalue())
+            if data_b: st.image(data_b['img'], caption="VERSION B (NEW)", use_container_width=True)
+
+    if data_a and data_b:
+        if st.button("RUN COMPARISON (ALL PAGES)", use_container_width=True):
             st.divider()
-            vc_ex = []
+            comp_data = []
             for sz, specs_b in data_b['all_specs'].items():
                 with st.expander(f"SIZE: {sz}", expanded=True):
-                    m_sz = get_close_matches(sz, list(data_a['spec_json'].keys()), 1, 0.4)
-                    specs_a = data_a['spec_json'].get(m_sz[0], {}) if m_sz else {}
+                    specs_a = data_a['all_specs'].get(sz, {})
                     rows = []
-                    for p_b, v_b in specs_b.items():
-                        m_p = get_close_matches(p_b, list(specs_a.keys()), 1, 0.6)
-                        v_a = specs_a.get(m_p[0], 0) if m_p else 0
-                        diff = v_b - v_a
-                        rows.append({"Point": p_b, "Repo (A)": v_a, "New (B)": v_b, "Diff": f"{diff:+.3f}"})
-                        vc_ex.append({"Size": sz, "Point": p_b, "Repo_A": v_a, "New_B": v_b, "Diff": diff})
-                    st.table(pd.DataFrame(rows))
-            if vc_ex:
-                st.download_button("📥 DOWNLOAD COMPARISON (.XLSX)", to_excel(pd.DataFrame(vc_ex)), "Comparison_Report.xlsx", use_container_width=True)
+                    for p, vb in specs_b.items():
+                        m_p = get_close_matches(p, list(specs_a.keys()), 1, 0.6)
+                        va = specs_a.get(m_p[0], 0) if m_p else 0
+                        diff = vb - va
+                        rows.append({"POM": p, "Old (A)": va, "New (B)": vb, "Diff": diff})
+                        comp_data.append({"Size": sz, "POM": p, "Old": va, "New": vb, "Diff": diff})
+                    
+                    if rows:
+                        st.table(pd.DataFrame(rows).style.format({"Diff": "{:+.2f}"}))
+            
+            if comp_data:
+                st.download_button("📥 Download Report", to_excel(pd.DataFrame(comp_data)), "version_comparison.xlsx")
+
