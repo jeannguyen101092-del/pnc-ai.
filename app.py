@@ -167,18 +167,6 @@ if mode == "🔍 Audit Mode":
                         
                         r['bonus'] = score_bonus
                         valid_data.append(r)
-
-                if valid_data:
-                    df_db = pd.DataFrame(valid_data)
-                    db_vecs = np.array([v for v in df_db['vector']])
-                    raw_sims = cosine_similarity(t_vec, db_vecs).flatten()
-                    
-                    # Cộng điểm thưởng nặng cho đúng loại (Dài vs Ngắn)
-                    df_db['sim'] = raw_sims + df_db['bonus']
-                    
-                    # Lọc bỏ bớt các kết quả sai loại rõ rệt nếu điểm quá thấp
-                    top_3 = df_db.sort_values('sim', ascending=False).head(3)
-                    
                     # --- HIỂN THỊ ---
                     st.subheader("🎯 AI Matches (Filtered by Shape)")
                     cols = st.columns(4)
