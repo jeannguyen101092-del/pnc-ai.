@@ -10,6 +10,7 @@ from difflib import get_close_matches
 # ================= 1. CONFIGURATION =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
+
 supabase = create_client(URL, KEY)
 BUCKET = "fashion-imgs"
 
@@ -19,7 +20,7 @@ if 'sync_results' not in st.session_state: st.session_state['sync_results'] = No
 if 'up_key' not in st.session_state: st.session_state['up_key'] = 0
 if 'sel_audit' not in st.session_state: st.session_state['sel_audit'] = None
 
-# ================= 2. AI CORE (SỬA LỖI DOUBLE SYNTAX) =================
+# ================= 2. AI CORE =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -37,7 +38,6 @@ def get_vector(img_bytes):
         ])
         with torch.no_grad():
             vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy().astype(float).tolist()
-            # ÉP KIỂU DOUBLE CHUẨN: Đảm bảo không có giá trị lạ gửi lên Database
             return [float(x) for x in vec]
     except: return None
 
@@ -46,13 +46,10 @@ def parse_val(t):
         t = str(t).replace('"', '').strip().lower()
         if not t or any(x in t for x in ["wash", "color", "label", "style", "page"]): return 0
         t = t.replace(',', '.')
-        # Số hỗn hợp (16 1/4)
         mixed = re.match(r'(\d+)[-\s]+(\d+)/(\d+)', t)
         if mixed: return float(mixed.group(1)) + int(mixed.group(2)) / int(mixed.group(3))
-        # Phân số lẻ (1/2)
         frac = re.match(r'(\d+)/(\d+)', t)
         if frac: return int(frac.group(1)) / int(frac.group(2))
-        # Số thập phân/Số nguyên
         num = re.findall(r"[-+]?\d*\.\d+|\d+", t)
         if num:
             val = float(num[0])
@@ -60,7 +57,7 @@ def parse_val(t):
         return 0
     except: return 0
 
-# ================= 3. SCRAPER (PHÂN VÙNG TỌA ĐỘ) =================
+# ================= 3. SCRAPER (THÔNG MINH) =================
 def extract_data(file_content, scan_all=False):
     if not file_content: return None
     all_specs, img_bytes = {}, None
@@ -72,18 +69,17 @@ def extract_data(file_content, scan_all=False):
         img_bytes = buf.getvalue(); doc.close()
 
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
-            # Audit/Sync: 1 trang | Version Control: Toàn bộ các trang
             pages = pdf.pages if scan_all else [pdf.pages[0]]
             for page in pages:
-                df_w = pd.DataFrame(page.extract_words())
-                if df_w.empty: continue
+                words = page.extract_words()
+                if not words: continue
+                df_w = pd.DataFrame(words)
                 df_w['y_grid'] = (df_w['top'] / 2).round() * 2
                 page_width = page.width
                 for y, group in df_w.groupby('y_grid'):
                     sorted_g = group.sort_values('x0')
                     line_txt = " ".join(sorted_g['text'])
                     if any(kw in line_txt.upper() for kw in POM_KWS):
-                        # Vùng bên phải (>55%) là thông số đo
                         numeric_part = sorted_g[sorted_g['x0'] > (page_width * 0.55)]
                         text_part = sorted_g[sorted_g['x0'] <= (page_width * 0.55)]
                         pom_name = re.sub(r'^[A-Z0-9-]+\s+', '', " ".join(text_part['text']).strip())
@@ -102,53 +98,40 @@ def to_excel(df):
         df.to_excel(writer, index=False, sheet_name='Comparison')
     return output.getvalue()
 
-# ================= 4. SIDEBAR (CẬP NHẬT SKU NGAY LẬP TỨC) =================
+# ================= 4. SIDEBAR =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
-    
-    # Lấy số lượng thực tế từ Database
     try:
         res = supabase.table("ai_data").select("id", count="exact").execute()
         count = res.count or 0
     except: count = 0
-    
     st.metric("Models in Repo", f"{count} SKUs")
     used_mb = count * 0.08
     st.write(f"💾 **Storage:** {used_mb:.1f}MB / 1024MB")
     st.progress(min(used_mb/1024, 1.0))
     st.divider()
     
-    new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"s_{st.session_state['up_key']}")
-    if new_files and st.button("🚀 SYNCHRONIZE & REPAIR", use_container_width=True):
+    files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"s_{st.session_state['up_key']}")
+    if files and st.button("🚀 SYNCHRONIZE & REPAIR", use_container_width=True):
         logs = []
-        for f in new_files:
+        for f in files:
             try:
-                fb = f.getvalue()
-                # Đồng bộ kho: CHỈ quét trang 1 để nhẹ tải Database
-                data = extract_data(fb, scan_all=False)
+                fb = f.getvalue(); data = extract_data(fb, scan_all=False)
                 vec = get_vector(data['img']) if data else None
-                
                 if data and vec:
                     f_hash = hashlib.md5(fb).hexdigest()
                     path = f"lib_{f_hash}.webp"
                     supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
-                    
-                    # LÀM SẠCH ID (BỎ DẤU NGOẶC, KÝ TỰ LẠ GÂY LỖI)
                     clean_id = re.sub(r'[^a-zA-Z0-9]', '_', f.name)
-                    unique_id = f"{clean_id}_{f_hash[:6]}"
-                    
                     supabase.table("ai_data").upsert({
-                        "id": unique_id, "file_name": f.name, "vector": vec,
+                        "id": f"{clean_id}_{f_hash[:6]}", "file_name": f.name, "vector": vec,
                         "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
                     }).execute()
                     logs.append({"File": f.name, "Status": "✅ Success"})
-                else: logs.append({"File": f.name, "Status": "❌ Dữ liệu lỗi"})
-            except Exception as e:
-                logs.append({"File": f.name, "Status": f"⚠️ {str(e)[:40]}"})
-        
+            except Exception as e: logs.append({"File": f.name, "Status": f"⚠️ {str(e)[:30]}"})
         st.session_state['sync_results'] = logs
         st.session_state['up_key'] += 1
-        st.rerun() # Refresh app để con số SKU nhảy ngay sau khi nạp
+        st.rerun()
 
 # ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
@@ -158,8 +141,7 @@ if mode == "🔍 Audit Mode":
     f_audit = st.file_uploader("Upload Target PDF:", type="pdf")
     if f_audit:
         target = extract_data(f_audit.getvalue(), scan_all=False)
-        if target:
-            # Lấy vector từ Database để so sánh
+        if target and target['img']:
             all_db = [r for i in range(0, count, 1000) for r in supabase.table("ai_data").select("id, vector, file_name").range(i, i+999).execute().data]
             if all_db:
                 df_db = pd.DataFrame(all_db)
@@ -167,8 +149,9 @@ if mode == "🔍 Audit Mode":
                 df_db['sim'] = cosine_similarity(t_vec, np.array([v for v in df_db['vector']])).flatten()
                 top_3 = df_db.sort_values('sim', ascending=False).head(3)
                 
+                # SỬA LỖI Ở ĐÂY: Dùng cols[0] thay vì cols
                 cols = st.columns(4)
-                cols.image(target['img'], caption="TARGET PDF")
+                cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
                 for i, (idx, row) in enumerate(top_3.iterrows()):
                     det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
                     if det:
@@ -179,7 +162,8 @@ if mode == "🔍 Audit Mode":
 
             if st.session_state['sel_audit']:
                 sel = st.session_state['sel_audit']
-                st.success(f"Comparing with: {sel['file_name']}")
+                st.divider()
+                st.success(f"Comparing: {sel['file_name']}")
                 for sz, t_specs in target['all_specs'].items():
                     with st.expander(f"SIZE: {sz}", expanded=True):
                         m_sz = get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4)
@@ -188,17 +172,16 @@ if mode == "🔍 Audit Mode":
                         st.table(pd.DataFrame(rows))
 
 elif mode == "🔄 Version Control":
-    st.subheader("🔄 So sánh trực tiếp 2 file (Quét toàn bộ các trang)")
+    st.subheader("🔄 So sánh trực tiếp 2 file")
     c1, c2 = st.columns(2)
-    with c1: f_a = st.file_uploader("Upload File A (Old):", type="pdf", key="fa")
-    with c2: f_b = st.file_uploader("Upload File B (New):", type="pdf", key="fb")
+    with c1: f_a = st.file_uploader("File A (Old):", type="pdf", key="fa")
+    with c2: f_b = st.file_uploader("File B (New):", type="pdf", key="fb")
     if f_a and f_b:
         if st.button("RUN COMPARISON (ALL PAGES)", use_container_width=True):
-            # Quét toàn bộ các trang khi so sánh 2 file mới
             d_a = extract_data(f_a.getvalue(), scan_all=True)
             d_b = extract_data(f_b.getvalue(), scan_all=True)
             if d_a and d_b:
-                report = []
+                results = []
                 for sz, specs_b in d_b['all_specs'].items():
                     with st.expander(f"SIZE: {sz}", expanded=True):
                         specs_a = d_a['all_specs'].get(sz, {})
@@ -207,6 +190,6 @@ elif mode == "🔄 Version Control":
                             m_p = get_close_matches(p, list(specs_a.keys()), 1, 0.6)
                             va = specs_a.get(m_p[0] if m_p else "", 0)
                             rows.append({"POM": p, "Old (A)": va, "New (B)": vb, "Diff": vb - va})
-                            report.append({"Size": sz, "POM": p, "Old": va, "New": vb, "Diff": vb - va})
+                            results.append({"Size": sz, "POM": p, "Old": va, "New": vb, "Diff": vb - va})
                         st.table(pd.DataFrame(rows).style.format({"Diff": "{:+.2f}"}))
-                st.download_button("📥 Tải báo cáo Excel", to_excel(pd.DataFrame(report)), "compare_result.xlsx")
+                st.download_button("📥 Tải báo cáo Excel", to_excel(pd.DataFrame(results)), "result.xlsx")
