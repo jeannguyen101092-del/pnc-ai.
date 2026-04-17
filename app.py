@@ -31,24 +31,39 @@ def get_vector(img_bytes):
     if not img_bytes: return None
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-        # Cắt bỏ lề nhiễu, tập trung vào Sketch giữa trang
-        w, h = img.size
-        img = img.crop((w*0.15, h*0.1, w*0.85, h*0.55)) 
-        # Tăng tương phản để làm nổi nét phác thảo
+
+        # ===== PREPROCESS =====
         img = ImageOps.grayscale(img)
         img = ImageEnhance.Contrast(img).enhance(2.0).convert('RGB')
+
+        w, h = img.size
+
+        # ===== CHIA 3 VÙNG =====
+        top = img.crop((0, 0, w, int(h*0.3)))
+        mid = img.crop((0, int(h*0.3), w, int(h*0.65)))   # túi trước
+        bot = img.crop((0, int(h*0.65), w, h))           # túi sau
 
         tf = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            transforms.Normalize([0.485, 0.456, 0.406],
+                                 [0.229, 0.224, 0.225])
         ])
-        with torch.no_grad():
-            vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
-            norm = np.linalg.norm(vec)
-            return (vec / norm).astype(float).tolist() if norm > 0 else vec.tolist()
-    except: return None
 
+        def encode(im):
+            with torch.no_grad():
+                v = model_ai(tf(im).unsqueeze(0)).flatten().cpu().numpy()
+                n = np.linalg.norm(v)
+                return (v/n).astype(float) if n > 0 else v
+
+        return {
+            "top": encode(top),
+            "mid": encode(mid),
+            "bot": encode(bot)
+        }
+
+    except:
+        return None
 def parse_val(t):
     try:
         t = str(t).replace('"', '').strip().lower().replace(',', '.')
@@ -145,9 +160,23 @@ with st.sidebar:
                 path = f"lib_{f_hash}.webp"
                 supabase.storage.from_(BUCKET).upload(path, data['img'], {"content-type": "image/webp", "upsert": "true"})
                 supabase.table("ai_data").upsert({
-                    "id": str(uuid.UUID(f_hash)), "file_name": f.name, "vector": get_vector(data['img']),
-                    "spec_json": data['all_specs'], "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
-                }).execute()
+                    "id": str(uuid.UUID(f_hash)), "file_name": f.name, "vector": vecs = get_vector(data['img'])
+
+supabase.table("ai_data").upsert({
+    "id": str(uuid.UUID(f_hash)),
+    "file_name": f.name,
+
+    # vector cũ (fallback)
+    "vector": vecs["mid"].tolist() if vecs else None,
+
+    # vector mới chia vùng
+    "vec_top": vecs["top"].tolist() if vecs else None,
+    "vec_mid": vecs["mid"].tolist() if vecs else None,
+    "vec_bot": vecs["bot"].tolist() if vecs else None,
+
+    "spec_json": data['all_specs'],
+    "image_url": supabase.storage.from_(BUCKET).get_public_url(path)
+}).execute()
             
             # Cập nhật thanh phần trăm
             percent = (i + 1) / len(new_files)
