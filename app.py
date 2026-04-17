@@ -38,25 +38,21 @@ def get_vector(img_bytes):
             return (vec / norm).astype(float).tolist() if norm > 0 else vec.tolist()
     except: return None
 
-# --- HÀM LẤY SỐ ĐO CHÍNH XÁC (LẤY CẢ SỐ LẺ 1/2, 3/4) ---
+# --- HÀM LẤY SỐ ĐO CHUẨN (BỎ QUA SỐ NHỎ, LẤY SỐ CHÍNH) ---
 def parse_val(t):
     try:
         t = str(t).replace('"', '').strip().lower().replace(',', '.')
-        if not t or any(x in t for x in ["wash", "color", "label", "style", "page"]): return 0
-        if re.match(r'^[a-z]\d+', t): return 0 # Bỏ qua mã POM B101...
+        if not t or any(x in t for x in ["wash", "color", "label", "style", "page", "tol"]): return 0
+        if re.match(r'^[a-z]\d+', t): return 0 
         
-        # 1. Xử lý hỗn số: 1 1/2 -> 1.5
+        # Ưu tiên hỗn số (18 1/2)
         mixed = re.match(r'(\d+)\s+(\d+)/(\d+)', t)
         if mixed: return float(mixed.group(1)) + int(mixed.group(2))/int(mixed.group(3))
         
-        # 2. Xử lý phân số: 1/2 -> 0.5
-        frac = re.match(r'(\d+)/(\d+)', t)
-        if frac: return int(frac.group(1))/int(frac.group(2))
-        
-        # 3. Xử lý số thập phân/số nguyên: 1.25, 30
+        # Số thập phân hoặc nguyên
         num = re.findall(r"[-+]?\d*\.\d+|\d+", t)
         if num:
-            val = float(num[0]) # Lấy chính xác số đầu tiên tìm thấy
+            val = float(num[0])
             return val if 0.1 <= val < 150 else 0
         return 0
     except: return 0
@@ -68,33 +64,40 @@ def to_excel(df_list, sheet_names):
             df.to_excel(writer, index=False, sheet_name=name[:31])
     return output.getvalue()
 
-# ================= 3. SCRAPER (QUÉT TOÀN BỘ TRANG) =================
+# ================= 3. PPJ SCRAPER (FIX BỎ CỘT TOL) =================
 def extract_full_data(file_content):
     if not file_content: return None
     all_specs, img_bytes = {}, None
     POM_KWS = ["WAIST", "HIP", "THIGH", "KNEE", "LEG", "INSEAM", "RISE", "LENGTH", "CHEST", "SHOULDER", "POM", "SPEC"]
     try:
-        # Lấy ảnh trang 1
         doc = fitz.open(stream=file_content, filetype="pdf")
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
         img_pil = Image.open(io.BytesIO(pix.tobytes("png")))
         buf = io.BytesIO(); img_pil.save(buf, format="WEBP", quality=70); img_bytes = buf.getvalue(); doc.close()
         
-        # Quét TẤT CẢ các trang tìm thông số
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
                 words = page.extract_words()
                 if not words: continue
                 df_w = pd.DataFrame(words)
-                df_w['y_grid'] = df_w['top'].round(0) 
+                df_w['y_grid'] = (df_w['top']).round(0) 
+                
+                # Tìm tọa độ cột TOL để loại bỏ vùng bên trái
+                # Thông thường cột thông số bắt đầu sau cột TOL (tọa độ x > 350-400)
                 for y, group in df_w.groupby('y_grid'):
                     sorted_group = group.sort_values('x0')
                     line_txt = " ".join(sorted_group['text'])
-                    line_vals = [parse_val(w) for w in sorted_group['text'] if parse_val(w) > 0]
                     
-                    if any(kw in line_txt.upper() for kw in POM_KWS) and line_vals:
+                    if any(kw in line_txt.upper() for kw in POM_KWS):
                         pom_name = re.sub(r'[\d./\s]+$', '', line_txt).strip()
-                        if len(pom_name) > 2:
+                        
+                        # --- BỘ LỌC TỌA ĐỘ ---
+                        # Chỉ lấy các từ có tọa độ x0 > 400 (Vượt qua cột POM và TOL)
+                        # Tọa độ này bạn có thể điều chỉnh từ 350-450 tùy file PDF
+                        val_words = sorted_group[sorted_group['x0'] > 420]['text'].tolist()
+                        line_vals = [parse_val(w) for w in val_words if parse_val(w) > 0]
+                        
+                        if line_vals and len(pom_name) > 2:
                             for i, val in enumerate(line_vals):
                                 s_key = f"Size_{i+1}"
                                 if s_key not in all_specs: all_specs[s_key] = {}
@@ -109,7 +112,6 @@ with st.sidebar:
     count = res_count.count or 0
     st.metric("Models in Repo", f"{count} SKUs")
     st.write(f"💾 **Storage:** {count*0.08:.1f}MB / 1024MB")
-    st.progress(min(count*0.08/1024, 1.0))
     st.divider()
     new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"sy_{st.session_state['up_key']}")
     if new_files and st.button("🚀 SYNCHRONIZE", use_container_width=True):
@@ -131,46 +133,38 @@ if mode == "🔍 Audit Mode":
     if f_audit:
         target = extract_full_data(f_audit.getvalue())
         if target and target['img']:
-            img_obj = Image.open(io.BytesIO(target['img']))
-            is_long = (img_obj.size[1] / img_obj.size[0]) > 1.4
             res = supabase.table("ai_data").select("id, vector, file_name").execute()
             if res.data:
                 t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
-                valid_rows = []
-                for r in res.data:
-                    if r['vector'] and len(r['vector']) == 512:
-                        name = r['file_name'].upper()
-                        bonus = 0.5 if (is_long and any(x in name for x in ["PANT", "JEAN"])) or (not is_long and any(x in name for x in ["SHORT", "TOP"])) else 0
-                        r['sim_score'] = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1)).flatten()[0] + bonus
-                        valid_rows.append(r)
-                
-                df_db = pd.DataFrame(valid_rows).sort_values('sim_score', ascending=False).head(3)
-                cols = st.columns(4)
-                cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
-                for i, (idx, row) in enumerate(df_db.iterrows()):
-                    det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
-                    if det:
+                valid_rows = [r for r in res.data if r['vector'] and len(r['vector']) == 512]
+                if valid_rows:
+                    df = pd.DataFrame(valid_rows)
+                    df['sim'] = cosine_similarity(t_vec, np.array(df['vector'].tolist())).flatten()
+                    top_3 = df.sort_values('sim', ascending=False).head(3)
+                    cols = st.columns(4)
+                    cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
+                    for i, (idx, row) in enumerate(top_3.iterrows()):
+                        det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data[0]
                         with cols[i+1]:
-                            st.image(det[0]['image_url'], caption=f"Match: {min(row['sim_score'], 1.0):.1%}")
-                            if st.button(f"SELECT {i+1}", key=f"s_{idx}"):
-                                st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
+                            st.image(det['image_url'], caption=f"Match: {row['sim']:.1%}")
+                            if st.button(f"CHỌN {i+1}", key=f"s_{idx}"):
+                                st.session_state['sel_audit'] = {**row.to_dict(), **det}
 
             sel = st.session_state['sel_audit']
             if sel:
-                st.divider(); st.success(f"📈 So sánh với: **{sel['file_name']}**")
+                st.divider(); st.success(f"📈 Comparing with: **{sel['file_name']}**")
                 audit_dfs, sheet_names = [], []
                 for sz, t_specs in target['all_specs'].items():
                     with st.expander(f"SIZE: {sz}", expanded=True):
-                        m_sz = get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4)
-                        r_specs = sel['spec_json'].get(m_sz[0], {}) if m_sz else {}
+                        r_specs = sel['spec_json'].get(get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4)[0] if get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4) else "", {})
                         rows = [{"Point": p, "Target": v, "Ref": r_specs.get(get_close_matches(p, list(r_specs.keys()), 1, 0.6)[0] if get_close_matches(p, list(r_specs.keys()), 1, 0.6) else "", 0)} for p, v in t_specs.items()]
                         for r in rows: r['Diff'] = f"{r['Target'] - r['Ref']:+.3f}"
                         df_sz = pd.DataFrame(rows); st.table(df_sz)
                         audit_dfs.append(df_sz); sheet_names.append(sz)
-                st.download_button("📥 Xuất báo cáo Excel", to_excel(audit_dfs, sheet_names), f"Audit_{sel['file_name']}.xlsx")
+                st.download_button("📥 Xuất báo cáo Audit", to_excel(audit_dfs, sheet_names), f"Audit_{sel['file_name']}.xlsx")
 
 elif mode == "🔄 Version Control":
-    st.subheader("🔄 So sánh 2 file PDF (Quét toàn bộ các trang)")
+    st.subheader("🔄 So sánh 2 file PDF (Bỏ qua TOL)")
     c1, c2 = st.columns(2)
     f1, f2 = c1.file_uploader("Bản cũ (A):", type="pdf", key="v1"), c2.file_uploader("Bản mới (B):", type="pdf", key="v2")
     if f1 and f2:
@@ -178,15 +172,13 @@ elif mode == "🔄 Version Control":
             d1, d2 = extract_full_data(f1.getvalue()), extract_full_data(f2.getvalue())
             if d1 and d2:
                 st.divider(); col_a, col_b = st.columns(2)
-                col_a.image(d1['img'], caption="Bản A (Trang 1)", use_container_width=True)
-                col_b.image(d2['img'], caption="Bản B (Trang 1)", use_container_width=True)
+                col_a.image(d1['img'], caption="Bản A", use_container_width=True); col_b.image(d2['img'], caption="Bản B", use_container_width=True)
                 all_sz = sorted(list(set(d1['all_specs'].keys()) | set(d2['all_specs'].keys())))
                 version_dfs, ver_sheets = [], []
                 for sz in all_sz:
-                    with st.expander(f"DANH SÁCH THÔNG SỐ TỔNG HỢP - {sz}", expanded=True):
+                    with st.expander(f"SIZE: {sz}", expanded=True):
                         s1, s2 = d1['all_specs'].get(sz, {}), d2['all_specs'].get(sz, {})
                         poms = sorted(list(set(s1.keys()) | set(s2.keys())))
                         rows = [{"Point": p, "Ver A": s1.get(p,0), "Ver B": s2.get(p,0), "Diff": f"{s2.get(p,0)-s1.get(p,0):+.3f}", "Status": "✅" if s1.get(p,0)==s2.get(p,0) else "⚠️"} for p in poms]
-                        df_sz = pd.DataFrame(rows); st.table(df_sz)
-                        version_dfs.append(df_sz); ver_sheets.append(sz)
-                st.download_button("📥 Xuất Excel So Sánh", to_excel(version_dfs, ver_sheets), "Full_Comparison.xlsx")
+                        df_sz = pd.DataFrame(rows); st.table(df_sz); version_dfs.append(df_sz); ver_sheets.append(sz)
+                st.download_button("📥 Xuất Excel So Sánh", to_excel(version_dfs, ver_sheets), "Comparison.xlsx")
