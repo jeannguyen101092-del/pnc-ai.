@@ -421,3 +421,22 @@ elif mode == "🔄 Version Control":
             )
         else:
             st.warning("⚠️ Không có dữ liệu để xuất Excel")
+            # =========================
+# CLEAR / RESET
+# =========================
+st.divider()
+
+col1, col2, col3 = st.columns([1,1,2])
+
+with col1:
+    if st.button("🗑 Xóa kết quả", use_container_width=True):
+        if 'ver_results' in st.session_state:
+            del st.session_state['ver_results']
+        st.rerun()
+
+with col2:
+    if st.button("♻️ Reset toàn bộ", use_container_width=True):
+        # xóa toàn bộ session
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
+        st.rerun()
