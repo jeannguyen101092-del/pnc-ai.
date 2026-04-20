@@ -171,10 +171,14 @@ if mode == "🔍 Audit Mode":
         if target and target['img']:
             target_name = f_audit.name.upper()
             
-            # 1. Xác định Category của file đang Upload (Target)
-            if any(x in target_name for x in ["PANT", "SHORT", "TROUSER", "LEG"]):
+            # 1. Định nghĩa bộ từ khóa Phân loại (Dễ dàng bổ sung thêm)
+            KEY_BOTTOMS = ["PANT", "SHORT", "TROUSER", "LEG", "JEAN", "SKIRT"]
+            KEY_TOPS = ["SHIRT", "JACKET", "TOP", "VEST", "TEE", "POLO", "HOODIE", "SWEATER"]
+
+            # 2. Xác định Category của Target
+            if any(x in target_name for x in KEY_BOTTOMS):
                 target_cat = "BOTTOM"
-            elif any(x in target_name for x in ["SHIRT", "JACKET", "TOP", "VEST", "TEE"]):
+            elif any(x in target_name for x in KEY_TOPS):
                 target_cat = "TOP"
             else:
                 target_cat = "OTHER"
@@ -188,37 +192,43 @@ if mode == "🔍 Audit Mode":
                     if r['vector'] and len(r['vector']) == 512:
                         ref_name = r['file_name'].upper()
                         
-                        # 2. Xác định Category của file trong Database (Reference)
-                        if any(x in ref_name for x in ["PANT", "SHORT", "TROUSER", "LEG"]):
+                        # 3. Xác định Category của Reference trong Database
+                        if any(x in ref_name for x in KEY_BOTTOMS):
                             ref_cat = "BOTTOM"
-                        elif any(x in ref_name for x in ["SHIRT", "JACKET", "TOP", "VEST", "TEE"]):
+                        elif any(x in ref_name for x in KEY_TOPS):
                             ref_cat = "TOP"
                         else:
                             ref_cat = "OTHER"
 
-                        # 3. CHẶN ĐỨNG: Chỉ tính toán nếu cùng loại (TOP đi với TOP, BOTTOM đi với BOTTOM)
+                        # 4. LOGIC SIẾT CHẶT: 
+                        # - Chỉ so sánh nếu cùng Category.
+                        # - Nếu cùng là BOTTOM, thưởng thêm điểm nếu cùng là SHORT hoặc cùng là PANT.
                         if target_cat == ref_cat:
                             sim = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1)).flatten()[0]
-                            # Vẫn thưởng điểm nếu trùng từ khóa chính xác (VD: cùng là SHORT)
-                            if ("SHORT" in target_name and "SHORT" in ref_name) or \
-                               ("PANT" in target_name and "PANT" in ref_name):
-                                sim += 0.1
+                            
+                            # Thưởng điểm sâu hơn cho các từ khóa đặc hiệu (Tránh Quần dài so nhầm Quần short)
+                            spec_keys = ["SHORT", "PANT", "JEAN", "JACKET", "SHIRT"]
+                            for sk in spec_keys:
+                                if sk in target_name and sk in ref_name:
+                                    sim += 0.25 # Tăng mạnh ưu tiên cùng loại hình dáng
                             
                             r['sim_final'] = min(sim, 1.0)
                             valid_rows.append(r)
                 
                 if not valid_rows:
-                    st.warning(f"⚠️ Không tìm thấy mẫu nào thuộc nhóm {target_cat} trong Database.")
+                    st.warning(f"⚠️ Hệ thống không tìm thấy mẫu nào cùng nhóm **{target_cat}** để đối soát.")
                 else:
                     df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(3)
                     
-                    st.subheader(f"🎯 AI Matches (Nhóm: {target_cat})")
+                    st.subheader(f"🎯 AI Matches (Nhóm nhận diện: {target_cat})")
                     cols = st.columns(4)
                     cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
+                    
                     for i, (idx, row) in enumerate(df_db.iterrows()):
                         det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
                         if det:
                             with cols[i+1]:
+                                # Hiển thị độ giống nhau thực tế sau khi đã cộng điểm ưu tiên
                                 st.image(det[0]['image_url'], caption=f"Match: {row['sim_final']:.1%}")
                                 if st.button(f"CHỌN {i+1}", key=f"s_{idx}", use_container_width=True):
                                     st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
