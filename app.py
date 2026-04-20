@@ -171,50 +171,60 @@ if mode == "🔍 Audit Mode":
         if target and target['img']:
             target_name = f_audit.name.upper()
             
-            # 1. Trích xuất Vector của ảnh Target
-            t_vec_raw = get_vector(target['img'])
-            t_vec = np.array(t_vec_raw).reshape(1, -1)
+            # 1. PHÂN LOẠI CỨNG (Sửa lỗi Short ra Pant)
+            # Tự động nhận diện loại đồ qua tên file
+            is_short = any(x in target_name for x in ["SHORT", "SHRT", "1/2"])
+            is_pant = any(x in target_name for x in ["PANT", "TROUSER", "JEAN", "LONG"]) and not is_short
+            is_top = any(x in target_name for x in ["SHIRT", "JACKET", "TEE", "TOP"])
 
             res = supabase.table("ai_data").select("id, vector, file_name").execute()
             
             if res.data:
+                t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
                 valid_rows = []
                 for r in res.data:
                     if r['vector'] and len(r['vector']) == 512:
+                        ref_name = r['file_name'].upper()
                         ref_vec = np.array(r['vector']).reshape(1, -1)
-                        # Tính độ tương đồng gốc
+                        
+                        # Tính độ giống hình học cơ bản
                         sim = cosine_similarity(t_vec, ref_vec).flatten()[0]
                         
-                        # 2. LOGIC TRỌNG SỐ (Weighting):
-                        # Ép hệ thống ưu tiên hình dáng (AI Vector) lên hàng đầu
-                        # Chỉ thưởng điểm tên file nếu AI đã thấy "hơi giống" (>0.7)
-                        if sim > 0.7:
-                            # Thưởng điểm nếu cùng từ khóa cụ thể (VD: PANT, SHORT)
-                            ref_n = r['file_name'].upper()
-                            keywords = ["PANT", "SHORT", "JEAN", "JACKET", "SHIRT"]
-                            for k in keywords:
-                                if k in target_name and k in ref_n:
-                                    sim += 0.15 
-                        
-                        r['sim_final'] = min(sim, 1.0)
+                        # 2. LOGIC ĐỐI SOÁT NGHIÊM NGẶT
+                        penalty = 0
+                        # Nếu Target là Quần dài mà Ref là Quần short -> Trừ điểm nặng
+                        if is_pant and any(x in ref_name for x in ["SHORT", "1/2"]): penalty = 0.4
+                        # Nếu Target là Quần short mà Ref là Quần dài -> Trừ điểm nặng
+                        if is_short and any(x in ref_name for x in ["PANT", "TROUSER", "LONG"]): penalty = 0.4
+                        # Nếu khác hẳn loại (Áo vs Quần) -> Loại bỏ
+                        if (is_top and not any(x in ref_name for x in ["SHIRT", "JACKET", "TEE", "TOP"])) or \
+                           (not is_top and any(x in ref_name for x in ["SHIRT", "JACKET", "TEE", "TOP"])):
+                            penalty = 0.8
+
+                        # 3. THƯỞNG ĐIỂM KHI KHỚP TỪ KHÓA ĐẶC HIỆU
+                        bonus = 0
+                        if is_short and any(x in ref_name for x in ["SHORT", "1/2"]): bonus = 0.15
+                        if is_pant and any(x in ref_name for x in ["PANT", "TROUSER", "JEAN"]): bonus = 0.15
+
+                        r['sim_final'] = max(0.0, min(1.0, sim - penalty + bonus))
                         valid_rows.append(r)
                 
-                # Sắp xếp và lấy Top 3
+                # Chỉ lấy những mẫu có độ giống thực tế sau khi lọc
                 df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(3)
                 
-                # Hiển thị kết quả
-                st.subheader(f"🎯 AI Matches (Dựa trên hình dáng thực tế)")
+                st.subheader(f"🎯 AI Matches (Đã lọc theo loại sản phẩm)")
                 cols = st.columns(4)
                 cols[0].image(target['img'], caption="MẪU ĐANG KIỂM", use_container_width=True)
                 
                 for i, (idx, row) in enumerate(df_db.iterrows()):
-                    # Query thêm thông tin chi tiết (ảnh, specs) của kết quả
                     det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
                     if det:
                         with cols[i+1]:
-                            st.image(det[0]['image_url'], caption=f"Giống: {row['sim_final']:.1%}")
+                            # Hiển thị độ giống đã qua bộ lọc
+                            st.image(det[0]['image_url'], caption=f"Khớp: {row['sim_final']:.1%}")
                             if st.button(f"CHỌN {i+1}", key=f"s_{idx}", use_container_width=True):
                                 st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
+
 
 
 elif mode == "🔄 Version Control":
