@@ -139,83 +139,71 @@ with st.sidebar:
         st.session_state['up_key'] += 1
         st.rerun()
 
-# ================= 5. MAIN UI =================
-st.title("👔 AI SMART AUDITOR PRO")
-mode = st.radio("Chế độ:", ["🔍 Audit Mode", "🔄 Version Control"], horizontal=True)
+# ================= 5. MAIN UI (SỬA LỖI NAMEERROR & LỌC CỨNG) =================
+st.markdown("---")
 
-if mode == "🔍 Audit Mode":
-    # Khởi tạo key để tránh lỗi đỏ
-    if 'reset_key' not in st.session_state: st.session_state['reset_key'] = 0
+# 1. Đảm bảo tên biến ở đây là file_audit
+file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf", key=f"audit_{st.session_state['reset_key']}")
+
+if file_audit:
+    # 2. Gọi đúng tên biến file_audit
+    target = extract_pdf_multi_size(file_audit.getvalue())
     
-    file_audit = st.file_uploader("Upload Target PDF:", type="pdf", key=f"aud_{st.session_state['reset_key']}")
-    
-    if file_audit:
-        target = extract_pdf_multi_size(file_audit.getvalue())
-        if target and target.get('all_specs'):
-            # 1. TRÍCH XUẤT BỘ TÊN THÔNG SỐ (POMs) CỦA FILE ĐANG KIỂM
-            target_poms = set([p.upper().strip() for sz in target['all_specs'].values() for p in sz.keys()])
-            
-            # Tự động nhận diện chủng loại qua từ khóa kỹ thuật (Gene sản phẩm)
-            BOTTOM_KEYS = ["WAIST", "INSEAM", "HIP", "THIGH", "RISE", "KNEE", "CALF", "LEG OPENING"]
-            TOP_KEYS = ["CHEST", "BUST", "SHOULDER", "SLEEVE", "NECK", "ARMHOLE"]
-            
-            is_target_bottom = any(k in " ".join(target_poms) for k in BOTTOM_KEYS)
-            is_target_top = any(k in " ".join(target_poms) for k in TOP_KEYS)
+    if target and target.get("all_specs"):
+        # Nhận diện chủng loại của file đang kiểm qua bộ thông số (POM)
+        target_poms = set([p.upper().strip() for sz in target["all_specs"].values() for p in sz.keys()])
+        
+        # Các từ khóa "gene" để phân biệt Quần và Áo
+        BOTTOM_KEYS = ["WAIST", "INSEAM", "HIP", "RISE", "THIGH", "KNEE", "CALF"]
+        TOP_KEYS = ["CHEST", "BUST", "SHOULDER", "SLEEVE", "NECK", "ARMHOLE"]
+        
+        is_target_bottom = any(k in " ".join(target_poms) for k in BOTTOM_KEYS)
+        is_target_top = any(k in " ".join(target_poms) for k in TOP_KEYS)
 
-            res = supabase.table("ai_data").select("*").execute()
+        res = supabase.table("ai_data").select("*").execute()
+        if res.data:
+            df_db = pd.DataFrame(res.data)
+            t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             
-            if res.data:
-                df_db = pd.DataFrame(res.data)
-                t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
+            def compute_final_score(row):
+                # A. Lấy thông số từ mẫu trong Database
+                ref_spec = row.get('spec_json', {})
+                ref_poms = set([p.upper().strip() for sz in ref_spec.values() for p in sz.keys() if isinstance(sz, dict)])
                 
-                def compute_hard_filter_score(row):
-                    # A. Lấy thông số từ Database
-                    ref_spec = row.get('spec_json', {})
-                    ref_poms = set()
-                    if isinstance(ref_spec, dict):
-                        for sz_val in ref_spec.values():
-                            if isinstance(sz_val, dict):
-                                ref_poms.update([p.upper().strip() for p in sz_val.keys()])
-                    
-                    # B. KIỂM TRA CHỦNG LOẠI (HARD FILTER)
-                    is_ref_bottom = any(k in " ".join(ref_poms) for k in BOTTOM_KEYS)
-                    is_ref_top = any(k in " ".join(ref_poms) for k in TOP_KEYS)
-                    
-                    # NẾU SAI LOẠI (QUẦN VS ÁO) -> LOẠI BỎ LUÔN (ĐIỂM = 0)
-                    if (is_target_bottom and not is_ref_bottom) or (is_target_top and not is_ref_top):
-                        return pd.Series([0.0, 0.0])
-                    
-                    # C. NẾU CÙNG LOẠI -> TÍNH ĐIỂM CHI TIẾT
-                    sim_img = cosine_similarity(t_vec, np.array(row['vector']).reshape(1, -1)).flatten()[0]
-                    
-                    # Tính độ giống cấu trúc JSON (Jaccard)
-                    intersect = len(target_poms.intersection(ref_poms))
-                    union = len(target_poms.union(ref_poms))
-                    sim_struct = intersect / union if union > 0 else 0
-                    
-                    # Trọng số: 40% Ảnh - 60% Cấu trúc (Ưu tiên thông số kỹ thuật)
-                    final_score = (sim_img * 0.4) + (sim_struct * 0.6)
-                    return pd.Series([final_score, sim_struct])
+                # B. BỘ LỌC CỨNG: Nếu sai loại (Ví dụ: Target là Quần mà Ref là Áo) -> Điểm = 0
+                is_ref_bottom = any(k in " ".join(ref_poms) for k in BOTTOM_KEYS)
+                is_ref_top = any(k in " ".join(ref_poms) for k in TOP_KEYS)
+                
+                if (is_target_bottom and not is_ref_bottom) or (is_target_top and not is_ref_top):
+                    return pd.Series([0.0, 0.0])
+                
+                # C. NẾU CÙNG LOẠI -> TÍNH ĐIỂM TỔNG HỢP
+                sim_img = cosine_similarity(t_vec, np.array(row['vector']).reshape(1, -1)).flatten()[0]
+                intersect = len(target_poms.intersection(ref_poms))
+                sim_struct = intersect / len(target_poms) if target_poms else 0
+                
+                # Trọng số: 40% Ảnh - 60% Dữ liệu JSON
+                final_score = (sim_img * 0.4) + (sim_struct * 0.6)
+                return pd.Series([final_score, sim_struct])
 
-                # Chạy lọc và tính điểm
-                df_db[['sim_final', 'sim_struct']] = df_db.apply(compute_hard_filter_score, axis=1)
-                
-                # Lọc bỏ những mẫu có điểm = 0 trước khi lấy Top 3
-                df_filtered = df_db[df_db['sim_final'] > 0.1].sort_values('sim_final', ascending=False).head(3)
-                
-                if df_filtered.empty:
-                    st.warning("⚠️ Không tìm thấy mẫu nào trong kho cùng chủng loại (Quần/Áo) với mẫu này.")
-                else:
-                    st.subheader(f"🎯 AI Matches (Nhóm: {'BOTTOM/QUẦN' if is_target_bottom else 'TOP/ÁO' if is_target_top else 'KHÁC'})")
-                    cols = st.columns(4)
-                    cols[0].image(target['img'], caption="MẪU ĐANG KIỂM", use_container_width=True)
-                    
-                    for i, (idx, row) in enumerate(df_filtered.iterrows()):
-                        with cols[i+1]:
-                            st.image(row['image_url'], caption=f"Khớp: {row['sim_final']:.1%}")
-                            if st.button(f"CHỌN {i+1}", key=f"sel_{idx}", use_container_width=True):
-                                st.session_state['sel_audit'] = row.to_dict()
-                                st.rerun()
+            # Tính toán và lọc kết quả
+            df_db[['sim_final', 'sim_struct']] = df_db.apply(compute_final_score, axis=1)
+            top_3 = df_db[df_db['sim_final'] > 0].sort_values('sim_final', ascending=False).head(3)
+            
+            # 3. HIỂN THỊ KẾT QUẢ
+            st.subheader(f"🎯 AI Matches (Nhóm: {'QUẦN' if is_target_bottom else 'ÁO' if is_target_top else 'KHÁC'})")
+            if top_3.empty:
+                st.warning("⚠️ Không tìm thấy mẫu nào cùng chủng loại trong kho dữ liệu.")
+            else:
+                cols = st.columns(4)
+                cols[0].image(target['img'], caption="MẪU ĐANG KIỂM", use_container_width=True)
+                for i, (idx, row) in enumerate(top_3.iterrows()):
+                    with cols[i+1]:
+                        st.image(row['image_url'], caption=f"Khớp: {row['sim_final']:.1%}")
+                        if st.button(f"CHỌN {i+1}", key=f"sel_{idx}", use_container_width=True):
+                            st.session_state['sel_audit'] = row.to_dict()
+                            st.rerun()
+
 
     # HIỂN THỊ CHI TIẾT KHI ĐÃ CHỌN
     if st.session_state.get('sel_audit'):
