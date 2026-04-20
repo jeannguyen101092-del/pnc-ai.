@@ -177,21 +177,11 @@ if mode == "Audit Mode":
                             st.info(f"Độ giống: {item['score']:.1%}")
 
 elif mode == "Version Control":
-    st.subheader("🔄 So sánh Toàn diện (Quét cạn POM & Description)")
+    st.subheader("🔄 So sánh Toàn diện (Quét mọi trang + Tự tìm bảng POM)")
 
-    # --- NÚT XÓA & LÀM MỚI ---
-    if st.button("🗑️ Xoá file & Làm mới", use_container_width=True):
-        st.session_state['up_key'] += 1
-        st.session_state['ver_results'] = None
-        st.rerun()
-
-    c1, c2 = st.columns(2)
-    f1 = c1.file_uploader("Bản cũ (A):", type="pdf", key=f"v1_{st.session_state['up_key']}")
-    f2 = c2.file_uploader("Bản mới (B):", type="pdf", key=f"v2_{st.session_state['up_key']}")
-
-    # --- THUẬT TOÁN QUÉT CẠN (FIX LỖI KEYERROR) ---
-    def scan_full_pdf(content):
-        all_data = {}
+    # --- HÀM QUÉT SIÊU MẠNH (BẤT CHẤP ĐỊNH DẠNG) ---
+    def super_scan(content):
+        all_specs = {}
         first_img = None
         try:
             doc = fitz.open(stream=content, filetype="pdf")
@@ -204,95 +194,85 @@ elif mode == "Version Control":
                     words = page.extract_words()
                     if not words: continue
                     df = pd.DataFrame(words)
-                    df['y'] = df['top'].round(0)
-
-                    # 1. Tìm tiêu đề Size (Dựa vào vị trí cột)
-                    sz_cols = []
+                    df['y'] = (df['top'] / 3).round(0) * 3 # Nhóm các từ cùng hàng
+                    
+                    # Tìm các cột chứa số (giả định là cột thông số)
+                    sz_candidates = []
                     for y, gp in df.groupby('y'):
                         sorted_gp = gp.sort_values('x0')
-                        line_txt = " ".join(sorted_gp['text']).upper()
-                        # Tìm dòng có chữ SIZE hoặc POM/DESCRIPTION
-                        if any(x in line_txt for x in ["SIZE", "SPEC", "POM", "DESCRIPTION"]):
-                            for _, r in sorted_gp.iterrows():
-                                t = r['text'].strip().upper()
-                                # Nhận diện cột Size: số hoặc XS-XXL và nằm bên phải (x > 150)
-                                if (re.match(r'^(XS|S|M|L|XL|XXL)$', t) or re.match(r'^\d{1,3}(\.\d+)?$', t)) and r['x0'] > 150:
-                                    sz_cols.append({"sz": t, "x0": r['x0']-10, "x1": r['x1']+10})
-                            if len(sz_cols) >= 1: break 
+                        for _, row in sorted_gp.iterrows():
+                            txt = row['text'].strip()
+                            # Nếu là số hoặc size chữ và nằm bên phải trang
+                            if (re.match(r'^\d+(\.\d+)?$', txt) or re.match(r'^(XS|S|M|L|XL|XXL)$', txt.upper())) and row['x0'] > 180:
+                                sz_candidates.append({"sz": txt.upper(), "x0": row['x0']-15, "x1": row['x1']+15})
+                    
+                    if not sz_candidates: continue
 
-                    if not sz_cols: continue
-
-                    # 2. Bóc tách thông số
+                    # Quét từng dòng để lấy POM Name và Value
                     for y, gp in df.groupby('y'):
                         sorted_gp = gp.sort_values('x0')
-                        # Lấy POM Name/Description bên trái cột size đầu tiên
-                        left_m = min([c['x0'] for c in sz_cols])
-                        pom = " ".join(sorted_gp[sorted_gp['x1'] <= left_m]['text']).strip()
+                        # Lấy phần chữ bên trái (POM Name)
+                        pom_text = " ".join(sorted_gp[sorted_gp['x1'] < 300]['text']).strip()
                         
-                        # Lọc bỏ dòng tiêu đề và dòng rác
-                        if 3 < len(pom) < 100 and not any(x in pom.upper() for x in ["SIZE", "DATE", "PAGE", "STYLE", "FABRIC", "IMAGE"]):
-                            for col in sz_cols:
-                                cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_group['x1'] <= col['x1'])] if 'sorted_group' not in locals() else sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
+                        if 3 < len(pom_text) < 80 and not any(x in pom_text.upper() for x in ["DATE", "PAGE", "STYLE", "TECH"]):
+                            # Với mỗi POM, tìm giá trị ở các cột tương ứng
+                            for col in sz_candidates:
+                                cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
                                 if not cell.empty:
-                                    raw = " ".join(cell['text'])
+                                    raw_v = " ".join(cell['text'])
                                     try:
-                                        # Hỗ trợ số thập phân và phân số
-                                        num_match = re.findall(r"[-+]?\d*\.\d+|\d+", raw)
-                                        if num_match:
-                                            val = float(num_match[0])
-                                            if 0.1 <= val < 200:
-                                                if col['sz'] not in all_data: all_data[col['sz']] = {}
-                                                all_data[col['sz']][pom] = val
+                                        # Lọc lấy số
+                                        nums = re.findall(r"\d+\.?\d*", raw_v)
+                                        if nums:
+                                            val = float(nums[0])
+                                            if 0.1 <= val < 250:
+                                                sz_name = col['sz']
+                                                if sz_name not in all_specs: all_specs[sz_name] = {}
+                                                all_specs[sz_name][pom_text] = val
                                     except: continue
-            return {"specs": all_data, "img": first_img} if all_data else None
+            return {"specs": all_specs, "img": first_img} if all_specs else None
         except: return None
 
-    # --- CHẠY SO SÁNH ---
+    # --- GIAO DIỆN ---
+    if st.button("🗑️ Làm mới hệ thống"):
+        st.session_state['up_key'] += 1; st.session_state['ver_results'] = None; st.rerun()
+
+    c1, c2 = st.columns(2)
+    f1 = c1.file_uploader("Bản A:", type="pdf", key=f"v1_{st.session_state['up_key']}")
+    f2 = c2.file_uploader("Bản B:", type="pdf", key=f"v2_{st.session_state['up_key']}")
+
     if f1 and f2:
-        if st.button("⚡ Bắt đầu so sánh TOÀN BỘ TRANG", use_container_width=True):
-            with st.spinner("Đang lục tìm bảng thông số ở tất cả các trang..."):
-                d1 = scan_full_pdf(f1.getvalue())
-                d2 = scan_full_pdf(f2.getvalue())
-                
+        if st.button("⚡ BẮT ĐẦU SO SÁNH", use_container_width=True):
+            with st.spinner("Đang lục tìm mọi ngóc ngách PDF..."):
+                d1 = super_scan(f1.getvalue())
+                d2 = super_scan(f2.getvalue())
                 if d1 and d2:
                     st.session_state['ver_results'] = {"d1": d1, "d2": d2}
                 else:
-                    st.error("❌ Không tìm thấy bảng thông số (Specs) nào trong 2 file. Hãy kiểm tra lại file PDF.")
+                    st.error("❌ Không tìm thấy dữ liệu POM. Hãy chắc chắn PDF có bảng thông số.")
 
-    # --- HIỂN THỊ KẾT QUẢ ---
     if st.session_state.get('ver_results'):
         vr = st.session_state['ver_results']
         st.divider()
         
-        # FIX LỖI KEYERROR: Kiểm tra sự tồn tại của key 'specs'
-        try:
-            s_a = vr['d1']['specs']
-            s_b = vr['d2']['specs']
-            all_sz = sorted(list(set(s_a.keys()) | set(s_b.keys())))
+        # Lấy data an toàn
+        s_a = vr['d1'].get('specs', {})
+        s_b = vr['d2'].get('specs', {})
+        all_sz = sorted(list(set(s_a.keys()) | set(s_b.keys())))
 
-            def color_diff(val):
-                if val == "❌ Lệch": return 'background-color: #ffcccc; color: #990000; font-weight: bold;'
-                if val == "✅ Khớp": return 'background-color: #ccffcc; color: #006600;'
-                return 'background-color: #fff3cd; color: #856404;'
-
-            for sz in all_sz:
-                with st.expander(f"📊 SIZE: {sz}", expanded=True):
-                    data_a, data_b = s_a.get(sz, {}), s_b.get(sz, {})
-                    poms = sorted(list(set(data_a.keys()) | set(data_b.keys())))
-                    rows = []
-                    for p in poms:
-                        v1, v2 = data_a.get(p), data_b.get(p)
-                        if v1 is not None and v2 is not None:
-                            diff = round(v2 - v1, 3)
-                            res = "✅ Khớp" if abs(diff) < 0.001 else "❌ Lệch"
-                            df_txt = f"{diff:+.3f}"
-                        else: df_txt, res = "N/A", "⚠️ Thiếu"
-                        rows.append({"POM Name / Description": p, "Bản A": v1, "Bản B": v2, "Lệch": df_txt, "Kết quả": res})
-                    
-                    df_sz = pd.DataFrame(rows)
-                    try: st.dataframe(df_sz.style.map(color_diff, subset=['Kết quả']), use_container_width=True)
-                    except: st.dataframe(df_sz.style.applymap(color_diff, subset=['Kết quả']), use_container_width=True)
-            
-            st.download_button("📥 Xuất Excel So Sánh", to_excel([], []), "Compare.xlsx", use_container_width=True)
-        except Exception as e:
-            st.error(f"Lỗi hiển thị dữ liệu: {e}")
+        for sz in all_sz:
+            with st.expander(f"📊 SIZE: {sz}", expanded=True):
+                data_a, data_b = s_a.get(sz, {}), s_b.get(sz, {})
+                poms = sorted(list(set(data_a.keys()) | set(data_b.keys())))
+                rows = []
+                for p in poms:
+                    v1, v2 = data_a.get(p), data_b.get(p)
+                    diff = round(v2 - v1, 3) if (v1 is not None and v2 is not None) else None
+                    rows.append({
+                        "POM Description": p,
+                        "Bản A": v1 if v1 is not None else "-",
+                        "Bản B": v2 if v2 is not None else "-",
+                        "Lệch": f"{diff:+.3f}" if diff is not None else "N/A",
+                        "Kết quả": "✅ Khớp" if (diff is not None and abs(diff) < 0.001) else ("❌ Lệch" if diff is not None else "⚠️ Thiếu")
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True)
