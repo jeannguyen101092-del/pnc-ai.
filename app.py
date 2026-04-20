@@ -1,19 +1,17 @@
 import streamlit as st
 import io, fitz, pdfplumber, re, pandas as pd, numpy as np
 import torch, hashlib, time, uuid
-import requests  # <--- THÊM DÒNG NÀY VÀO DÒNG SỐ 5 HOẶC 6
+import requests
 from PIL import Image, ImageOps, ImageEnhance
 from torchvision import models, transforms
 from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 from difflib import get_close_matches
 
-
 # ================= 1. CONFIGURATION =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
-
-supabase = create_client(URL, KEY)
+# supabase = create_client(URL, KEY)
 BUCKET = "fashion-imgs"
 
 st.set_page_config(layout="wide", page_title="PPJ AI Auditor Pro", page_icon="👔")
@@ -33,10 +31,8 @@ def get_vector(img_bytes):
     if not img_bytes: return None
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-        # Cắt bỏ lề nhiễu, tập trung vào Sketch giữa trang
         w, h = img.size
         img = img.crop((w*0.15, h*0.1, w*0.85, h*0.55)) 
-        # Tăng tương phản để làm nổi nét phác thảo
         img = ImageOps.grayscale(img)
         img = ImageEnhance.Contrast(img).enhance(2.0).convert('RGB')
 
@@ -106,7 +102,6 @@ def extract_full_data(file_content):
                 for y, group in df_w.groupby('y_grid'):
                     sorted_group = group.sort_values('x0')
                     line_txt = " ".join(sorted_group['text']).upper()
-                    # Bỏ qua các dòng tiêu đề hoặc rác
                     if any(x in line_txt for x in ["COVER", "IMAGE", "DATE", "CONSTRUCTION"]): continue
                     
                     pom_name = re.sub(r'[\d./\s]+$', '', " ".join(sorted_group[sorted_group['x1'] < 350]['text'])).strip()
@@ -121,43 +116,63 @@ def extract_full_data(file_content):
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
-# ================= 4. SIDEBAR (DUNG LƯỢNG & TIẾN ĐỘ) =================
+# ================= 4. SIDEBAR & UPGRADE LOGIC =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
-    res_count = supabase.table("ai_data").select("id", count="exact").execute()
-    count = res_count.count or 0
-    st.metric("Models in Repo", f"{count} SKUs")
     
-    # Hiển thị dung lượng lưu trữ
+    # Hiển thị Metric & Storage
+    try:
+        res_count = supabase.table("ai_data").select("id", count="exact").execute()
+        count = res_count.count or 0
+    except: count = 0
+    
+    st.metric("Models in Repo", f"{count} SKUs")
     storage_mb = count * 0.08
     st.write(f"💾 **Storage:** {storage_mb:.1f}MB / 1024MB")
     st.progress(min(storage_mb/1024, 1.0))
     st.divider()
-            st.subheader("⚙️ Bảo trì hệ thống")
-        with st.expander("Nâng cấp kho dữ liệu AI"):
-            st.info("Quét lại 1.390+ mẫu để nhận diện Quần/Áo chính xác hơn.")
-            if st.button("🚀 BẮT ĐẦU NÂNG CẤP", use_container_width=True):
+    
+    # ĐOẠN NÂNG CẤP ĐÃ SỬA LẠI
+    st.subheader("⚙️ Bảo trì hệ thống")
+    with st.expander("Nâng cấp kho dữ liệu AI"):
+        st.info("Quét lại mẫu để nhận diện Quần/Áo chính xác hơn với thuật toán mới.")
+        if st.button("🚀 BẮT ĐẦU NÂNG CẤP", use_container_width=True):
+            try:
+                # Lấy danh sách ID và URL ảnh
                 res = supabase.table("ai_data").select("id, image_url").execute()
                 items = res.data
                 if items:
                     prog_bar = st.progress(0)
                     status_txt = st.empty()
+                    total = len(items)
+                    
                     for i, item in enumerate(items):
                         try:
+                            # Tải ảnh từ URL
                             resp = requests.get(item['image_url'], timeout=10)
                             if resp.status_code == 200:
+                                # Tạo vector mới với thuật toán Crop & Contrast mới
                                 new_vec = get_vector(resp.content)
                                 if new_vec:
                                     supabase.table("ai_data").update({"vector": new_vec}).eq("id", item['id']).execute()
-                            percent = (i + 1) / len(items)
+                            
+                            # Cập nhật UI
+                            percent = (i + 1) / total
                             prog_bar.progress(percent)
-                            status_txt.markdown(f"**⏳ Tiến độ:** {i+1}/{len(items)}")
-                        except: continue
-                    st.success("✅ Hoàn tất nâng cấp!")
+                            status_txt.markdown(f"**⏳ Đang xử lý:** {i+1}/{total}")
+                        except Exception as e:
+                            continue
+                    
+                    st.success("✅ Hệ thống đã được nâng cấp!")
                     st.balloons()
                     time.sleep(2)
                     st.rerun()
+                else:
+                    st.warning("Kho dữ liệu trống.")
+            except Exception as e:
+                st.error(f"Lỗi kết nối: {e}")
 
+    st.divider()
     new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"sy_{st.session_state['up_key']}")
     if new_files and st.button("🚀 SYNCHRONIZE", use_container_width=True):
                 # --- DÁN ĐOẠN NÀY VÀO DÒNG 155 ---
