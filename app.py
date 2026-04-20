@@ -167,71 +167,87 @@ if mode == "🔍 Audit Mode":
     f_audit = st.file_uploader("Upload Target PDF:", type="pdf")
     if f_audit:
         target = extract_full_data(f_audit.getvalue())
-        if target and target.get('all_specs'):
-            # 1. TRÍCH XUẤT "VÂN TAY" CẤU TRÚC (POMs) TỪ FILE ĐANG KIỂM
+        
+        if target and target.get('img'):
+            # --- HIỂN THỊ MẪU GỐC (MẪU ĐANG KIỂM) ---
+            st.info("📸 Mẫu đang kiểm tra (Target):")
+            st.image(target['img'], width=300)
+            st.divider()
+
+            # 1. TRÍCH XUẤT CẤU TRÚC (JSON)
             target_poms = set([p.upper().strip() for sz in target['all_specs'].values() for p in sz.keys()])
             target_text = " ".join(target_poms)
             
-            # Tự động nhận diện Chủng loại (Gene sản phẩm)
-            is_t_bottom = any(k in target_text for k in ["WAIST", "INSEAM", "HIP", "THIGH", "RISE"])
-            is_t_top = any(k in target_text for k in ["CHEST", "BUST", "SHOULDER", "SLEEVE", "NECK"])
+            # Phân loại chủng loại
+            is_t_bottom = any(k in target_text for k in ["WAIST", "INSEAM", "HIP", "RISE"])
+            is_t_top = any(k in target_text for k in ["CHEST", "BUST", "SLEEVE", "NECK"])
             is_t_short = any(k in target_text or k in f_audit.name.upper() for k in ["SHORT", "1/2"])
 
-            with st.spinner("🕵️ Đang lọc bỏ các mẫu sai chủng loại (Hard Filtering)..."):
+            with st.spinner("🕵️ Đang đối soát AI & Cấu trúc thông số..."):
                 res = supabase.table("ai_data").select("id, vector, file_name, spec_json, image_url").execute()
                 
                 if res.data:
-                    t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
-                    valid_rows = []
+                    # Lấy Vector AI của mẫu gốc
+                    t_vec_raw = get_vector(target['img'])
+                    t_vec = np.array(t_vec_raw).reshape(1, -1) if t_vec_raw else None
                     
+                    valid_rows = []
                     for r in res.data:
-                        # 2. LẤY "GENE" TỪ DATABASE
+                        # --- LỌC CỨNG THEO CHỦNG LOẠI ---
                         ref_spec = r.get('spec_json', {})
                         ref_poms = set([p.upper().strip() for sz in ref_spec.values() for p in sz.keys() if isinstance(sz, dict)])
                         ref_text = " ".join(ref_poms)
                         
-                        # --- BỘ LỌC CỨNG TUYỆT ĐỐI ---
-                        # Nếu upload Quần mà DB là Áo -> LOẠI BỎ LUÔN
                         is_r_bottom = any(k in ref_text for k in ["WAIST", "INSEAM", "HIP"])
                         is_r_top = any(k in ref_text for k in ["CHEST", "SLEEVE", "NECK"])
                         is_r_short = any(k in ref_text or k in r['file_name'].upper() for k in ["SHORT", "1/2"])
 
+                        # Chỉ so sánh nếu cùng nhóm (Quần đi với Quần, Áo đi với Áo)
                         if (is_t_bottom and not is_r_bottom) or (is_t_top and not is_r_top):
-                            continue # Nhảy sang mẫu tiếp theo, không cho hiện áo khi đang kiểm quần
-
-                        # Phân biệt Quần dài và Quần short (Inseam/Knee là gene quần dài)
-                        if is_t_bottom:
-                            if is_t_short != is_r_short: # Một cái short, một cái dài
-                                continue # Loại bỏ để không bị lẫn lộn
-
-                        # --- 3. TÍNH ĐIỂM KHI ĐÃ CÙNG LOẠI ---
-                        sim_img = cosine_similarity(t_vec, np.array(r['vector']).reshape(1, -1)).flatten()[0]
+                            continue
                         
-                        # So khớp cấu trúc JSON
+                        # Tách biệt Pant và Short
+                        if is_t_bottom and (is_t_short != is_r_short):
+                            continue
+
+                        # --- TÍNH ĐIỂM KẾT HỢP ---
+                        # A. Điểm AI Hình ảnh (Phân biệt dáng)
+                        sim_img = 0
+                        if t_vec is not None and r['vector'] and len(r['vector']) == 512:
+                            sim_img = cosine_similarity(t_vec, np.array(r['vector']).reshape(1, -1)).flatten()[0]
+                        
+                        # B. Điểm Cấu trúc JSON
                         intersect = len(target_poms.intersection(ref_poms))
                         sim_struct = intersect / len(target_poms) if target_poms else 0
                         
-                        # Trọng số: 70% Cấu trúc dữ liệu + 30% Hình ảnh
-                        sim_final = (sim_struct * 0.7) + (sim_img * 0.3)
+                        # Công thức: 70% Hình ảnh (để nhảy số) + 30% Cấu trúc (để lọc loại)
+                        final_score = (sim_img * 0.7) + (sim_struct * 0.3)
                         
-                        r['sim_final'] = min(sim_final, 1.0)
+                        r['sim_final'] = min(final_score, 1.0)
                         valid_rows.append(r)
                     
-                    # 4. HIỂN THỊ KẾT QUẢ SẠCH
-                    df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(8)
-                    
+                    # 2. HIỂN THỊ KẾT QUẢ
                     st.subheader(f"🎯 Top 8 mẫu cùng chủng loại ({'QUẦN' if is_t_bottom else 'ÁO' if is_t_top else 'KHÁC'})")
-                    if df_db.empty:
-                        st.warning("⚠️ Không tìm thấy mẫu nào có cấu trúc thông số (JSON) tương đồng.")
+                    
+                    if not valid_rows:
+                        st.warning("⚠️ Không tìm thấy mẫu nào tương đồng.")
                     else:
-                        cols = st.columns(4)
-                        for i, (idx, row) in enumerate(df_db.iterrows()):
-                            with cols[i % 4]:
-                                st.image(row['image_url'], use_container_width=True)
-                                st.write(f"**Chính xác: {row['sim_final']:.1%}**")
-                                if st.button("Chọn Audit", key=f"sel_{idx}"):
-                                    st.session_state['sel_audit'] = row.to_dict()
-                                    st.rerun()
+                        df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(8)
+                        
+                        for row_idx in range(2): # 2 hàng
+                            cols = st.columns(4)
+                            for col_idx in range(4):
+                                idx = row_idx * 4 + col_idx
+                                if idx < len(df_db):
+                                    item = df_db.iloc[idx]
+                                    with cols[col_idx]:
+                                        st.image(item['image_url'], use_container_width=True)
+                                        st.write(f"**Chính xác: {item['sim_final']:.1%}**")
+                                        st.caption(f"📄 {item['file_name'][:25]}")
+                                        if st.button("Chọn mẫu này", key=f"btn_{idx}"):
+                                            st.session_state['sel_audit'] = item.to_dict()
+                                            st.rerun()
+
 
 elif mode == "🔄 Version Control":
     st.subheader("🔄 So sánh 2 file PDF (ALL PAGE + ALL SIZE)")
