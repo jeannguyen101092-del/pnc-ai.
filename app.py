@@ -31,12 +31,14 @@ def get_vector(img_bytes):
     if not img_bytes: return None
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-        # Cắt bỏ lề nhiễu, tập trung vào Sketch giữa trang
         w, h = img.size
-        img = img.crop((w*0.15, h*0.1, w*0.85, h*0.55)) 
-        # Tăng tương phản để làm nổi nét phác thảo
+        # SIẾT CHẶT HƠN: Bỏ bớt phần tiêu đề phía trên và thông tin thừa hai bên
+        # Cắt sâu hơn để tập trung vào hình vẽ kỹ thuật trung tâm
+        img = img.crop((w*0.20, h*0.12, w*0.80, h*0.50)) 
+        
         img = ImageOps.grayscale(img)
-        img = ImageEnhance.Contrast(img).enhance(2.0).convert('RGB')
+        # Tăng tương phản cao hơn nữa để tách biệt hẳn nét vẽ và nền trắng
+        img = ImageEnhance.Contrast(img).enhance(2.5).convert('RGB')
 
         tf = transforms.Compose([
             transforms.Resize((224, 224)),
@@ -48,6 +50,7 @@ def get_vector(img_bytes):
             norm = np.linalg.norm(vec)
             return (vec / norm).astype(float).tolist() if norm > 0 else vec.tolist()
     except: return None
+
 
 def parse_val(t):
     try:
