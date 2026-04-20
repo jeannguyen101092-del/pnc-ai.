@@ -214,9 +214,16 @@ if mode == "🔍 Audit Mode":
 elif mode == "🔄 Version Control":
     st.subheader("🔄 So sánh 2 file PDF (ALL PAGE + ALL SIZE)")
 
+    # --- NÚT XÓA FILE (Đưa lên đầu để reset trạng thái) ---
+    if st.button("🗑️ Xoá file đã upload", use_container_width=True):
+        st.session_state['up_key'] += 1         # Thay đổi key để reset widget uploader
+        st.session_state['ver_results'] = None  # Xóa kết quả so sánh cũ
+        st.rerun()
+
     c1, c2 = st.columns(2)
-    f1 = c1.file_uploader("Bản cũ (A):", type="pdf", key="v1")
-    f2 = c2.file_uploader("Bản mới (B):", type="pdf", key="v2")
+    # Thêm biến up_key vào key để Streamlit nhận diện reset khi bấm nút
+    f1 = c1.file_uploader("Bản cũ (A):", type="pdf", key=f"v1_{st.session_state['up_key']}")
+    f2 = c2.file_uploader("Bản mới (B):", type="pdf", key=f"v2_{st.session_state['up_key']}")
 
     # =========================
     # RUN COMPARE
@@ -328,12 +335,3 @@ elif mode == "🔄 Version Control":
                 "Comparison.xlsx",
                 use_container_width=True
             )
-        else:
-            st.warning("⚠️ Không có dữ liệu để xuất Excel")
-            # =========================
-# ❌ CLEAR UPLOAD FILES
-# =========================
-if st.button("🗑️ Xoá file đã upload", use_container_width=True):
-    st.session_state['up_key'] += 1   # reset uploader
-    st.success("✅ Đã xoá file upload")
-    st.rerun()
