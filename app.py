@@ -17,7 +17,7 @@ st.set_page_config(layout="wide", page_title="PPJ AI Auditor Pro", page_icon="�
 if 'up_key' not in st.session_state: st.session_state['up_key'] = 0
 if 'ver_results' not in st.session_state: st.session_state['ver_results'] = None
 
-# ================= 2. AI CORE (NHẬN DIỆN MẠNH ÁO QUẦN) =================
+# ================= 2. AI CORE =================
 @st.cache_resource
 def load_model():
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
@@ -28,7 +28,6 @@ def get_vector(img_bytes):
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
         w, h = img.size
-        # Crop sâu để tập trung vào phác thảo (tránh rác văn bản)
         img = img.crop((w*0.20, h*0.12, w*0.80, h*0.50)) 
         img = ImageOps.grayscale(img)
         img = ImageEnhance.Contrast(img).enhance(2.5).convert('RGB')
@@ -43,7 +42,7 @@ def get_vector(img_bytes):
             return (vec / norm).astype(float).tolist() if norm > 0 else vec.tolist()
     except: return None
 
-# ================= 3. SCRAPER (BÓC TÁCH SPECS KHÔNG TÀO LAO) =================
+# ================= 3. SCRAPER =================
 def parse_val(t):
     try:
         t = str(t).replace('"', '').strip().lower().replace(',', '.')
@@ -100,14 +99,20 @@ def to_excel(df_list, sheet_names):
             df.to_excel(writer, index=False, sheet_name=str(name)[:31])
     return output.getvalue()
 
-# ================= 4. SIDEBAR =================
+# ================= 4. SIDEBAR (INCLUDES STORAGE METRIC) =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     try:
         res_db = supabase.table("ai_data").select("id", count="exact").execute()
         count = res_db.count or 0
     except: count = 0
+    
+    # Hiển thị SKUs và Dung lượng
     st.metric("Models in Repo", f"{count} SKUs")
+    storage_mb = count * 0.08  # Ước tính 80KB mỗi SKU
+    st.write(f"💾 **Storage:** {storage_mb:.1f}MB / 1024MB")
+    st.progress(min(storage_mb/1024, 1.0))
+    st.divider()
     
     with st.expander("⚙️ Bảo trì & Nâng cấp AI"):
         if st.button("🚀 BẮT ĐẦU", use_container_width=True):
@@ -160,8 +165,8 @@ if mode == "Audit Mode":
                     scores = []
                     for item in db_items:
                         if item['vector']:
-                            sim = cosine_similarity([t_vec], [item['vector']])[0][0]
-                            scores.append({"name": item['file_name'], "url": item['image_url'], "score": sim})
+                            sim = cosine_similarity([t_vec], [item['vector']])
+                            scores.append({"name": item['file_name'], "url": item['image_url'], "score": sim[0][0]})
                     top_8 = sorted(scores, key=lambda x: x['score'], reverse=True)[:8]
                     st.divider()
                     cols = st.columns(4)
@@ -200,10 +205,10 @@ elif mode == "Version Control":
                     v1, v2 = s1.get(p), s2.get(p)
                     if v1 is not None and v2 is not None:
                         diff = round(v2 - v1, 3)
-                        st_v = "✅ Khớp" if abs(diff) < 0.001 else "❌ Lệch"
+                        status = "✅ Khớp" if abs(diff) < 0.001 else "❌ Lệch"
                         dt = f"{diff:+.3f}"
-                    else: dt, st_v = "N/A", "⚠️ Thiếu"
-                    rows.append({"POM": p, "Bản A": v1, "Bản B": v2, "Lệch": dt, "Kết quả": st_v})
+                    else: dt, status = "N/A", "⚠️ Thiếu"
+                    rows.append({"POM": p, "Bản A": v1, "Bản B": v2, "Lệch": dt, "Kết quả": status})
                 df = pd.DataFrame(rows)
                 try: st.dataframe(df.style.map(color_st, subset=['Kết quả']), use_container_width=True)
                 except: st.dataframe(df.style.applymap(color_st, subset=['Kết quả']), use_container_width=True)
