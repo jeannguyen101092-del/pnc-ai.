@@ -166,74 +166,160 @@ mode = st.radio("Chế độ:", ["🔍 Audit Mode", "🔄 Version Control"], hor
 
 if mode == "🔍 Audit Mode":
     f_audit = st.file_uploader("Upload Target PDF:", type="pdf")
+
+    # =========================
+    # 🔥 DETECT TYPE FROM SPEC
+    # =========================
+    def detect_type_from_spec(spec):
+        try:
+            keys = set()
+
+            for sz in spec:
+                for k in spec[sz]:
+                    keys.add(k.upper())
+
+            keys_str = " ".join(keys)
+
+            # PANT
+            if any(x in keys_str for x in ["INSEAM", "OUTSEAM", "THIGH"]):
+                return "PANT"
+
+            # TOP
+            if any(x in keys_str for x in ["CHEST", "SLEEVE", "BODY LENGTH"]):
+                return "TOP"
+
+            # SHORT (inseam nhỏ)
+            for sz in spec:
+                for k, v in spec[sz].items():
+                    if "INSEAM" in k.upper() and v < 40:
+                        return "SHORT"
+
+            return "OTHER"
+        except:
+            return "OTHER"
+
     if f_audit:
         target = extract_full_data(f_audit.getvalue())
+
         if target and target['img']:
-            # 1. Lấy bộ Point (tên điểm đo) của file đang upload
-            # Chúng ta dùng bộ Point này làm "chữ ký" để so khớp cấu trúc
-            target_points = set()
-            for sz_data in target['all_specs'].values():
-                target_points.update(sz_data.keys())
-            
+
+            # 🔥 detect type từ spec
+            target_type = detect_type_from_spec(target['all_specs'])
+
             res = supabase.table("ai_data").select("id, vector, file_name, spec_json").execute()
-            
+
             if res.data:
                 t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
-                valid_rows = []
-                
-                for r in res.data:
-                    if r['vector'] and len(r['vector']) == 512:
-                        # --- CHIẾN THUẬT 1: SO KHỚP HÌNH ẢNH (VECTOR) ---
-                        sim_img = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1)).flatten()[0]
-                        
-                        # --- CHIẾN THUẬT 2: SO KHỚP CẤU TRÚC (JSON) ---
-                        # Lấy tất cả Point có trong dữ liệu mẫu ở Database
-                        ref_spec = r.get('spec_json', {})
-                        ref_points = set()
-                        if isinstance(ref_spec, dict):
-                            for sz_val in ref_spec.values():
-                                if isinstance(sz_val, dict):
-                                    ref_points.update(sz_val.keys())
-                        
-                        # Tính độ tương đồng giữa 2 bộ khung thông số (Jaccard Similarity)
-                        intersection = len(target_points.intersection(ref_points))
-                        union = len(target_points.union(ref_points))
-                        sim_struct = intersection / union if union > 0 else 0
-                        
-                        # --- CHIẾN THUẬT 3: TRỌNG SỐ TỔNG HỢP ---
-                        # Kết hợp: 60% Hình ảnh + 40% Cấu trúc thông số
-                        sim_final = (sim_img * 0.6) + (sim_struct * 0.4)
-                        
-                        # Thưởng điểm tuyệt đối nếu tên file khớp từ khóa (Pant/Short)
-                        t_name = f_audit.name.upper()
-                        r_name = r['file_name'].upper()
-                        if ("SHORT" in t_name and "SHORT" in r_name) or ("PANT" in t_name and "PANT" in r_name):
-                            sim_final += 0.1
-                        
-                        r['sim_final'] = min(sim_final, 1.0)
-                        r['sim_struct'] = sim_struct # Để hiển thị kiểm tra
-                        valid_rows.append(r)
-                
-                # Sắp xếp theo độ giống tổng hợp
-                df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(3)
-                
-                st.subheader("🎯 AI & Data Structure Matching")
-                cols = st.columns(4)
-                cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
-                
-                for i, (idx, row) in enumerate(df_db.iterrows()):
-                    # Lấy ảnh từ Supabase để hiển thị
-                    det = supabase.table("ai_data").select("image_url").eq("id", row['id']).execute().data
-                    if det:
-                        with cols[i+1]:
-                            st.image(det[0]['image_url'], 
-                                     caption=f"Tổng hợp: {row['sim_final']:.1%} \n(Cấu trúc: {row['sim_struct']:.1%})")
-                            
-                            if st.button(f"CHỌN {i+1}", key=f"s_{idx}", use_container_width=True):
-                                # Khi chọn, lấy full dữ liệu để làm Audit
-                                full_det = supabase.table("ai_data").select("*").eq("id", row['id']).execute().data
-                                st.session_state['sel_audit'] = full_det[0]
 
+                valid_rows = []
+
+                for r in res.data:
+                    try:
+                        if not r.get('vector') or len(r['vector']) != 512:
+                            continue
+
+                        ref_spec = r.get("spec_json", {})
+
+                        # 🔥 detect type ref
+                        ref_type = detect_type_from_spec(ref_spec)
+
+                        # =========================
+                        # ❌ FILTER CỨNG
+                        # =========================
+                        if target_type != "OTHER" and ref_type != target_type:
+                            continue
+
+                        # =========================
+                        # 🔥 IMAGE SIM
+                        # =========================
+                        ref_vec = np.array(r['vector']).reshape(1, -1)
+                        img_sim = cosine_similarity(t_vec, ref_vec).flatten()[0]
+
+                        # =========================
+                        # 🔥 SPEC SIM (THÊM VÀO)
+                        # =========================
+                        spec_sim = 0
+                        try:
+                            scores = []
+                            for sz in target['all_specs']:
+                                if sz in ref_spec:
+                                    t_s = target['all_specs'][sz]
+                                    r_s = ref_spec[sz]
+
+                                    common = set(t_s.keys()) & set(r_s.keys())
+                                    if not common:
+                                        continue
+
+                                    diffs = []
+                                    for k in common:
+                                        v1 = t_s[k]
+                                        v2 = r_s[k]
+                                        if v1 and v2:
+                                            diffs.append(abs(v1 - v2))
+
+                                    if diffs:
+                                        scores.append(1 / (1 + np.mean(diffs)))
+
+                            spec_sim = np.mean(scores) if scores else 0
+                        except:
+                            spec_sim = 0
+
+                        # =========================
+                        # 🔥 FINAL SCORE (QUAN TRỌNG)
+                        # =========================
+                        final_score = img_sim * 0.4 + spec_sim * 0.6
+
+                        # ❌ bỏ match rác
+                        if final_score < 0.3:
+                            continue
+
+                        valid_rows.append({
+                            "id": r['id'],
+                            "file_name": r['file_name'],
+                            "sim_final": final_score,
+                            "img_sim": img_sim,
+                            "spec_sim": spec_sim
+                        })
+
+                    except:
+                        continue
+
+                # =========================
+                # SHOW RESULT
+                # =========================
+                if not valid_rows:
+                    st.warning("❌ Không tìm thấy mẫu phù hợp")
+                else:
+                    df_db = pd.DataFrame(valid_rows)\
+                        .sort_values('sim_final', ascending=False)\
+                        .head(3)
+
+                    st.subheader(f"🎯 AI Matches | TYPE: {target_type}")
+
+                    cols = st.columns(4)
+                    cols[0].image(target['img'], caption="TARGET", use_container_width=True)
+
+                    for idx, (_, row) in enumerate(df_db.iterrows()):
+                        if idx + 1 >= len(cols):
+                            break
+
+                        det = supabase.table("ai_data")\
+                            .select("image_url, spec_json")\
+                            .eq("id", row['id'])\
+                            .execute().data
+
+                        if det:
+                            with cols[idx + 1]:
+                                st.image(det[0]['image_url'],
+                                         caption=f"{row['sim_final']:.1%}")
+
+                                st.caption(f"IMG: {row['img_sim']:.2f} | SPEC: {row['spec_sim']:.2f}")
+
+                                if st.button(f"CHỌN {idx+1}", key=f"s_{row['id']}", use_container_width=True):
+                                    st.session_state['sel_audit'] = {
+                                        **row,
+                                        **det[0]
+                                    }
 
 
 
