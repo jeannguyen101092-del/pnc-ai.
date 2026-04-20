@@ -349,17 +349,25 @@ elif mode == "🔄 Version Control":
                         "Kết quả": status
                     })
 
-                if rows:
+                                if rows:
                     df_sz = pd.DataFrame(rows)
                     
                     # Hàm tô màu: Lệch thì đỏ, Khớp thì xanh
                     def color_status(val):
-                        if val == "❌ Lệch": return 'background-color: #ffcccc; color: #990000'
-                        if val == "✅ Khớp": return 'background-color: #ccffcc; color: #006600'
-                        return 'background-color: #fff3cd; color: #856404'
+                        if val == "❌ Lệch": 
+                            return 'background-color: #ffcccc; color: #990000; font-weight: bold;'
+                        if val == "✅ Khớp": 
+                            return 'background-color: #ccffcc; color: #006600;'
+                        return 'background-color: #fff3cd; color: #856404;'
 
-                    # Hiển thị bảng đã được tô màu
-                    st.dataframe(df_sz.style.applymap(color_status, subset=['Kết quả']), use_container_width=True)
+                    # SỬA LỖI TẠI ĐÂY: Dùng .map thay vì .applymap
+                    try:
+                        styled_df = df_sz.style.map(color_status, subset=['Kết quả'])
+                    except AttributeError:
+                        # Dành cho phiên bản Pandas cũ hơn nếu cần
+                        styled_df = df_sz.style.applymap(color_status, subset=['Kết quả'])
+                    
+                    st.dataframe(styled_df, use_container_width=True)
 
                     version_dfs.append(df_sz)
                     ver_sheets.append(f"Size_{sz}")
