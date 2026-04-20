@@ -298,107 +298,180 @@ st.title("👔 AI SMART AUDITOR PRO")
 mode = st.radio("Chế độ:", ["🔍 Audit Mode", "🔄 Version Control"], horizontal=True)
 
 if mode == "🔍 Audit Mode":
+
+    # =========================
+    # HELPER FUNCTIONS
+    # =========================
+    def get_product_type(name):
+        name = name.upper()
+        if "SHORT" in name:
+            return "SHORT"
+        if "PANT" in name or "TROUSER" in name:
+            return "PANT"
+        if "JACKET" in name:
+            return "JACKET"
+        if "SHIRT" in name:
+            return "SHIRT"
+        return "OTHER"
+
+    def spec_similarity(spec1, spec2):
+        try:
+            scores = []
+            for sz in spec1:
+                if sz in spec2:
+                    s1 = spec1[sz]
+                    s2 = spec2[sz]
+
+                    common_keys = set(s1.keys()) & set(s2.keys())
+                    if not common_keys:
+                        continue
+
+                    diffs = []
+                    for k in common_keys:
+                        v1 = s1.get(k)
+                        v2 = s2.get(k)
+                        if v1 and v2:
+                            diffs.append(abs(v1 - v2))
+
+                    if diffs:
+                        scores.append(1 / (1 + np.mean(diffs)))
+
+            return float(np.mean(scores)) if scores else 0
+        except:
+            return 0
+
+    # =========================
+    # UPLOAD FILE
+    # =========================
     f_audit = st.file_uploader("Upload Target PDF:", type="pdf")
+
     if f_audit:
         target = extract_full_data(f_audit.getvalue())
+
         if target and target['img']:
-            # Phân loại để ưu tiên so khớp (Áo vs Quần)
             target_name = f_audit.name.upper()
-            res = supabase.table("ai_data").select("id, vector, file_name").execute()
-            
-            if res.data:
+
+            # =========================
+            # LOAD DATABASE
+            # =========================
+            res = supabase.table("ai_data").select("id, vector, file_name, spec_json").execute()
+
+            if not res.data:
+                st.warning("⚠️ Database trống")
+            else:
                 t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
+                t_type = get_product_type(target_name)
+
                 valid_rows = []
+
                 for r in res.data:
-                    if r['vector'] and len(r['vector']) == 512:
-                        sim = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1)).flatten()[0]
-                        # Thưởng điểm nếu tên file cùng loại
-                        if ("SHORT" in target_name and "SHORT" in r['file_name'].upper()) or \
-                           ("PANT" in target_name and "PANT" in r['file_name'].upper()):
-                            sim += 0.2
-                        r['sim_final'] = sim
-                        valid_rows.append(r)
-                
-                df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(3)
-                
-if res.data:
-    t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
-    t_type = get_product_type(target_name)
+                    try:
+                        if not r.get('vector') or len(r['vector']) != 512:
+                            continue
 
-    valid_rows = []
+                        db_vec = np.array(r['vector']).reshape(1, -1)
 
-    for r in res.data:
-        try:
-            if not r['vector'] or len(r['vector']) != 512:
-                continue
+                        # IMAGE SIM
+                        img_sim = cosine_similarity(t_vec, db_vec).flatten()[0]
 
-            db_vec = np.array(r['vector']).reshape(1, -1)
-            img_sim = cosine_similarity(t_vec, db_vec).flatten()[0]
+                        # TYPE FILTER
+                        db_type = get_product_type(r.get('file_name', ""))
+                        if t_type != "OTHER" and db_type != t_type:
+                            continue
 
-            # FILTER TYPE
-            db_type = get_product_type(r['file_name'])
-            if t_type != "OTHER" and db_type != t_type:
-                continue
+                        # SPEC SIM
+                        spec_sim = spec_similarity(
+                            target.get('all_specs', {}),
+                            r.get('spec_json', {})
+                        )
 
-            # SPEC SIM
-            spec_sim = spec_similarity(
-                target['all_specs'],
-                r.get('spec_json', {})
-            )
+                        # FINAL SCORE
+                        final_score = img_sim * 0.6 + spec_sim * 0.4
 
-            # FINAL SCORE
-            final_score = img_sim * 0.6 + spec_sim * 0.4
+                        valid_rows.append({
+                            "id": r['id'],
+                            "file_name": r['file_name'],
+                            "img_sim": img_sim,
+                            "spec_sim": spec_sim,
+                            "sim_final": final_score
+                        })
 
-            r['img_sim'] = img_sim
-            r['spec_sim'] = spec_sim
-            r['sim_final'] = final_score
+                    except:
+                        continue
 
-            valid_rows.append(r)
+                if not valid_rows:
+                    st.warning("❌ Không tìm thấy match phù hợp")
+                else:
+                    df_db = pd.DataFrame(valid_rows)\
+                        .sort_values('sim_final', ascending=False)\
+                        .head(3)
 
-        except:
-            continue
+                    st.subheader("🎯 AI Matches")
 
-    if valid_rows:
-        df_db = pd.DataFrame(valid_rows)\
-            .sort_values('sim_final', ascending=False)\
-            .head(3)
+                    cols = st.columns(4)
+                    cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
 
-        st.subheader("🎯 AI Matches")
+                    for i, row in df_db.iterrows():
+                        det = supabase.table("ai_data")\
+                            .select("image_url, spec_json")\
+                            .eq("id", row['id'])\
+                            .execute().data
 
-        cols = st.columns(4)
-        cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
+                        if det:
+                            with cols[i+1]:
+                                st.image(det[0]['image_url'],
+                                         caption=f"Match: {min(row['sim_final'],1.0):.1%}")
 
-        for i, (idx, row) in enumerate(df_db.iterrows()):
-            det = supabase.table("ai_data")\
-                .select("image_url, spec_json")\
-                .eq("id", row['id'])\
-                .execute().data
+                                st.caption(f"IMG: {row['img_sim']:.2f} | SPEC: {row['spec_sim']:.2f}")
 
-            if det:
-                with cols[i+1]:
-                    st.image(det[0]['image_url'],
-                             caption=f"Match: {min(row['sim_final'],1.0):.1%}")
+                                if st.button(f"CHỌN {i+1}", key=f"s_{row['id']}", use_container_width=True):
+                                    st.session_state['sel_audit'] = {
+                                        **row,
+                                        **det[0]
+                                    }
 
-                    st.caption(f"IMG: {row['img_sim']:.2f} | SPEC: {row['spec_sim']:.2f}")
+            # =========================
+            # SO SÁNH SPEC
+            # =========================
+            sel = st.session_state.get('sel_audit')
 
-                    if st.button(f"CHỌN {i+1}", key=f"s_{idx}", use_container_width=True):
-                        st.session_state['sel_audit'] = {
-                            **row.to_dict(),
-                            **det[0]
-                        }
-            sel = st.session_state['sel_audit']
             if sel:
-                st.divider(); st.success(f"📈 So sánh với: **{sel['file_name']}**")
+                st.divider()
+                st.success(f"📈 So sánh với: **{sel['file_name']}**")
+
                 audit_dfs, sheet_names = [], []
+
                 for sz, t_specs in target['all_specs'].items():
                     with st.expander(f"SIZE: {sz}", expanded=True):
-                        m_sz = get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4)
-                        r_specs = sel['spec_json'].get(m_sz[0] if m_sz else "", {})
-                        rows = [{"Point": p, "Target": v, "Ref": r_specs.get(get_close_matches(p, list(r_specs.keys()), 1, 0.6)[0] if get_close_matches(p, list(r_specs.keys()), 1, 0.6) else "", 0)} for p, v in t_specs.items()]
-                        for r in rows: r['Diff'] = f"{r['Target'] - r['Ref']:+.3f}"
-                        df_sz = pd.DataFrame(rows); st.table(df_sz); audit_dfs.append(df_sz); sheet_names.append(sz)
-                st.download_button("📥 Xuất Excel", to_excel(audit_dfs, sheet_names), f"Audit_{sel['file_name']}.xlsx")
 
+                        ref_specs = sel.get('spec_json', {}).get(sz, {})
+
+                        rows = []
+                        for p, v in t_specs.items():
+                            ref_val = ref_specs.get(p)
+
+                            diff = 0
+                            if ref_val:
+                                diff = v - ref_val
+
+                            rows.append({
+                                "Point": p,
+                                "Target": v,
+                                "Ref": ref_val if ref_val else 0,
+                                "Diff": f"{diff:+.3f}"
+                            })
+
+                        df_sz = pd.DataFrame(rows)
+                        st.dataframe(df_sz, use_container_width=True)
+
+                        audit_dfs.append(df_sz)
+                        sheet_names.append(sz)
+
+                st.download_button(
+                    "📥 Xuất Excel",
+                    to_excel(audit_dfs, sheet_names),
+                    f"Audit_{sel['file_name']}.xlsx"
+                )
 elif mode == "🔄 Version Control":
     st.subheader("🔄 So sánh 2 file PDF (ALL PAGE + ALL SIZE)")
 
