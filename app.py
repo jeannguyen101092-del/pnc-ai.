@@ -167,12 +167,11 @@ if mode == "🔍 Audit Mode":
     f_audit = st.file_uploader("Upload Target PDF:", type="pdf")
     if f_audit:
         target = extract_full_data(f_audit.getvalue())
-        if target and target['all_specs']:
-            # 1. LẤY "CHỮ KÝ" CẤU TRÚC CỦA FILE ĐANG KIỂM
-            # Gom tất cả tên các điểm đo (POM) hiện có trong file PDF vừa up
+        if target and target.get('all_specs'):
+            # 1. Trích xuất bộ POM (Điểm đo) của file đang upload
             target_poms = set([p.upper().strip() for sz in target['all_specs'].values() for p in sz.keys()])
             
-            with st.spinner(f"🕵️ Đang đối soát cấu trúc với 2.000 mẫu trong kho..."):
+            with st.spinner(f"🕵️ Đang đối soát cấu trúc với kho dữ liệu..."):
                 res = supabase.table("ai_data").select("id, vector, file_name, spec_json").execute()
                 
                 if res.data:
@@ -180,7 +179,7 @@ if mode == "🔍 Audit Mode":
                     valid_rows = []
                     
                     for r in res.data:
-                        # 2. TRÍCH XUẤT CẤU TRÚC TỪ JSON CÓ SẴN TRÊN DB
+                        # --- LẤY CẤU TRÚC JSON CÓ SẴN TRÊN DB ---
                         ref_spec = r.get('spec_json', {})
                         ref_poms = set()
                         if isinstance(ref_spec, dict):
@@ -188,31 +187,54 @@ if mode == "🔍 Audit Mode":
                                 if isinstance(sz_val, dict):
                                     ref_poms.update([p.upper().strip() for p in sz_val.keys()])
                         
-                        # 3. SO KHỚP CẤU TRÚC (Jaccard Similarity)
-                        # Tính xem bao nhiêu % tên điểm đo trùng nhau
-                        intersect = len(target_poms.intersection(ref_poms))
-                        union = len(target_poms.union(ref_poms))
-                        sim_struct = intersect / union if union > 0 else 0
+                        # --- SO KHỚP CẤU TRÚC (Sử dụng Fuzzy logic đơn giản) ---
+                        # Kiểm tra trùng khớp các từ khóa vàng: Waist, Hip, Chest, Sleeve
+                        match_count = len(target_poms.intersection(ref_poms))
+                        sim_struct = match_count / len(target_poms) if target_poms else 0
                         
-                        # 4. SO KHỚP HÌNH ẢNH (AI VECTOR)
+                        # --- SO KHỚP HÌNH ẢNH (AI VECTOR) ---
                         sim_img = 0
                         if r['vector'] and len(r['vector']) == 512:
                             sim_img = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1)).flatten()[0]
                         
-                        # 5. TRỌNG SỐ TỔNG HỢP (70% Cấu trúc JSON + 30% Hình ảnh)
-                        # Chúng ta tin vào thông số kỹ thuật (JSON) hơn là nét vẽ (AI)
-                        sim_final = (sim_struct * 0.7) + (sim_img * 0.3)
+                        # --- TRỌNG SỐ TỔNG HỢP ---
+                        # Ưu tiên cấu trúc (60%) + Hình ảnh (40%)
+                        sim_final = (sim_struct * 0.6) + (sim_img * 0.4)
                         
-                        # BỘ LỌC CỨNG: Nếu cấu trúc quá khác biệt (Quần vs Áo) -> Loại bỏ
-                        if sim_struct > 0.2: # Ít nhất phải khớp 20% tên điểm đo
-                            r['sim_final'] = sim_final
-                            r['sim_struct'] = sim_struct
-                            valid_rows.append(r)
+                        # Thưởng điểm nếu cùng từ khóa trong tên file
+                        if any(k in f_audit.name.upper() and k in r['file_name'].upper() for k in ["PANT", "SHORT", "SHIRT"]):
+                            sim_final += 0.2
+
+                        # Gán giá trị vào row
+                        r['sim_final'] = min(sim_final, 1.0)
+                        r['sim_struct'] = sim_struct
+                        valid_rows.append(r)
                     
-                    # Lấy Top 3 mẫu thực sự cùng chủng loại
-                    df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(3)
-                    
-                    # Hiển thị kết quả... (Phần hiển thị giữ nguyên như cũ)
+                    # --- FIX LỖI KEYERROR ---
+                    if not valid_rows:
+                        st.warning("⚠️ Không tìm thấy mẫu nào tương đồng trong kho dữ liệu.")
+                    else:
+                        # Tạo DF và sắp xếp
+                        df_db = pd.DataFrame(valid_rows)
+                        if 'sim_final' in df_db.columns:
+                            top_3 = df_db.sort_values('sim_final', ascending=False).head(3)
+                            
+                            st.subheader("🎯 Kết quả đối soát (Kết hợp AI & JSON)")
+                            cols = st.columns(4)
+                            cols[0].image(target['img'], caption="MẪU ĐANG KIỂM", use_container_width=True)
+                            
+                            for i, (idx, row) in enumerate(top_3.iterrows()):
+                                # Lấy ảnh từ Supabase để hiển thị
+                                det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
+                                if det:
+                                    with cols[i+1]:
+                                        st.image(det[0]['image_url'], 
+                                                 caption=f"Khớp: {row['sim_final']:.1%} (Cấu trúc: {row['sim_struct']:.1%})")
+                                        if st.button(f"CHỌN {i+1}", key=f"s_{idx}", use_container_width=True):
+                                            st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
+                        else:
+                            st.error("❌ Lỗi dữ liệu: Cột sim_final không tồn tại.")
+
 
 elif mode == "🔄 Version Control":
     st.subheader("🔄 So sánh 2 file PDF (ALL PAGE + ALL SIZE)")
