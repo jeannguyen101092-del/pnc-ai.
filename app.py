@@ -101,8 +101,11 @@ def to_excel(df_list, sheet_names):
 
 # ================= 4. SIDEBAR (INCLUDES STORAGE METRIC) =================
 # ================= 4. SIDEBAR (FIX LỖI NẠP KHO) =================
+# ================= 4. SIDEBAR (BẢN ÉP NẠP KHO) =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
+    
+    # Hiển thị SKU thực tế từ Database
     try:
         res_db = supabase.table("ai_data").select("id", count="exact").execute()
         count = res_db.count or 0
@@ -113,74 +116,64 @@ with st.sidebar:
     st.write(f"💾 **Storage:** {storage_mb:.1f}MB / 1024MB")
     st.progress(min(storage_mb/1024, 1.0))
     st.divider()
-    
-    with st.expander("⚙️ Bảo trì & Nâng cấp AI"):
-        if st.button("🚀 BẮT ĐẦU", use_container_width=True):
-            items = (supabase.table("ai_data").select("id, image_url").execute()).data
-            if items:
-                p_bar = st.progress(0)
-                for i, item in enumerate(items):
-                    try:
-                        r = requests.get(item['image_url'], timeout=10)
-                        if r.status_code == 200:
-                            v = get_vector(r.content)
-                            if v: supabase.table("ai_data").update({"vector": v}).eq("id", item['id']).execute()
-                        p_bar.progress((i+1)/len(items))
-                    except: continue
-                st.success("Xong!"); st.rerun()
 
-    st.divider()
     st.subheader("📥 Nạp kho mẫu mới")
     up_new = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"side_up_{st.session_state['up_key']}")
     
     if up_new and st.button("🚀 ĐẨY VÀO KHO", use_container_width=True):
         p_bar = st.progress(0)
-        p_txt = st.empty()
+        st_text = st.empty()
         
         for i, f in enumerate(up_new):
             try:
-                # 1. Trích xuất dữ liệu chuẩn (Chỉ lấy Measurement Chart)
-                # Sử dụng hàm get_measurement_specs đã viết ở Version Control để lọc rác
-                data_df = get_measurement_specs(f.getvalue()) 
-                
-                # Lấy ảnh trang 1 để làm Sketch đại diện
-                doc = fitz.open(stream=f.getvalue(), filetype="pdf")
+                f_value = f.getvalue()
+                # 1. Trích xuất ảnh trang 1 (Bắt buộc phải có để AI nhận diện)
+                doc = fitz.open(stream=f_value, filetype="pdf")
                 pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 img_bytes = pix.tobytes("png")
                 doc.close()
 
-                if not data_df.empty:
-                    # FIX LỖI TẠI ĐÂY: Thêm str() vào uuid
-                    unique_id = str(uuid.uuid4())[:8]
-                    fname = f"{unique_id}_{f.name.replace(' ', '_')}.webp"
-                    
-                    # 2. Upload ảnh lên Storage
-                    path = f"sketches/{fname}"
-                    supabase.storage.from_(BUCKET).upload(path, img_bytes)
-                    img_url = supabase.storage.from_(BUCKET).get_public_url(path)
-                    
-                    # 3. Chuyển Dataframe thành định dạng JSON để lưu Database
-                    # Gom nhóm theo Size
+                # 2. Trích xuất thông số (Nếu có thì lấy, không có thì bỏ qua nhưng vẫn nạp file)
+                # Sử dụng hàm quét của bạn, nếu lỗi thì trả về dict trống
+                try:
+                    data_df = get_measurement_specs(f_value) 
                     specs_dict = {}
-                    for sz in data_df['Size'].unique():
-                        specs_dict[sz] = data_df[data_df['Size'] == sz].set_index('POM')['Value'].to_dict()
+                    if not data_df.empty:
+                        for sz in data_df['Size'].unique():
+                            specs_dict[sz] = data_df[data_df['Size'] == sz].set_index('POM')['Value'].to_dict()
+                except:
+                    specs_dict = {}
 
-                    # 4. Lưu vào Database
-                    supabase.table("ai_data").insert({
-                        "file_name": f.name,
-                        "image_url": img_url,
-                        "vector": get_vector(img_bytes),
-                        "specs": specs_dict
-                    }).execute()
-                    
-                p_bar.progress((i+1)/len(up_new))
-                p_txt.text(f"Đang nạp: {i+1}/{len(up_new)}")
+                # 3. Tạo định danh duy nhất
+                u_id = str(uuid.uuid4())[:8]
+                fname = f"{u_id}_{f.name.replace(' ', '_')}.webp"
+                
+                # 4. Đẩy ảnh lên Storage
+                path = f"sketches/{fname}"
+                supabase.storage.from_(BUCKET).upload(path, img_bytes)
+                img_url = supabase.storage.from_(BUCKET).get_public_url(path)
+                
+                # 5. Tính Vector AI
+                vec = get_vector(img_bytes)
+
+                # 6. Gửi dữ liệu lên Supabase (Lệnh quan trọng nhất)
+                supabase.table("ai_data").insert({
+                    "file_name": f.name,
+                    "image_url": img_url,
+                    "vector": vec,
+                    "specs": specs_dict
+                }).execute()
+                
+                p_bar.progress((i + 1) / len(up_new))
+                st_text.text(f"✅ Đã nạp: {f.name}")
+
             except Exception as e:
-                st.error(f"Lỗi file {f.name}: {e}")
+                st.error(f"❌ Lỗi file {f.name}: {str(e)}")
         
-        st.success("Đã nạp kho thành công!")
+        st.success("🎉 Đã hoàn tất nạp kho!")
+        time.sleep(1)
         st.session_state['up_key'] += 1
-        st.rerun()
+        st.rerun() # Tải lại trang để cập nhật con số SKU
 
 
 # ================= 5. MAIN UI =================
