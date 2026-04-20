@@ -10,3 +10,4 @@ supabase
 rapidfuzz
 xlsxwriter
 scikit-learn
+requests
