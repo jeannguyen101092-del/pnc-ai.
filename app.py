@@ -138,8 +138,7 @@ with st.sidebar:
     if new_files and st.button("🚀 SYNCHRONIZE", use_container_width=True):
                 # --- DÁN ĐOẠN NÀY VÀO DÒNG 155 ---
                # --- ĐOẠN NÂNG CẤP CHUẨN ---
-                # --- Dán đoạn này vào thay thế đoạn lỗi ---
-        st.subheader("⚙️ Bảo trì hệ thống")
+            st.subheader("⚙️ Bảo trì hệ thống")
         with st.expander("Nâng cấp kho dữ liệu AI"):
             st.info("Quét lại 1.390+ mẫu để nhận diện Quần/Áo chính xác hơn.")
             if st.button("🚀 BẮT ĐẦU NÂNG CẤP", use_container_width=True):
