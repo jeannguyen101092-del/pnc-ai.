@@ -166,64 +166,59 @@ mode = st.radio("Chế độ:", ["🔍 Audit Mode", "🔄 Version Control"], hor
 if mode == "🔍 Audit Mode":
     f_audit = st.file_uploader("Upload Target PDF:", type="pdf")
     if f_audit:
-        # Gọi hàm quét dữ liệu
         target = extract_full_data(f_audit.getvalue())
         
-        if target:
-            # 1. TRUY VẤN TOÀN BỘ DATABASE
-            res = supabase.table("ai_data").select("id, vector, file_name, spec_json").execute()
+        if target and target.get('img'):
+            # 1. TRÍCH XUẤT VECTOR CỦA FILE ĐANG KIỂM
+            t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
             
-            if res.data:
-                # Trích xuất Vector AI từ ảnh Target
-                t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
-                valid_rows = []
+            with st.spinner("🕵️ AI đang đối soát hình ảnh với 2.000 mẫu trong kho..."):
+                # 2. TRUY VẤN TOÀN BỘ DATABASE (CHỈ LẤY VECTOR VÀ THÔNG TIN ẢNH)
+                res = supabase.table("ai_data").select("id, vector, file_name, image_url").execute()
                 
-                # Lấy tên file để đoán loại (Phòng hờ trường hợp không đọc được chữ trong PDF)
-                t_name = f_audit.name.upper()
-                is_t_bottom = any(x in t_name for x in ["PANT", "SHORT", "JEAN", "LEG"])
-                is_t_top = any(x in t_name for x in ["SHIRT", "TOP", "JACKET", "TEE", "POLO"])
-
-                for r in res.data:
-                    # --- SO KHỚP HÌNH ẢNH (GỐC) ---
-                    sim_img = 0
-                    if r['vector'] and len(r['vector']) == 512:
-                        sim_img = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1)).flatten()[0]
-
-                    # --- BỘ LỌC THÔNG MINH QUA TÊN FILE ---
-                    r_name = r['file_name'].upper()
-                    final_score = sim_img
+                if res.data:
+                    valid_rows = []
+                    for r in res.data:
+                        if r['vector'] and len(r['vector']) == 512:
+                            # TÍNH ĐỘ GIỐNG NHAU THUẦN TÚY QUA HÌNH ẢNH (COSINE SIMILARITY)
+                            sim_img = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1)).flatten()[0]
+                            
+                            # Lưu kết quả
+                            r['sim_final'] = float(sim_img)
+                            valid_rows.append(r)
                     
-                    # Nếu cùng là Áo hoặc cùng là Quần qua tên file -> Thưởng điểm mạnh
-                    if (is_t_bottom and any(x in r_name for x in ["PANT", "SHORT", "JEAN"])) or \
-                       (is_t_top and any(x in r_name for x in ["SHIRT", "TOP", "JACKET", "TEE"])):
-                        final_score += 0.2
+                    # 3. SẮP XẾP VÀ LẤY ĐÚNG 8 MÃ GIỐNG NHẤT
+                    df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(8)
                     
-                    # Nếu khác loại hoàn toàn (Áo vs Quần) -> Trừ điểm
-                    if (is_t_top and any(x in r_name for x in ["PANT", "SHORT"])) or \
-                       (is_t_bottom and any(x in r_name for x in ["SHIRT", "JACKET"])):
-                        final_score -= 0.4
+                    st.subheader(f"🎯 Top 8 thiết kế có hình dáng tương đồng nhất")
+                    
+                    # Hiển thị mẫu gốc trước
+                    st.info("📸 Mẫu bạn vừa upload:")
+                    st.image(target['img'], width=250)
+                    st.divider()
 
-                    r['sim_final'] = max(0, min(final_score, 1.0))
-                    valid_rows.append(r)
-                
-                # 2. HIỂN THỊ (Bỏ ngưỡng lọc gắt để luôn lên kết quả)
-                df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(3)
-                
-                st.subheader("🎯 AI Matches (Kết quả tốt nhất tìm thấy)")
-                cols = st.columns(4)
-                cols[0].image(target['img'], caption="MẪU ĐANG KIỂM", use_container_width=True)
-                
-                for i, (idx, row) in enumerate(df_db.iterrows()):
-                    # Lấy ảnh từ URL để hiển thị
-                    det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
-                    if det:
-                        with cols[i+1]:
-                            st.image(det[0]['image_url'], caption=f"Khớp: {row['sim_final']:.1%}")
-                            if st.button(f"CHỌN {i+1}", key=f"s_{idx}", use_container_width=True):
-                                st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
-                                st.rerun()
-            else:
-                st.warning("Database chưa có dữ liệu.")
+                    # 4. HIỂN THỊ 8 KẾT QUẢ TRÊN 2 HÀNG (Mỗi hàng 4 mẫu)
+                    for row_idx in range(2): # 2 hàng
+                        cols = st.columns(4) # Mỗi hàng 4 cột
+                        for col_idx in range(4):
+                            idx = row_idx * 4 + col_idx
+                            if idx < len(df_db):
+                                item = df_db.iloc[idx]
+                                with cols[col_idx]:
+                                    st.image(item['image_url'], use_container_width=True)
+                                    # Hiển thị độ giống thực tế từ AI
+                                    score = item['sim_final']
+                                    st.write(f"**Độ giống: {score:.1%}**")
+                                    st.caption(f"📄 {item['file_name'][:25]}")
+                                    
+                                    if st.button("Chọn mẫu này", key=f"select_{idx}"):
+                                        # Vẫn cho phép chọn để xem chi tiết nếu cần
+                                        full_data = supabase.table("ai_data").select("*").eq("id", item['id']).execute().data
+                                        st.session_state['sel_audit'] = full_data[0] if full_data else None
+                                        st.rerun()
+                else:
+                    st.error("Không tìm thấy dữ liệu trong Database.")
+
 
 
 
