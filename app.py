@@ -100,79 +100,98 @@ def to_excel(df_list, sheet_names):
     return output.getvalue()
 
 # ================= 4. SIDEBAR (INCLUDES STORAGE METRIC) =================
-# ================= 4. SIDEBAR (BẢN ÉP NẠP KHO) =================
+# ================= 4. SIDEBAR (BẢN FIX TRIỆT ĐỂ LỖI KHÔNG LÊN SỐ) =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     
-    # Hiển thị SKU thực tế từ Database
+    # 1. Lấy SKU thực tế và ép làm mới (Clear Cache)
     try:
         res_db = supabase.table("ai_data").select("id", count="exact").execute()
-        count = res_db.count or 0
-    except: count = 0
+        current_count = res_db.count or 0
+    except Exception as e:
+        st.error(f"Lỗi kết nối DB: {e}")
+        current_count = 0
     
-    st.metric("Models in Repo", f"{count} SKUs")
-    storage_mb = count * 0.08
+    st.metric("Models in Repo", f"{current_count} SKUs")
+    
+    # Hiển thị dung lượng
+    storage_mb = current_count * 0.08
     st.write(f"💾 **Storage:** {storage_mb:.1f}MB / 1024MB")
     st.progress(min(storage_mb/1024, 1.0))
-    st.divider()
+    
+    # Nút bấm làm mới số lượng thủ công
+    if st.button("🔄 Làm mới số lượng"):
+        st.rerun()
 
+    st.divider()
     st.subheader("📥 Nạp kho mẫu mới")
     up_new = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"side_up_{st.session_state['up_key']}")
     
     if up_new and st.button("🚀 ĐẨY VÀO KHO", use_container_width=True):
         p_bar = st.progress(0)
-        st_text = st.empty()
+        status = st.empty()
         
         for i, f in enumerate(up_new):
             try:
-                f_value = f.getvalue()
-                # 1. Trích xuất ảnh trang 1 (Bắt buộc phải có để AI nhận diện)
-                doc = fitz.open(stream=f_value, filetype="pdf")
+                f_bytes = f.getvalue()
+                
+                # Bước 1: Lấy ảnh trang 1 (Bắt buộc)
+                doc = fitz.open(stream=f_bytes, filetype="pdf")
                 pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 img_bytes = pix.tobytes("png")
                 doc.close()
 
-                # 2. Trích xuất thông số (Nếu có thì lấy, không có thì bỏ qua nhưng vẫn nạp file)
-                # Sử dụng hàm quét của bạn, nếu lỗi thì trả về dict trống
+                # Bước 2: Trích xuất thông số (Bỏ qua lỗi nếu trang đó không phải bảng specs)
+                specs_dict = {}
                 try:
-                    data_df = get_measurement_specs(f_value) 
-                    specs_dict = {}
+                    data_df = get_measurement_specs(f_bytes) # Hàm này đã viết ở phần trước
                     if not data_df.empty:
                         for sz in data_df['Size'].unique():
                             specs_dict[sz] = data_df[data_df['Size'] == sz].set_index('POM')['Value'].to_dict()
                 except:
                     specs_dict = {}
 
-                # 3. Tạo định danh duy nhất
-                u_id = str(uuid.uuid4())[:8]
-                fname = f"{u_id}_{f.name.replace(' ', '_')}.webp"
+                # Bước 3: Tạo File name và ID Duy nhất
+                unique_id = str(uuid.uuid4())[:8]
+                new_filename = f"{unique_id}_{f.name.replace(' ', '_')}.webp"
                 
-                # 4. Đẩy ảnh lên Storage
-                path = f"sketches/{fname}"
-                supabase.storage.from_(BUCKET).upload(path, img_bytes)
-                img_url = supabase.storage.from_(BUCKET).get_public_url(path)
+                # Bước 4: Upload ảnh lên Storage (Kiểm tra xem Storage có lỗi không)
+                storage_path = f"sketches/{new_filename}"
+                storage_res = supabase.storage.from_(BUCKET).upload(storage_path, img_bytes)
+                img_url = supabase.storage.from_(BUCKET).get_public_url(storage_path)
                 
-                # 5. Tính Vector AI
-                vec = get_vector(img_bytes)
+                # Bước 5: Tính Vector AI
+                vector_data = get_vector(img_bytes)
 
-                # 6. Gửi dữ liệu lên Supabase (Lệnh quan trọng nhất)
-                supabase.table("ai_data").insert({
-                    "file_name": f.name,
-                    "image_url": img_url,
-                    "vector": vec,
+                # Bước 6: Lệnh INSERT và bắt lỗi phản hồi từ Supabase
+                insert_data = {
+                    "file_name": str(f.name),
+                    "image_url": str(img_url),
+                    "vector": vector_data,
                     "specs": specs_dict
-                }).execute()
+                }
                 
+                # Thực hiện lệnh ghi vào bảng
+                response = supabase.table("ai_data").insert(insert_data).execute()
+                
+                # KIỂM TRA PHẢN HỒI: Nếu không có dữ liệu trả về tức là lỗi
+                if not response.data:
+                    st.error(f"❌ Supabase từ chối nạp file: {f.name}")
+                else:
+                    status.success(f"✅ Đã nạp thành công: {f.name}")
+
                 p_bar.progress((i + 1) / len(up_new))
-                st_text.text(f"✅ Đã nạp: {f.name}")
 
             except Exception as e:
-                st.error(f"❌ Lỗi file {f.name}: {str(e)}")
+                st.error(f"❌ Lỗi xử lý file {f.name}: {str(e)}")
         
-        st.success("🎉 Đã hoàn tất nạp kho!")
-        time.sleep(1)
+        st.balloons()
+        st.success("🎉 Quá trình nạp kho kết thúc!")
+        time.sleep(2)
+        # Reset uploader và tải lại toàn bộ app để cập nhật SKU
         st.session_state['up_key'] += 1
-        st.rerun() # Tải lại trang để cập nhật con số SKU
+        st.rerun()
+
 
 
 # ================= 5. MAIN UI =================
