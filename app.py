@@ -434,9 +434,4 @@ with col1:
             del st.session_state['ver_results']
         st.rerun()
 
-with col2:
-    if st.button("♻️ Reset toàn bộ", use_container_width=True):
-        # xóa toàn bộ session
-        for k in list(st.session_state.keys()):
-            del st.session_state[k]
-        st.rerun()
+
