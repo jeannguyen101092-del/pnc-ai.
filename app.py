@@ -196,35 +196,26 @@ if mode == "Audit Mode":
                             st.info(f"Độ giống: {item['score']:.1%}")
 
 elif mode == "Version Control":
-    st.subheader("🔄 So sánh Sample Size (Đối chiếu thông số Size Mẫu)")
+    st.subheader("🔄 So sánh Sample Size (Quét Toàn Bộ File)")
 
-    # --- HÀM XỬ LÝ PHÂN SỐ (26 1/4 -> 26.25) ---
-    def parse_num_val(text):
+    # --- HÀM XỬ LÝ SỐ & PHÂN SỐ ---
+    def parse_num_fixed(text):
         try:
             text = text.strip().lower()
             m = re.match(r'(\d+)\s+(\d+)/(\d+)', text)
             if m: return float(m.group(1)) + int(m.group(2))/int(m.group(3))
             f = re.match(r'^(\d+)/(\d+)$', text)
             if f: return int(f.group(1))/int(f.group(2))
-            n = re.findall(r"[-+]?\d*\.\d+|\d+", text)
+            n = re.findall(r"\d+\.?\d*", text)
             return float(n[0]) if n else None
         except: return None
 
-    # --- HÀM TÌM SAMPLE SIZE VÀ QUÉT DỮ LIỆU ---
-    def get_only_sample_specs(content):
+    # --- HÀM QUÉT TOÀN BỘ FILE TÌM SAMPLE SIZE ---
+    def get_sample_specs_all_pages(content):
         specs = {}
-        sample_sz = None
+        detected_sz = "N/A"
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
-                # BƯỚC 1: Tìm xem Sample Size là size nào (Quét trang 1)
-                first_page_text = pdf.pages[0].extract_text().upper()
-                # Dò tìm từ khóa "Sample Size: 6" hoặc "Size: M"
-                found_sz = re.findall(r"SAMPLE SIZE\s*[:\-\s]\s*(\w+)", first_page_text)
-                if not found_sz: found_sz = re.findall(r"ADOPTED SIZE\s*[:\-\s]\s*(\w+)", first_page_text)
-                
-                sample_sz = found_sz[0] if found_sz else None
-                
-                # BƯỚC 2: Quét tất cả các trang để bốc POM và giá trị của Sample Size
                 for page in pdf.pages:
                     words = page.extract_words()
                     if not words: continue
@@ -232,57 +223,71 @@ elif mode == "Version Control":
                     df['y'] = (df['top'] / 2).round(0) * 2
                     
                     target_lane = None
-                    # Tìm cột của Sample Size
+                    # 1. Tìm cột Sample Size (Dò chữ có dấu * hoặc tiêu đề Size)
                     for y, gp in df.groupby('y'):
                         sorted_gp = gp.sort_values('x0')
                         line_txt = " ".join(sorted_gp['text']).upper()
-                        if "POM" in line_txt or "DESCRIPTION" in line_txt:
+                        # Nếu thấy dòng tiêu đề bảng
+                        if any(x in line_txt for x in ["POM", "DESCRIPTION", "SPEC", "SIZE"]):
                             for _, r in sorted_gp.iterrows():
                                 t = r['text'].strip().upper()
-                                # Nếu thấy cột khớp với Sample Size đã tìm thấy hoặc cột có dấu (*)
-                                if (sample_sz and t == sample_sz) or "*" in t:
-                                    target_lane = {"sz": t, "x0": r['x0']-10, "x1": r['x1']+10}
-                                    break
+                                # Ưu tiên cột có dấu * (Dấu hiệu Sample Size chuẩn)
+                                if "*" in t or t in ["6", "8", "10", "M", "S", "L"]: 
+                                    if r['x0'] > 200: # Cột thông số nằm bên phải
+                                        target_lane = {"sz": t.replace("*",""), "x0": r['x0']-10, "x1": r['x1']+10}
+                                        detected_sz = target_lane['sz']
+                                        break
                         if target_lane: break
 
                     if not target_lane: continue
 
-                    # Bốc POM Name và số ở cột target_lane
+                    # 2. Bốc POM và thông số của cột đó
                     for y, gp in df.groupby('y'):
                         sorted_gp = gp.sort_values('x0')
-                        pom_desc = " ".join(sorted_gp[sorted_gp['x1'] < 250]['text']).strip()
-                        # Làm sạch tên POM
+                        # POM Description nằm bên trái
+                        pom_desc = " ".join(sorted_gp[sorted_gp['x1'] < 280]['text']).strip()
+                        # Làm sạch POM (Chỉ giữ chữ)
                         pom_clean = re.sub(r'[^a-zA-Z\s]', '', pom_desc).strip().upper()
                         
-                        if len(pom_clean) > 5 and not any(x in pom_clean for x in ["PAGE", "STYLE", "DATE"]):
+                        if len(pom_clean) > 5 and not any(x in pom_clean for x in ["PAGE", "STYLE", "DATE", "EVERLANE", "REITMANS"]):
                             cell = sorted_gp[(sorted_gp['x0'] >= target_lane['x0']) & (sorted_gp['x1'] <= target_lane['x1'])]
                             if not cell.empty:
-                                val = parse_num_val(" ".join(cell['text']))
+                                val = parse_num_fixed(" ".join(cell['text']))
                                 if val is not None:
                                     specs[pom_clean] = {"orig": pom_desc, "val": val}
-            return specs, sample_sz
-        except: return {}, None
+                
+                return specs, detected_sz
+        except: return {}, "N/A"
 
-    # --- UI ---
+    # --- UI GIAO DIỆN ---
     if st.button("🗑️ Làm mới hệ thống"):
-        st.session_state['up_key'] += 1; st.session_state['ver_results'] = None; st.rerun()
+        st.session_state['up_key'] += 1
+        st.session_state['ver_results'] = None
+        st.rerun()
 
     c1, c2 = st.columns(2)
-    f1 = c1.file_uploader("Bản cũ (A)", type="pdf", key=f"v1_{st.session_state['up_key']}")
-    f2 = c2.file_uploader("Bản mới (B)", type="pdf", key=f"v2_{st.session_state['up_key']}")
+    f1 = c1.file_uploader("Bản A", type="pdf", key=f"v1_{st.session_state['up_key']}")
+    f2 = c2.file_uploader("Bản B", type="pdf", key=f"v2_{st.session_state['up_key']}")
 
     if f1 and f2:
-        if st.button("⚡ SO SÁNH SAMPLE SIZE", use_container_width=True):
-            with st.spinner("Đang định vị Sample Size và quét thông số..."):
-                d1, sz1 = get_only_sample_specs(f1.getvalue())
-                d2, sz2 = get_only_sample_specs(f2.getvalue())
-                if d1 and d2:
+        if st.button("⚡ SO SÁNH SAMPLE SIZE (QUÉT ALL PAGES)", use_container_width=True):
+            with st.spinner("Đang lục tìm Sample Size ở tất cả các trang..."):
+                d1, sz1 = get_sample_specs_all_pages(f1.getvalue())
+                d2, sz2 = get_sample_specs_all_pages(f2.getvalue())
+                
+                if d1 or d2:
                     st.session_state['ver_results'] = {"d1": d1, "d2": d2, "sz1": sz1, "sz2": sz2}
-                else: st.error("❌ Không tìm thấy bảng thông số mẫu.")
+                else:
+                    st.error("❌ Không tìm thấy bảng thông số mẫu trong cả 2 file.")
 
     if st.session_state.get('ver_results'):
         vr = st.session_state['ver_results']
-        st.info(f"📊 Đang so sánh Sample Size: **Bản A ({vr['sz1']})** vs **Bản B ({vr['sz2']})**")
+        
+        # Dùng .get() để tránh lỗi KeyError
+        size_a = vr.get('sz1', 'N/A')
+        size_b = vr.get('sz2', 'N/A')
+        
+        st.info(f"📊 Đối chiếu Sample Size: **Bản A ({size_a})** vs **Bản B ({size_b})**")
         
         all_poms = sorted(list(set(vr['d1'].keys()) | set(vr['d2'].keys())))
         rows = []
@@ -295,8 +300,12 @@ elif mode == "Version Control":
                 diff = round(v2 - v1, 3)
                 res = "✅ Khớp" if abs(diff) < 0.01 else "❌ Lệch"
                 dt = f"{diff:+.3f}"
-            else: dt, res = "N/A", "⚠️ Thiếu"
+            else:
+                dt, res = "N/A", "⚠️ Thiếu"
             
-            rows.append({"Vị trí đo (POM Description)": name, "Bản A": v1, "Bản B": v2, "Lệch": dt, "Kết quả": res})
+            rows.append({"Vị trí đo (POM Name)": name, "Bản A": v1, "Bản B": v2, "Lệch": dt, "Kết quả": res})
         
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, height=600)
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, height=600)
+        else:
+            st.warning("⚠️ Không có dữ liệu để hiển thị bảng so sánh.")
