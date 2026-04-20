@@ -201,7 +201,21 @@ with st.sidebar:
 
 # ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
-mode = st.radio("Chế độ:", ["🔍 Audit Mode", "🔄 Version Control"], horizontal=True)
+
+# Dùng tên đơn giản để tránh lỗi so sánh chuỗi
+mode = st.radio("Chế độ:", ["Audit Mode", "Version Control"], horizontal=True)
+
+if mode == "Audit Mode":
+    st.subheader("🔍 Tìm kiếm mẫu tương đồng & Audit")
+    # Thêm nút xóa nhanh để reset
+    if st.button("🗑️ Làm mới tìm kiếm"):
+        st.session_state['up_key'] += 1
+        st.rerun()
+        
+    up_target = st.file_uploader("Upload Target PDF", type=['pdf'], key=f"target_{st.session_state['up_key']}")
+    if up_target:
+        st.info(f"Đã nhận file: {up_target.name}. Đang xử lý phân tích...")
+        # Logic Audit của bạn tiếp tục ở đây...
 
 if mode == "🔍 Audit Mode":
     f_audit = st.file_uploader("Upload Target PDF:", type="pdf")
@@ -263,27 +277,6 @@ if mode == "🔍 Audit Mode":
                                         if st.button("Chọn mẫu này", key=f"btn_{idx}"):
                                             st.session_state['sel_audit'] = item.to_dict()
                                             st.rerun()
-
-
-
-# ================= 5. MAIN UI =================
-st.title("👔 AI SMART AUDITOR PRO")
-
-# Dùng tên đơn giản để tránh lỗi so sánh chuỗi
-mode = st.radio("Chế độ:", ["Audit Mode", "Version Control"], horizontal=True)
-
-if mode == "Audit Mode":
-    st.subheader("🔍 Tìm kiếm mẫu tương đồng & Audit")
-    # Thêm nút xóa nhanh để reset
-    if st.button("🗑️ Làm mới tìm kiếm"):
-        st.session_state['up_key'] += 1
-        st.rerun()
-        
-    up_target = st.file_uploader("Upload Target PDF", type=['pdf'], key=f"target_{st.session_state['up_key']}")
-    if up_target:
-        st.info(f"Đã nhận file: {up_target.name}. Đang xử lý phân tích...")
-        # Logic Audit của bạn tiếp tục ở đây...
-
 elif mode == "Version Control":
     st.subheader("🔄 So sánh 2 file PDF (ALL SIZE)")
 
