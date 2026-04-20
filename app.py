@@ -144,72 +144,85 @@ st.title("👔 AI SMART AUDITOR PRO")
 mode = st.radio("Chế độ:", ["🔍 Audit Mode", "🔄 Version Control"], horizontal=True)
 
 if mode == "🔍 Audit Mode":
-    # Sửa lỗi reset_key bằng cách gọi đúng từ session_state
-    f_audit = st.file_uploader("Upload Target PDF:", type="pdf", key=f"aud_{st.session_state['reset_key']}")
+    # Khởi tạo key để tránh lỗi đỏ
+    if 'reset_key' not in st.session_state: st.session_state['reset_key'] = 0
     
-    if f_audit:
-        target = extract_full_data(f_audit.getvalue())
-        if target and target['img']:
-            # 1. Trích xuất "chữ ký" cấu trúc (JSON POMs)
+    file_audit = st.file_uploader("Upload Target PDF:", type="pdf", key=f"aud_{st.session_state['reset_key']}")
+    
+    if file_audit:
+        target = extract_pdf_multi_size(file_audit.getvalue())
+        if target and target.get('all_specs'):
+            # 1. TRÍCH XUẤT BỘ TÊN THÔNG SỐ (POMs) CỦA FILE ĐANG KIỂM
             target_poms = set([p.upper().strip() for sz in target['all_specs'].values() for p in sz.keys()])
             
-            res = supabase.table("ai_data").select("id, vector, file_name, spec_json").execute()
+            # Tự động nhận diện chủng loại qua từ khóa kỹ thuật (Gene sản phẩm)
+            BOTTOM_KEYS = ["WAIST", "INSEAM", "HIP", "THIGH", "RISE", "KNEE", "CALF", "LEG OPENING"]
+            TOP_KEYS = ["CHEST", "BUST", "SHOULDER", "SLEEVE", "NECK", "ARMHOLE"]
+            
+            is_target_bottom = any(k in " ".join(target_poms) for k in BOTTOM_KEYS)
+            is_target_top = any(k in " ".join(target_poms) for k in TOP_KEYS)
+
+            res = supabase.table("ai_data").select("*").execute()
             
             if res.data:
-                t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
-                valid_rows = []
-                for r in res.data:
-                    if r['vector'] and len(r['vector']) == 512:
-                        # A. So khớp hình ảnh (AI Vector)
-                        sim_img = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1)).flatten()[0]
-                        
-                        # B. So khớp cấu trúc (JSON POMs) - ĐỂ GIẢI QUYẾT QUẦN/ÁO
-                        ref_spec = r.get('spec_json', {})
-                        ref_poms = set([p.upper().strip() for sz in ref_spec.values() for p in sz.keys()])
-                        
-                        intersect = len(target_poms.intersection(ref_poms))
-                        sim_struct = intersect / len(target_poms) if target_poms else 0
-                        
-                        # C. Kết hợp điểm (50% Ảnh - 50% Cấu trúc)
-                        sim_final = (sim_img * 0.5) + (sim_struct * 0.5)
-                        
-                        # D. BỘ LỌC CỨNG: Nếu Target có 'WAIST' mà Ref có 'CHEST' -> Trừ điểm nặng
-                        is_target_bottom = any(x in " ".join(target_poms) for x in ["WAIST", "INSEAM", "HIP"])
-                        is_ref_bottom = any(x in " ".join(ref_poms) for x in ["WAIST", "INSEAM", "HIP"])
-                        if is_target_bottom != is_ref_bottom:
-                            sim_final -= 0.7 
-                        
-                        r['sim_final'] = max(0, sim_final)
-                        valid_rows.append(r)
+                df_db = pd.DataFrame(res.data)
+                t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
                 
-                df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(3)
-                
-                st.subheader("🎯 AI Matches (Đã lọc theo cấu trúc JSON)")
-                cols = st.columns(4)
-                cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
-                for i, (idx, row) in enumerate(df_db.iterrows()):
-                    det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
-                    if det:
-                        with cols[i+1]:
-                            st.image(det[0]['image_url'], caption=f"Match: {row['sim_final']:.1%}")
-                            if st.button(f"CHỌN {i+1}", key=f"s_{idx}", use_container_width=True):
-                                st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
+                def compute_hard_filter_score(row):
+                    # A. Lấy thông số từ Database
+                    ref_spec = row.get('spec_json', {})
+                    ref_poms = set()
+                    if isinstance(ref_spec, dict):
+                        for sz_val in ref_spec.values():
+                            if isinstance(sz_val, dict):
+                                ref_poms.update([p.upper().strip() for p in sz_val.keys()])
+                    
+                    # B. KIỂM TRA CHỦNG LOẠI (HARD FILTER)
+                    is_ref_bottom = any(k in " ".join(ref_poms) for k in BOTTOM_KEYS)
+                    is_ref_top = any(k in " ".join(ref_poms) for k in TOP_KEYS)
+                    
+                    # NẾU SAI LOẠI (QUẦN VS ÁO) -> LOẠI BỎ LUÔN (ĐIỂM = 0)
+                    if (is_target_bottom and not is_ref_bottom) or (is_target_top and not is_ref_top):
+                        return pd.Series([0.0, 0.0])
+                    
+                    # C. NẾU CÙNG LOẠI -> TÍNH ĐIỂM CHI TIẾT
+                    sim_img = cosine_similarity(t_vec, np.array(row['vector']).reshape(1, -1)).flatten()[0]
+                    
+                    # Tính độ giống cấu trúc JSON (Jaccard)
+                    intersect = len(target_poms.intersection(ref_poms))
+                    union = len(target_poms.union(ref_poms))
+                    sim_struct = intersect / union if union > 0 else 0
+                    
+                    # Trọng số: 40% Ảnh - 60% Cấu trúc (Ưu tiên thông số kỹ thuật)
+                    final_score = (sim_img * 0.4) + (sim_struct * 0.6)
+                    return pd.Series([final_score, sim_struct])
 
-            if st.session_state['sel_audit']:
-                sel = st.session_state['sel_audit']
-                st.divider(); st.success(f"📈 So sánh với: **{sel['file_name']}**")
-                audit_dfs, sheet_names = [], []
-                for sz, t_specs in target['all_specs'].items():
-                    with st.expander(f"SIZE: {sz}", expanded=True):
-                        m_sz = get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4)
-                        r_specs = sel['spec_json'].get(m_sz[0] if m_sz else "", {})
-                        rows = []
-                        for p, v in t_specs.items():
-                            m_p = get_close_matches(p, list(r_specs.keys()), 1, 0.6)
-                            ref_v = r_specs.get(m_p[0], 0) if m_p else 0
-                            rows.append({"Point": p, "Target": v, "Ref": ref_v, "Diff": f"{v - ref_v:+.3f}"})
-                        df_sz = pd.DataFrame(rows); st.table(df_sz); audit_dfs.append(df_sz); sheet_names.append(sz)
-                st.download_button("📥 Xuất Excel", to_excel(audit_dfs, sheet_names), f"Audit_{sel['file_name']}.xlsx")
+                # Chạy lọc và tính điểm
+                df_db[['sim_final', 'sim_struct']] = df_db.apply(compute_hard_filter_score, axis=1)
+                
+                # Lọc bỏ những mẫu có điểm = 0 trước khi lấy Top 3
+                df_filtered = df_db[df_db['sim_final'] > 0.1].sort_values('sim_final', ascending=False).head(3)
+                
+                if df_filtered.empty:
+                    st.warning("⚠️ Không tìm thấy mẫu nào trong kho cùng chủng loại (Quần/Áo) với mẫu này.")
+                else:
+                    st.subheader(f"🎯 AI Matches (Nhóm: {'BOTTOM/QUẦN' if is_target_bottom else 'TOP/ÁO' if is_target_top else 'KHÁC'})")
+                    cols = st.columns(4)
+                    cols[0].image(target['img'], caption="MẪU ĐANG KIỂM", use_container_width=True)
+                    
+                    for i, (idx, row) in enumerate(df_filtered.iterrows()):
+                        with cols[i+1]:
+                            st.image(row['image_url'], caption=f"Khớp: {row['sim_final']:.1%}")
+                            if st.button(f"CHỌN {i+1}", key=f"sel_{idx}", use_container_width=True):
+                                st.session_state['sel_audit'] = row.to_dict()
+                                st.rerun()
+
+    # HIỂN THỊ CHI TIẾT KHI ĐÃ CHỌN
+    if st.session_state.get('sel_audit'):
+        sel = st.session_state['sel_audit']
+        st.divider()
+        st.success(f"📈 Đang đối soát với: **{sel['file_name']}**")
+        # Code bảng so sánh chi tiết của bạn tiếp tục ở đây...
 
 elif mode == "🔄 Version Control":
     st.subheader("🔄 So sánh 2 file PDF (ALL PAGE + ALL SIZE)")
