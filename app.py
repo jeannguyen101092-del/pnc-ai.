@@ -49,7 +49,50 @@ def get_vector(img_bytes):
             norm = np.linalg.norm(vec)
             return (vec / norm).astype(float).tolist() if norm > 0 else vec.tolist()
     except: return None
+# =========================
+# HELPER: detect product type
+# =========================
+def get_product_type(name):
+    name = name.upper()
+    if "SHORT" in name:
+        return "SHORT"
+    if "PANT" in name or "TROUSER" in name:
+        return "PANT"
+    if "JACKET" in name:
+        return "JACKET"
+    if "SHIRT" in name:
+        return "SHIRT"
+    return "OTHER"
 
+# =========================
+# HELPER: spec similarity
+# =========================
+def spec_similarity(spec1, spec2):
+    try:
+        scores = []
+        for sz in spec1:
+            if sz in spec2:
+                s1 = spec1[sz]
+                s2 = spec2[sz]
+
+                common_keys = set(s1.keys()) & set(s2.keys())
+                if not common_keys:
+                    continue
+
+                diffs = []
+                for k in common_keys:
+                    v1 = s1.get(k)
+                    v2 = s2.get(k)
+
+                    if v1 and v2:
+                        diffs.append(abs(v1 - v2))
+
+                if diffs:
+                    scores.append(1 / (1 + np.mean(diffs)))
+
+        return float(np.mean(scores)) if scores else 0
+    except:
+        return 0
 def parse_val(t):
     try:
         t = str(t).replace('"', '').strip().lower().replace(',', '.')
@@ -282,13 +325,73 @@ if mode == "🔍 Audit Mode":
                 cols = st.columns(4)
                 cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
                 for i, (idx, row) in enumerate(df_db.iterrows()):
-                    det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
-                    if det:
-                        with cols[i+1]:
-                            st.image(det[0]['image_url'], caption=f"Match: {min(row['sim_final'], 1.0):.1%}")
-                            if st.button(f"CHỌN {i+1}", key=f"s_{idx}", use_container_width=True):
-                                st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
+                   res = supabase.table("ai_data").select("id, vector, file_name, spec_json").execute()
 
+if res.data:
+    t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
+    t_type = get_product_type(target_name)
+
+    valid_rows = []
+
+    for r in res.data:
+        try:
+            if not r['vector'] or len(r['vector']) != 512:
+                continue
+
+            db_vec = np.array(r['vector']).reshape(1, -1)
+            img_sim = cosine_similarity(t_vec, db_vec).flatten()[0]
+
+            # FILTER TYPE
+            db_type = get_product_type(r['file_name'])
+            if t_type != "OTHER" and db_type != t_type:
+                continue
+
+            # SPEC SIM
+            spec_sim = spec_similarity(
+                target['all_specs'],
+                r.get('spec_json', {})
+            )
+
+            # FINAL SCORE
+            final_score = img_sim * 0.6 + spec_sim * 0.4
+
+            r['img_sim'] = img_sim
+            r['spec_sim'] = spec_sim
+            r['sim_final'] = final_score
+
+            valid_rows.append(r)
+
+        except:
+            continue
+
+    if valid_rows:
+        df_db = pd.DataFrame(valid_rows)\
+            .sort_values('sim_final', ascending=False)\
+            .head(3)
+
+        st.subheader("🎯 AI Matches")
+
+        cols = st.columns(4)
+        cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
+
+        for i, (idx, row) in enumerate(df_db.iterrows()):
+            det = supabase.table("ai_data")\
+                .select("image_url, spec_json")\
+                .eq("id", row['id'])\
+                .execute().data
+
+            if det:
+                with cols[i+1]:
+                    st.image(det[0]['image_url'],
+                             caption=f"Match: {min(row['sim_final'],1.0):.1%}")
+
+                    st.caption(f"IMG: {row['img_sim']:.2f} | SPEC: {row['spec_sim']:.2f}")
+
+                    if st.button(f"CHỌN {i+1}", key=f"s_{idx}", use_container_width=True):
+                        st.session_state['sel_audit'] = {
+                            **row.to_dict(),
+                            **det[0]
+                        }
             sel = st.session_state['sel_audit']
             if sel:
                 st.divider(); st.success(f"📈 So sánh với: **{sel['file_name']}**")
