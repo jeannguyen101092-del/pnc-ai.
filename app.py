@@ -76,49 +76,91 @@ def to_excel(df_list, sheet_names):
 # ================= 3. SCRAPER (FULL PAGE & NO TOL) =================
 def extract_full_data(file_content):
     if not file_content: return None
+
     all_specs, img_bytes = {}, None
     SIZE_PATTERN = r'^(xs|s|m|l|xl|xxl|\d+|[a-z]?\d+-\d+|[a-z]?\d+\.\d+)$'
-    
+
     try:
         doc = fitz.open(stream=file_content, filetype="pdf")
         pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
         img_pil = Image.open(io.BytesIO(pix.tobytes("png")))
-        buf = io.BytesIO(); img_pil.save(buf, format="WEBP", quality=70); img_bytes = buf.getvalue(); doc.close()
-        
+        buf = io.BytesIO()
+        img_pil.save(buf, format="WEBP", quality=70)
+        img_bytes = buf.getvalue()
+        doc.close()
+
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
                 words = page.extract_words()
                 if not words: continue
+
                 df_w = pd.DataFrame(words)
                 df_w['y_grid'] = df_w['top'].round(0)
-                
+
                 size_cols = []
+
+                # =========================
+                # 1. LẤY SIZE (KHÔNG BREAK SỚM)
+                # =========================
                 for y, group in df_w.groupby('y_grid'):
                     line_txt = " ".join(group.sort_values('x0')['text']).lower()
+
                     if "size" in line_txt or "adopted" in line_txt:
                         for _, row in group.iterrows():
                             txt = row['text'].strip().lower()
-                            if re.match(SIZE_PATTERN, txt) and txt not in ["tol", "um", "(+)", "(-)"]:
-                                size_cols.append({"sz": txt.upper(), "x0": row['x0']-5, "x1": row['x1']+5})
-                        if size_cols: break
 
+                            if re.match(SIZE_PATTERN, txt) and txt not in ["tol", "um", "(+)", "(-)"]:
+                                size_cols.append({
+                                    "sz": txt.upper(),
+                                    "x0": row['x0'] - 10,
+                                    "x1": row['x1'] + 10
+                                })
+
+                if not size_cols:
+                    continue
+
+                # =========================
+                # 2. LẤY DATA
+                # =========================
                 for y, group in df_w.groupby('y_grid'):
                     sorted_group = group.sort_values('x0')
                     line_txt = " ".join(sorted_group['text']).upper()
-                    # Bỏ qua các dòng tiêu đề hoặc rác
-                    if any(x in line_txt for x in ["COVER", "IMAGE", "DATE", "CONSTRUCTION"]): continue
-                    
-                    pom_name = re.sub(r'[\d./\s]+$', '', " ".join(sorted_group[sorted_group['x1'] < 350]['text'])).strip()
-                    if len(pom_name) > 3:
-                        for col in size_cols:
-                            cell = sorted_group[(sorted_group['x0'] >= col['x0']) & (sorted_group['x1'] <= col['x1'])]
-                            if not cell.empty:
-                                val = parse_val(" ".join(cell['text']))
-                                if val > 0:
-                                    if col['sz'] not in all_specs: all_specs[col['sz']] = {}
-                                    all_specs[col['sz']][pom_name] = val
+
+                    # bỏ dòng rác
+                    if any(x in line_txt for x in ["COVER", "IMAGE", "DATE", "CONSTRUCTION"]):
+                        continue
+
+                    # 👉 FIX: lấy vùng POM linh hoạt
+                    left_part = sorted_group[sorted_group['x0'] < min([c['x0'] for c in size_cols])]
+                    pom_name = " ".join(left_part['text']).strip()
+
+                    if len(pom_name) < 3:
+                        continue
+
+                    # =========================
+                    # 3. MAP VALUE
+                    # =========================
+                    for col in size_cols:
+                        cell = sorted_group[
+                            (sorted_group['x0'] >= col['x0']) &
+                            (sorted_group['x1'] <= col['x1'])
+                        ]
+
+                        if not cell.empty:
+                            val = parse_val(" ".join(cell['text']))
+
+                            # 👉 FIX: bỏ điều kiện >0
+                            if val is not None:
+                                if col['sz'] not in all_specs:
+                                    all_specs[col['sz']] = {}
+
+                                all_specs[col['sz']][pom_name] = val
+
         return {"all_specs": all_specs, "img": img_bytes}
-    except: return None
+
+    except Exception as e:
+        print("ERROR:", e)
+        return None
 
 # ================= 4. SIDEBAR (DUNG LƯỢNG & TIẾN ĐỘ) =================
 with st.sidebar:
