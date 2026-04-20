@@ -168,10 +168,17 @@ if mode == "🔍 Audit Mode":
     if f_audit:
         target = extract_full_data(f_audit.getvalue())
         if target and target.get('all_specs'):
-            # 1. Trích xuất bộ POM (Điểm đo) của file đang upload
+            # 1. LẤY BỘ TỪ KHÓA (POM) TỪ FILE ĐANG UPLOAD
             target_poms = set([p.upper().strip() for sz in target['all_specs'].values() for p in sz.keys()])
             
-            with st.spinner(f"🕵️ Đang đối soát cấu trúc với kho dữ liệu..."):
+            # 2. TỰ ĐỘNG NHẬN DIỆN LOẠI ĐỒ (Target Type)
+            # Dấu hiệu nhận biết Áo (Top) và Quần (Bottom)
+            is_top = any(x in " ".join(target_poms) for x in ["CHEST", "NECK", "SLEEVE", "BUST", "SHOULDER"])
+            is_bottom = any(x in " ".join(target_poms) for x in ["WAIST", "INSEAM", "HIP", "THIGH", "RISE"])
+            
+            target_type = "TOP" if is_top else "BOTTOM" if is_bottom else "OTHER"
+
+            with st.spinner(f"🕵️ Hệ thống nhận diện loại: {target_type}. Đang đối soát..."):
                 res = supabase.table("ai_data").select("id, vector, file_name, spec_json").execute()
                 
                 if res.data:
@@ -179,61 +186,57 @@ if mode == "🔍 Audit Mode":
                     valid_rows = []
                     
                     for r in res.data:
-                        # --- LẤY CẤU TRÚC JSON CÓ SẴN TRÊN DB ---
+                        # Lấy POM từ mẫu trong Database
                         ref_spec = r.get('spec_json', {})
-                        ref_poms = set()
-                        if isinstance(ref_spec, dict):
-                            for sz_val in ref_spec.values():
-                                if isinstance(sz_val, dict):
-                                    ref_poms.update([p.upper().strip() for p in sz_val.keys()])
+                        ref_poms = set([p.upper().strip() for sz in ref_spec.values() for p in sz.keys() if isinstance(sz, dict)])
                         
-                        # --- SO KHỚP CẤU TRÚC (Sử dụng Fuzzy logic đơn giản) ---
-                        # Kiểm tra trùng khớp các từ khóa vàng: Waist, Hip, Chest, Sleeve
-                        match_count = len(target_poms.intersection(ref_poms))
-                        sim_struct = match_count / len(target_poms) if target_poms else 0
+                        # --- SO KHỚP CẤU TRÚC (SỬA LỖI KHÔNG LÊN KẾT QUẢ) ---
+                        # Tính độ giống nhau của bộ khung thông số
+                        intersect = len(target_poms.intersection(ref_poms))
+                        sim_struct = intersect / len(target_poms) if target_poms else 0
                         
-                        # --- SO KHỚP HÌNH ẢNH (AI VECTOR) ---
+                        # So khớp hình ảnh
                         sim_img = 0
                         if r['vector'] and len(r['vector']) == 512:
-                            sim_img = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1)).flatten()[0]
-                        
-                        # --- TRỌNG SỐ TỔNG HỢP ---
-                        # Ưu tiên cấu trúc (60%) + Hình ảnh (40%)
+                            sim_img = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1)).flatten()
+
+                        # --- LOGIC PHÂN LOẠI THÔNG MINH ---
+                        # Nếu cùng là Áo (có Chest) hoặc cùng là Quần (có Waist) -> Thưởng điểm nặng
+                        is_ref_top = any(x in " ".join(ref_poms) for x in ["CHEST", "NECK", "SLEEVE"])
+                        is_ref_bottom = any(x in " ".join(ref_poms) for x in ["WAIST", "INSEAM", "HIP"])
+                        ref_type = "TOP" if is_ref_top else "BOTTOM" if is_ref_bottom else "OTHER"
+
+                        # Trọng số tổng hợp
                         sim_final = (sim_struct * 0.6) + (sim_img * 0.4)
                         
-                        # Thưởng điểm nếu cùng từ khóa trong tên file
-                        if any(k in f_audit.name.upper() and k in r['file_name'].upper() for k in ["PANT", "SHORT", "SHIRT"]):
-                            sim_final += 0.2
+                        # ƯU TIÊN TUYỆT ĐỐI CÙNG LOẠI:
+                        if target_type == ref_type:
+                            sim_final += 0.3 # Thưởng điểm để mẫu cùng loại nhảy lên đầu
+                        else:
+                            sim_final -= 0.5 # Trừ điểm để mẫu khác loại (Quần vs Áo) biến mất
 
-                        # Gán giá trị vào row
-                        r['sim_final'] = min(sim_final, 1.0)
+                        r['sim_final'] = max(0, min(sim_final, 1.0))
                         r['sim_struct'] = sim_struct
                         valid_rows.append(r)
                     
-                    # --- FIX LỖI KEYERROR ---
-                    if not valid_rows:
-                        st.warning("⚠️ Không tìm thấy mẫu nào tương đồng trong kho dữ liệu.")
+                    # Hiển thị kết quả
+                    df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(3)
+                    
+                    if not df_db.empty and df_db['sim_final'].iloc[0] > 0.1:
+                        st.subheader(f"🎯 AI Matches (Nhận diện nhóm: {target_type})")
+                        cols = st.columns(4)
+                        cols.image(target['img'], caption="MẪU ĐANG KIỂM", use_container_width=True)
+                        
+                        for i, (idx, row) in enumerate(df_db.iterrows()):
+                            det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
+                            if det:
+                                with cols[i+1]:
+                                    st.image(det[0]['image_url'], caption=f"Khớp: {row['sim_final']:.1%}")
+                                    if st.button(f"CHỌN {i+1}", key=f"s_{idx}", use_container_width=True):
+                                        st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
                     else:
-                        # Tạo DF và sắp xếp
-                        df_db = pd.DataFrame(valid_rows)
-                        if 'sim_final' in df_db.columns:
-                            top_3 = df_db.sort_values('sim_final', ascending=False).head(3)
-                            
-                            st.subheader("🎯 Kết quả đối soát (Kết hợp AI & JSON)")
-                            cols = st.columns(4)
-                            cols[0].image(target['img'], caption="MẪU ĐANG KIỂM", use_container_width=True)
-                            
-                            for i, (idx, row) in enumerate(top_3.iterrows()):
-                                # Lấy ảnh từ Supabase để hiển thị
-                                det = supabase.table("ai_data").select("image_url, spec_json").eq("id", row['id']).execute().data
-                                if det:
-                                    with cols[i+1]:
-                                        st.image(det[0]['image_url'], 
-                                                 caption=f"Khớp: {row['sim_final']:.1%} (Cấu trúc: {row['sim_struct']:.1%})")
-                                        if st.button(f"CHỌN {i+1}", key=f"s_{idx}", use_container_width=True):
-                                            st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
-                        else:
-                            st.error("❌ Lỗi dữ liệu: Cột sim_final không tồn tại.")
+                        st.warning(f"🔭 Không tìm thấy mẫu nào thuộc nhóm {target_type} trong 1390 SKUs.")
+
 
 
 elif mode == "🔄 Version Control":
