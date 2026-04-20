@@ -138,6 +138,7 @@ with st.sidebar:
     if new_files and st.button("🚀 SYNCHRONIZE", use_container_width=True):
                 # --- DÁN ĐOẠN NÀY VÀO DÒNG 155 ---
                # --- ĐOẠN NÂNG CẤP CHUẨN ---
+                # --- Dán đoạn này vào thay thế đoạn lỗi ---
         st.subheader("⚙️ Bảo trì hệ thống")
         with st.expander("Nâng cấp kho dữ liệu AI"):
             st.info("Quét lại 1.390+ mẫu để nhận diện Quần/Áo chính xác hơn.")
@@ -156,16 +157,13 @@ with st.sidebar:
                                     supabase.table("ai_data").update({"vector": new_vec}).eq("id", item['id']).execute()
                             percent = (i + 1) / len(items)
                             prog_bar.progress(percent)
-                            status_txt.markdown(f"**⏳ Tiến độ:** {i+1}/{len(items)} mẫu")
+                            status_txt.markdown(f"**⏳ Tiến độ:** {i+1}/{len(items)}")
                         except: continue
                     st.success("✅ Hoàn tất nâng cấp!")
                     st.balloons()
                     time.sleep(2)
                     st.rerun()
         st.divider()
-
-                    time.sleep(2)
-                    st.rerun()
 
         # Thanh tiến độ nạp kho
         prog_bar = st.progress(0)
