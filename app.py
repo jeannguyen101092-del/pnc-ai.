@@ -161,55 +161,58 @@ with st.sidebar:
         st.rerun()
 
 # ================= 5. MAIN UI =================
-st.title("👔 AI SMART AUDITOR PRO")
-mode = st.radio("Chế độ:", ["🔍 Audit Mode", "🔄 Version Control"], horizontal=True)
+# --- Header chính ---
+st.markdown("---")
+
+# 1. Đặt tên biến thống nhất là file_audit
+file_audit = st.file_uploader("📤 Drag & Drop Tech-Pack for Auditing", type="pdf", key=f"audit_{st.session_state['reset_key']}")
 
 if file_audit:
     a_bytes = file_audit.read()
     target = extract_pdf_multi_size(a_bytes)
+    
     if target and target["all_specs"]:
+        # Lấy danh sách điểm đo (POM) của file đang upload để làm "chữ ký" cấu trúc
+        target_poms = set([p.upper().strip() for sz in target["all_specs"].values() for p in sz.keys()])
+        
         res = supabase.table("ai_data").select("*").execute()
         if res.data:
             df_db = pd.DataFrame(res.data)
-            
-            # --- LOGIC NÂNG CẤP: SO KHỚP CẤU TRÚC JSON ---
-            # 1. Lấy danh sách điểm đo (POM) của file đang upload
-            target_poms = set()
-            for sz_val in target["all_specs"].values():
-                target_poms.update([p.upper().strip() for p in sz_val.keys()])
-            
-            # 2. Tính toán độ tương đồng AI Vector và Cấu trúc
             t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             
-            def calculate_combined_sim(row):
-                # Độ giống hình ảnh (AI Vector)
+            # --- LOGIC ĐỐI SOÁT CẤU TRÚC JSON ---
+            def compute_final_score(row):
+                # A. So khớp hình ảnh (AI Vector)
                 sim_img = cosine_similarity(t_vec, np.array(row['vector']).reshape(1, -1)).flatten()[0]
                 
-                # Độ giống cấu trúc (JSON POMs)
+                # B. So khớp cấu trúc (JSON POMs)
                 ref_poms = set()
                 if isinstance(row['spec_json'], dict):
                     for sz_val in row['spec_json'].values():
                         if isinstance(sz_val, dict):
                             ref_poms.update([p.upper().strip() for p in sz_val.keys()])
                 
-                # Tính tỉ lệ trùng khớp POM
                 intersect = len(target_poms.intersection(ref_poms))
                 union = len(target_poms.union(ref_poms))
                 sim_struct = intersect / union if union > 0 else 0
                 
-                # Trọng số: 60% Hình ảnh + 40% Cấu trúc JSON
+                # C. Trọng số: 60% Hình ảnh + 40% Cấu trúc JSON
                 final_score = (sim_img * 0.6) + (sim_struct * 0.4)
                 
-                # PHẠT NẶNG: Nếu Target có 'INSEAM' (quần) mà Ref có 'CHEST' (áo) -> Trừ điểm
-                if any(x in " ".join(target_poms) for x in ["WAIST", "INSEAM"]) and \
-                   any(x in " ".join(ref_poms) for x in ["CHEST", "BUST"]):
-                    final_score -= 0.5
-                    
-                return pd.Series([final_score, sim_struct])
+                # D. PHẠT NẶNG: Nếu khác loại hoàn toàn (Ví dụ: Quần vs Áo)
+                # Dấu hiệu Quần: Có Waist/Inseam. Dấu hiệu Áo: Có Chest/Bust.
+                is_target_bottom = any(x in " ".join(target_poms) for x in ["WAIST", "INSEAM", "HIP"])
+                is_ref_bottom = any(x in " ".join(ref_poms) for x in ["WAIST", "INSEAM", "HIP"])
+                
+                if is_target_bottom != is_ref_bottom:
+                    final_score -= 0.6 # Trừ điểm nặng để loại bỏ mẫu sai chủng loại
+                
+                return pd.Series([max(0, final_score), sim_struct])
 
-            df_db[['sim_final', 'sim_struct']] = df_db.apply(calculate_combined_sim, axis=1)
+            # Tính toán điểm tổng hợp cho từng dòng trong Database
+            df_db[['sim_final', 'sim_struct']] = df_db.apply(compute_final_score, axis=1)
             
-            # Lấy Top 3 sau khi đã lọc theo cấu trúc JSON
+            # Lấy Top 3 mẫu giống nhất
             top_3 = df_db.sort_values('sim_final', ascending=False).head(3)
             
             st.subheader(f"🎯 AI Best Matches (Đã đối soát cấu trúc JSON)")
@@ -219,19 +222,15 @@ if file_audit:
             
             for i, (idx, row) in enumerate(top_3.iterrows()):
                 with cols[i+1]:
-                    # Hiển thị Match tổng hợp và Match cấu trúc để kiểm chứng
                     st.image(row['image_url'], 
-                             caption=f"Match: {row['sim_final']:.1%} (Data: {row['sim_struct']:.1%})", 
+                             caption=f"Match: {row['sim_final']:.1%} (Cấu trúc: {row['sim_struct']:.1%})", 
                              use_container_width=True)
-                    
                     if st.button(f"SELECT MODEL {i+1}", key=f"btn_{idx}", use_container_width=True):
                         st.session_state['sel'] = row.to_dict()
 
-            # Hiển thị bảng so sánh chi tiết nếu đã chọn Model
+            # Hiển thị kết quả chọn
             best = st.session_state.get('sel', top_3.iloc[0].to_dict())
             st.success(f"**REFERENCE SKU:** {best['file_name']}")
-            
-            # (Phần code so sánh thông số chi tiết của bạn có thể tiếp tục ở đây...)
 
 
 
