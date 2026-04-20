@@ -390,3 +390,15 @@ elif mode == "🔄 Version Control":
                 "Comparison.xlsx",
                 use_container_width=True
             )
+              with col_reset:
+                # Nút bấm để xóa toàn bộ kết quả vừa so sánh
+                if st.button("🗑️ Xóa & Làm mới", use_container_width=True, type="secondary"):
+                    # 1. Xóa các kết quả lưu trong session_state
+                    st.session_state['sel_audit'] = None
+                    st.session_state['ver_results'] = None
+                    
+                    # 2. Reset cái file_uploader bằng cách tăng key
+                    st.session_state['up_key'] += 1
+                    
+                    # 3. Reload lại trang để đưa về trạng thái trắng
+                    st.rerun()
