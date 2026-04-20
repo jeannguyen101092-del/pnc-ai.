@@ -196,79 +196,125 @@ if mode == "Audit Mode":
                             st.info(f"Độ giống: {item['score']:.1%}")
 
 elif mode == "Version Control":
-    st.subheader("🔄 So sánh Toàn diện (FULL SIZE + FULL POM)")
+    st.subheader("🔄 So sánh Toàn diện (Fix lỗi Ẩn số Bản A & Lệch POM)")
 
-    # RESET
+    # --- HÀM CHUẨN HÓA TÊN POM (Để A và B khớp nhau tuyệt đối) ---
+    def normalize_pom_name(text):
+        if not text: return ""
+        # Xóa số thứ tự, dấu chấm, ký tự đặc biệt, đưa về chữ hoa
+        t = re.sub(r'^\d+[\s\.]+', '', text) # Xóa "1. ", "02 "
+        t = re.sub(r'[^a-zA-Z0-9\s]', '', t) # Chỉ giữ chữ và số
+        return " ".join(t.split()).upper()
+
+    # --- HÀM XỬ LÝ SỐ & PHÂN SỐ ---
+    def parse_value_fixed(text):
+        try:
+            text = text.strip().lower()
+            m = re.match(r'(\d+)\s+(\d+)/(\d+)', text)
+            if m: return float(m.group(1)) + int(m.group(2))/int(m.group(3))
+            f = re.match(r'^(\d+)/(\d+)$', text)
+            if f: return int(f.group(1))/int(f.group(2))
+            n = re.findall(r"[-+]?\d*\.\d+|\d+", text)
+            return float(n[0]) if n else None
+        except: return None
+
+    # --- THUẬT TOÁN QUÉT TỌA ĐỘ GRID ---
+    def scan_pdf_specs_grid(content):
+        specs_out = {} # {Size: {Normalized_POM: {"orig": Name, "val": Value}}}
+        try:
+            with pdfplumber.open(io.BytesIO(content)) as pdf:
+                for page in pdf.pages:
+                    words = page.extract_words()
+                    if not words: continue
+                    df_w = pd.DataFrame(words)
+                    df_w['y'] = (df_w['top'] / 2).round(0) * 2
+                    
+                    # 1. Tìm cột Size (XS, S, M hoặc 2, 4, 6...)
+                    size_lanes = []
+                    sz_pattern = r'^(XXS|XS|S|M|L|XL|XXL|XXXL|1X|2X|3X|[0-9]{1,2}|000|00|0)$'
+                    for y, gp in df_w.groupby('y'):
+                        sorted_gp = gp.sort_values('x0')
+                        line_txt = " ".join(sorted_gp['text']).upper()
+                        if any(x in line_txt for x in ["SIZE", "POM", "SPEC", "WAIST"]):
+                            for _, r in sorted_gp.iterrows():
+                                t = r['text'].strip().upper().replace("*", "")
+                                if re.match(sz_pattern, t) and r['x0'] > 150:
+                                    size_lanes.append({"sz": t, "x0": r['x0']-10, "x1": r['x1']+10})
+                            if len(size_lanes) >= 2: break 
+
+                    if not size_lanes: continue
+
+                    # 2. Quét dữ liệu
+                    first_sz_x = min([c['x0'] for c in size_lanes])
+                    for y, gp in df_w.groupby('y'):
+                        sorted_gp = gp.sort_values('x0')
+                        pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_sz_x]['text']).strip()
+                        pom_norm = normalize_pom_name(pom_raw)
+                        
+                        if len(pom_norm) > 3 and not any(x in pom_norm for x in ["DATE", "PAGE", "STYLE"]):
+                            for col in size_lanes:
+                                cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
+                                if not cell.empty:
+                                    val = parse_value_fixed(" ".join(cell['text']))
+                                    if val is not None:
+                                        if col['sz'] not in specs_out: specs_out[col['sz']] = {}
+                                        specs_out[col['sz']][pom_norm] = {"orig": pom_raw, "val": val}
+            return specs_out
+        except: return {}
+
+    # --- UI GIAO DIỆN ---
     if st.button("🗑️ Làm mới hệ thống"):
-        st.session_state['up_key'] += 1
-        st.session_state['ver_results'] = None
-        st.rerun()
+        st.session_state['up_key'] += 1; st.session_state['ver_results'] = None; st.rerun()
 
     c1, c2 = st.columns(2)
     f1 = c1.file_uploader("Bản cũ (A)", type="pdf", key=f"v1_{st.session_state['up_key']}")
     f2 = c2.file_uploader("Bản mới (B)", type="pdf", key=f"v2_{st.session_state['up_key']}")
 
     if f1 and f2:
-        if st.button("⚡ CHẠY SO SÁNH TẤT CẢ SIZE", use_container_width=True):
-            with st.spinner("Đang bóc tách dữ liệu..."):
-                data_a = scan_all_sizes_robust(f1.getvalue())
-                data_b = scan_all_sizes_robust(f2.getvalue())
+        if st.button("⚡ CHẠY SO SÁNH CHUẨN 100%", use_container_width=True):
+            with st.spinner("Đang bóc tách dữ liệu độc lập A và B..."):
+                dict_a = scan_pdf_specs_grid(f1.getvalue())
+                dict_b = scan_pdf_specs_grid(f2.getvalue())
+                if dict_a and dict_b:
+                    st.session_state['ver_results'] = {"a": dict_a, "b": dict_b}
+                else: st.error("❌ Không tìm thấy bảng thông số Specs.")
 
-                if data_a and data_b:
-                    st.session_state['ver_results'] = {"a": data_a, "b": data_b}
-                else:
-                    st.error("❌ Không đọc được bảng thông số")
-
-    # ================= SHOW RESULT =================
     if st.session_state.get('ver_results'):
         vr = st.session_state['ver_results']
         s_a, s_b = vr['a'], vr['b']
-
-        # ===== LẤY FULL SIZE (KHÔNG BỎ SÓT) =====
-        all_sz = sorted(list(set(s_a.keys()) | set(s_b.keys())), key=lambda x: str(x))
-
-        if not all_sz:
-            st.warning("⚠️ Không có size nào")
-            st.stop()
-
-        st.success(f"✅ Tổng số size detect: {len(all_sz)}")
-
+        
+        # Sắp xếp Size
+        all_sz = sorted(list(set(s_a.keys()) | set(s_b.keys())), key=lambda x: int(re.sub(r'\D', '', x)) if re.search(r'\d', x) else 99)
+        
         tabs = st.tabs([f"Size {s}" for s in all_sz])
-
         for i, sz in enumerate(all_sz):
             with tabs[i]:
                 d_a = s_a.get(sz, {})
                 d_b = s_b.get(sz, {})
-
-                # ===== LẤY FULL POM =====
-                all_poms = sorted(list(set(d_a.keys()) | set(d_b.keys())))
-
+                
+                # Gom POM đã chuẩn hóa
+                all_poms_norm = sorted(list(set(d_a.keys()) | set(d_b.keys())))
                 rows = []
-                for p in all_poms:
-                    v1 = d_a.get(p)
-                    v2 = d_b.get(p)
-
-                    # ===== SO SÁNH =====
+                for p_n in all_poms_norm:
+                    item_a = d_a.get(p_n, {})
+                    item_b = d_b.get(p_n, {})
+                    
+                    v1 = item_a.get('val')
+                    v2 = item_b.get('val')
+                    name = item_b.get('orig') or item_a.get('orig')
+                    
                     if v1 is not None and v2 is not None:
-                        diff_val = round(v2 - v1, 3)
-                        diff_txt = f"{diff_val:+.3f}"
-
-                        if abs(diff_val) < 0.01:
-                            status = "✅ Khớp"
-                        else:
-                            status = "❌ Lệch"
+                        diff = round(v2 - v1, 3)
+                        status = "✅ Khớp" if abs(diff) < 0.01 else "❌ Lệch"
+                        diff_txt = f"{diff:+.3f}"
                     else:
-                        diff_txt = "N/A"
-                        status = "⚠️ Thiếu"
-
+                        diff_txt, status = "N/A", "⚠️ Thiếu dữ liệu"
+                        
                     rows.append({
-                        "POM": p,
-                        "A": v1 if v1 is not None else "-",
-                        "B": v2 if v2 is not None else "-",
-                        "DIFF": diff_txt,
-                        "STATUS": status
+                        "POM Description": name,
+                        "Bản A": v1 if v1 is not None else "-",
+                        "Bản B": v2 if v2 is not None else "-",
+                        "Lệch": diff_txt,
+                        "Kết quả": status
                     })
-
-                df_sz = pd.DataFrame(rows)
-
-                st.dataframe(df_sz, use_container_width=True, height=600)
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, height=600)
