@@ -215,15 +215,15 @@ if mode == "🔍 Audit Mode":
 elif mode == "🔄 Version Control":
     st.subheader("🔄 So sánh & Kiểm soát Phiên bản Toàn diện")
     
-    # 1. Giao diện Upload
+    # 1. Khu vực tải lên tài liệu
     c1, c2 = st.columns(2)
     f1 = c1.file_uploader("Bản cũ (A):", type="pdf", key="v1")
     f2 = c2.file_uploader("Bản mới (B):", type="pdf", key="v2")
 
     if f1 and f2:
-        if st.button("⚡ Bắt đầu quét tất cả các trang để so sánh", use_container_width=True):
-            with st.spinner("🚀 Hệ thống đang trích xuất dữ liệu đa tầng..."):
-                # Lưu ý: Hàm extract_full_data cần quét toàn bộ các trang và trả về dict
+        if st.button("⚡ Bắt đầu quét toàn bộ các trang để so sánh", use_container_width=True):
+            with st.spinner("🚀 Hệ thống đang trích xuất dữ liệu từ tất cả các trang..."):
+                # Gọi hàm xử lý lõi (Đảm bảo hàm này trả về list imgs và dict all_specs)
                 d1 = extract_full_data(f1.getvalue())
                 d2 = extract_full_data(f2.getvalue())
                 
@@ -233,17 +233,35 @@ elif mode == "🔄 Version Control":
                         "f1_name": f1.name, "f2_name": f2.name
                     }
 
-    # 2. Hiển thị kết quả nếu đã có dữ liệu trong session_state
+    # 2. Hiển thị kết quả so sánh
     if st.session_state.get('ver_results'):
         vr = st.session_state['ver_results']
         
-        # Xem lại ảnh các trang đã quét (Để đảm bảo không sót trang nào)
+        # --- PHẦN SỬA LỖI HIỂN THỊ ẢNH ---
         with st.expander("🖼️ Xem lại hình ảnh các trang PDF đã quét"):
             t1, t2 = st.tabs(["Bản A (Cũ)", "Bản B (Mới)"])
-            t1.image(vr['d1'].get('imgs', []), caption="Các trang bản A", width=250)
-            t2.image(vr['d2'].get('imgs', []), caption="Các trang bản B", width=250)
+            
+            with t1:
+                imgs_a = vr['d1'].get('imgs', [])
+                if imgs_a:
+                    # Tạo list caption khớp với số lượng ảnh để tránh lỗi StreamlitAPIException
+                    caps_a = [f"Bản A - Trang {i+1}" for i in range(len(imgs_a))]
+                    st.image(imgs_a, caption=caps_a, width=300)
+                else:
+                    st.warning("Không tìm thấy hình ảnh trang ở Bản A")
 
-        # Lấy danh sách tất cả các Size từ cả 2 file (tránh bỏ sót)
+            with t2:
+                imgs_b = vr['d2'].get('imgs', [])
+                if imgs_b:
+                    caps_b = [f"Bản B - Trang {i+1}" for i in range(len(imgs_b))]
+                    st.image(imgs_b, caption=caps_b, width=300)
+                else:
+                    st.warning("Không tìm thấy hình ảnh trang ở Bản B")
+
+        st.divider()
+
+        # --- LOGIC SO SÁNH THÔNG SỐ ---
+        # Lấy tất cả các Size từ cả 2 bản để so sánh chéo
         all_sz = sorted(list(set(vr['d1']['all_specs'].keys()) | set(vr['d2']['all_specs'].keys())))
         
         version_dfs, ver_sheets = [], []
@@ -254,15 +272,18 @@ elif mode == "🔄 Version Control":
                 s1 = vr['d1']['all_specs'].get(sz, {})
                 s2 = vr['d2']['all_specs'].get(sz, {})
                 
-                # Gom tất cả các điểm đo (POM) từ cả 2 bản
+                # Gom tất cả các điểm đo (POM) của size này từ 2 phiên bản
                 all_poms = sorted(list(set(s1.keys()) | set(s2.keys())))
                 
                 rows = []
                 for p in all_poms:
                     v1, v2 = s1.get(p, 0), s2.get(p, 0)
-                    diff = v2 - v1
+                    try:
+                        diff = float(v2) - float(v1)
+                    except:
+                        diff = 0
                     
-                    # Phân loại trạng thái cực mạnh
+                    # Phân loại trạng thái để tô màu
                     if v1 != 0 and v2 == 0: status = "❌ Bị xóa"
                     elif v1 == 0 and v2 != 0: status = "➕ Thêm mới"
                     elif v1 != v2: status = "⚠️ Thay đổi"
@@ -278,24 +299,25 @@ elif mode == "🔄 Version Control":
 
                 df_sz = pd.DataFrame(rows)
 
-                # Style: Tô màu các hàng có sự thay đổi để dễ nhận diện
-                def highlight_changes(row):
+                # Hàm tô màu hàng dựa trên trạng thái
+                def highlight_status(row):
                     if "⚠️" in row['Trạng thái']: return ['background-color: #fff3cd'] * len(row)
                     if "❌" in row['Trạng thái']: return ['background-color: #f8d7da'] * len(row)
                     if "➕" in row['Trạng thái']: return ['background-color: #d1ecf1'] * len(row)
                     return [''] * len(row)
 
-                st.dataframe(df_sz.style.apply(highlight_changes, axis=1), use_container_width=True)
+                st.dataframe(df_sz.style.apply(highlight_status, axis=1), use_container_width=True)
                 
                 version_dfs.append(df_sz)
                 ver_sheets.append(str(sz))
 
-        # 3. Nút tải báo cáo Excel
+        # 3. Xuất file Excel tổng hợp
         st.divider()
-        st.download_button(
-            label="📥 Tải báo cáo so sánh đầy đủ (.xlsx)",
-            data=to_excel(version_dfs, ver_sheets),
-            file_name=f"So_sanh_{vr['f1_name']}_vs_{vr['f2_name']}.xlsx",
-            mime="application/vnd.ms-excel",
-            use_container_width=True
-        )
+        if version_dfs:
+            st.download_button(
+                label="📥 Tải báo cáo so sánh đầy đủ (.xlsx)",
+                data=to_excel(version_dfs, ver_sheets),
+                file_name=f"Comparison_Report_{vr['f1_name']}_vs_{vr['f2_name']}.xlsx",
+                mime="application/vnd.ms-excel",
+                use_container_width=True
+            )
