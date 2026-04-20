@@ -279,6 +279,75 @@ if mode == "🔍 Audit Mode":
                                             st.rerun()
 elif mode == "Version Control":
     st.subheader("🔄 So sánh 2 file PDF (ALL SIZE)")
+    def parse_val(t):
+    try:
+        t = str(t).replace('"', '').strip().lower().replace(',', '.')
+        # Loại bỏ các từ khóa rác hay xuất hiện ở bảng phụ liệu/bao bì
+        trash = ["poly", "bag", "twill", "frisbee", "seaman", "paper", "label", "button"]
+        if not t or any(x in t for x in trash): return 0
+        
+        # Xử lý số hỗn hợp (ví dụ 1 1/2) hoặc phân số (1/2)
+        mixed = re.match(r'(\d+)\s+(\d+)/(\d+)', t)
+        if mixed: return float(mixed.group(1)) + int(mixed.group(2))/int(mixed.group(3))
+        frac = re.match(r'(\d+)/(\d+)', t)
+        if frac: return int(frac.group(1))/int(frac.group(2))
+        
+        num = re.findall(r"[-+]?\d*\.\d+|\d+", t)
+        if num:
+            val = float(num[0])
+            # Chỉ lấy các thông số đo may mặc thực tế (từ 0.2 đến 150)
+            return val if 0.2 <= val < 150 else 0
+        return 0
+    except: return 0
+
+def extract_full_data(file_content):
+    if not file_content: return None
+    all_specs, img_bytes = {}, None
+    SIZE_PATTERN = r'^(xs|s|m|l|xl|xxl|\d+|[a-z]?\d+-\d+|[a-z]?\d+\.\d+)$'
+    
+    try:
+        doc = fitz.open(stream=file_content, filetype="pdf")
+        pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+        img_bytes = pix.tobytes("png")
+        doc.close()
+        
+        with pdfplumber.open(io.BytesIO(file_content)) as pdf:
+            # Quét tất cả các trang để không bỏ sót bảng thông số
+            for page in pdf.pages:
+                words = page.extract_words()
+                if not words: continue
+                df_w = pd.DataFrame(words)
+                df_w['y_grid'] = df_w['top'].round(0)
+                
+                # Bước 1: Tìm dòng tiêu đề Size (Lấy tọa độ cột x0, x1)
+                size_cols = []
+                for y, group in df_w.groupby('y_grid'):
+                    line_txt = " ".join(group.sort_values('x0')['text']).lower()
+                    if any(x in line_txt for x in ["size", "spec", "adopted"]):
+                        for _, row in group.iterrows():
+                            txt = row['text'].strip().lower()
+                            if re.match(SIZE_PATTERN, txt) and row['x0'] > 250: # Size thường nằm bên phải
+                                size_cols.append({"sz": txt.upper(), "x0": row['x0']-10, "x1": row['x1']+10})
+                        if size_cols: break
+
+                # Bước 2: Bóc tách POM và giá trị tương ứng
+                for y, group in df_w.groupby('y_grid'):
+                    sorted_group = group.sort_values('x0')
+                    # Tên POM nằm bên trái (thường x1 < 350)
+                    pom_name = " ".join(sorted_group[sorted_group['x1'] < 350]['text']).strip()
+                    
+                    # Lọc điều kiện để lấy đúng POM
+                    if 3 < len(pom_name) < 60 and not any(x in pom_name.upper() for x in ["STYLE", "DATE", "FABRIC", "PAGE"]):
+                        for col in size_cols:
+                            cell = sorted_group[(sorted_group['x0'] >= col['x0']) & (sorted_group['x1'] <= col['x1'])]
+                            if not cell.empty:
+                                val = parse_val(" ".join(cell['text']))
+                                if val > 0:
+                                    if col['sz'] not in all_specs: all_specs[col['sz']] = {}
+                                    all_specs[col['sz']][pom_name] = val
+        return {"all_specs": all_specs, "img": img_bytes}
+    except: return None
+
 
     # Nút xóa để reset uploader
     if st.button("🗑️ Xoá file đã upload", use_container_width=True):
