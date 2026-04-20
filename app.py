@@ -305,90 +305,6 @@ if mode == "🔍 Audit Mode":
 elif mode == "🔄 Version Control":
     st.subheader("🔄 So sánh 2 file PDF (ALL PAGE + ALL SIZE)")
 
-    import fitz, pdfplumber, re, io
-    import pandas as pd
-    from PIL import Image
-
-    # =========================
-    # EXTRACT FULL DATA
-    # =========================
-    def extract_full_data(pdf_bytes):
-        all_specs = {}
-        img_bytes = None
-
-        try:
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-
-            # preview ảnh
-            pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-            img_bytes = Image.open(io.BytesIO(pix.tobytes()))
-
-            # 👉 QUÉT TOÀN BỘ PAGE
-            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                for page in pdf.pages:
-                    tables = page.extract_tables()
-
-                    for table in tables:
-                        if not table or len(table) < 2:
-                            continue
-
-                        header = table[0]
-
-                        # detect size
-                        sizes = []
-                        for h in header:
-                            if h:
-                                h_clean = str(h).strip().upper()
-                                if re.search(r"(XS|S|M|L|XL|XXL|\d+)", h_clean):
-                                    sizes.append(h_clean)
-                                else:
-                                    sizes.append(None)
-                            else:
-                                sizes.append(None)
-
-                        # đọc dữ liệu
-                        for row in table[1:]:
-                            if not row or not row[0]:
-                                continue
-
-                            point = str(row[0]).strip()
-
-                            for i, val in enumerate(row[1:], start=1):
-                                if i >= len(sizes):
-                                    continue
-
-                                size = sizes[i]
-
-                                if size and val:
-                                    try:
-                                        num = float(str(val).replace(",", "."))
-                                    except:
-                                        continue
-
-                                    if size not in all_specs:
-                                        all_specs[size] = {}
-
-                                    all_specs[size][point] = num
-
-            return {"all_specs": all_specs, "img": img_bytes}
-
-        except Exception as e:
-            st.error(f"Lỗi đọc PDF: {e}")
-            return None
-
-    # =========================
-    # EXPORT EXCEL
-    # =========================
-    def to_excel(dfs, sheet_names):
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            for df, name in zip(dfs, sheet_names):
-                df.to_excel(writer, sheet_name=str(name)[:31], index=False)
-        return output.getvalue()
-
-    # =========================
-    # UI
-    # =========================
     c1, c2 = st.columns(2)
     f1 = c1.file_uploader("Bản cũ (A):", type="pdf", key="v1")
     f2 = c2.file_uploader("Bản mới (B):", type="pdf", key="v2")
@@ -399,13 +315,29 @@ elif mode == "🔄 Version Control":
                 d1 = extract_full_data(f1.getvalue())
                 d2 = extract_full_data(f2.getvalue())
 
-                if d1 and d2:
-                    st.session_state['ver_results'] = {
-                        "d1": d1,
-                        "d2": d2,
-                        "f1_name": f1.name,
-                        "f2_name": f2.name
-                    }
+                # =========================
+                # DEBUG SIZE
+                # =========================
+                st.write("📊 SIZE A:", list(d1['all_specs'].keys()) if d1 else "None")
+                st.write("📊 SIZE B:", list(d2['all_specs'].keys()) if d2 else "None")
+
+                # =========================
+                # CHECK EMPTY
+                # =========================
+                if not d1 or not d1['all_specs']:
+                    st.error("❌ File A không đọc được bảng thông số")
+                    return
+
+                if not d2 or not d2['all_specs']:
+                    st.error("❌ File B không đọc được bảng thông số")
+                    return
+
+                st.session_state['ver_results'] = {
+                    "d1": d1,
+                    "d2": d2,
+                    "f1_name": f1.name,
+                    "f2_name": f2.name
+                }
 
     # =========================
     # SHOW RESULT
@@ -423,12 +355,20 @@ elif mode == "🔄 Version Control":
             key=lambda x: str(x)
         )
 
+        if not all_sz:
+            st.warning("⚠️ Không tìm thấy SIZE nào để so sánh")
+            return
+
         version_dfs, ver_sheets = [], []
 
         for sz in all_sz:
             with st.expander(f"SIZE: {sz}", expanded=True):
                 s1 = vr['d1']['all_specs'].get(sz, {})
                 s2 = vr['d2']['all_specs'].get(sz, {})
+
+                if not s1 and not s2:
+                    st.warning(f"⚠️ SIZE {sz} không có dữ liệu")
+                    continue
 
                 poms = sorted(list(set(s1.keys()) | set(s2.keys())))
                 rows = []
@@ -453,15 +393,22 @@ elif mode == "🔄 Version Control":
                         "Status": status
                     })
 
-                df_sz = pd.DataFrame(rows)
-                st.dataframe(df_sz, use_container_width=True)
+                if rows:
+                    df_sz = pd.DataFrame(rows)
+                    st.dataframe(df_sz, use_container_width=True)
 
-                version_dfs.append(df_sz)
-                ver_sheets.append(f"Size_{sz}")
+                    version_dfs.append(df_sz)
+                    ver_sheets.append(f"Size_{sz}")
 
-        st.download_button(
-            "📥 Xuất Excel So Sánh",
-            to_excel(version_dfs, ver_sheets),
-            "Comparison.xlsx",
-            use_container_width=True
-        )
+        # =========================
+        # EXPORT EXCEL
+        # =========================
+        if version_dfs:
+            st.download_button(
+                "📥 Xuất Excel So Sánh",
+                to_excel(version_dfs, ver_sheets),
+                "Comparison.xlsx",
+                use_container_width=True
+            )
+        else:
+            st.warning("⚠️ Không có dữ liệu để xuất Excel")
