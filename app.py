@@ -196,121 +196,132 @@ if mode == "Audit Mode":
                             st.info(f"Độ giống: {item['score']:.1%}")
 
 elif mode == "Version Control":
-    st.subheader("🔄 So sánh Toàn diện (Quét cạn 100% POM & Fix ẩn số Bản A)")
+    st.subheader("🔄 So sánh Toàn diện (Đã tối ưu cho mẫu REITMANS/EXPRESS/EVERLANE)")
 
-    # --- HÀM QUÉT CẠN (BỐC TẤT CẢ CÁC DÒNG CÓ SỐ) ---
-    def get_all_specs_greedy(content):
-        specs_dict = {} # {Size: {POM: Value}}
+    # --- HÀM XỬ LÝ SỐ & PHÂN SỐ SIÊU CHUẨN ---
+    def parse_any_fraction(text):
+        try:
+            text = text.strip().lower()
+            # Trường hợp: 26 1/4
+            mixed = re.match(r'(\d+)\s+(\d+)/(\d+)', text)
+            if mixed: return float(mixed.group(1)) + int(mixed.group(2))/int(mixed.group(3))
+            # Trường hợp: 1/2
+            frac = re.match(r'^(\d+)/(\d+)$', text)
+            if frac: return int(frac.group(1))/int(frac.group(2))
+            # Số thập phân hoặc số nguyên
+            num = re.findall(r"[-+]?\d*\.\d+|\d+", text)
+            return float(num[0]) if num else None
+        except: return None
+
+    # --- THUẬT TOÁN KHÓA TỌA ĐỘ CỘT SIZE ---
+    def get_specs_by_coordinates(content):
+        specs_data = {} # {Size: {Clean_POM: {"orig": Name, "val": Value}}}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
                 for page in pdf.pages:
-                    words = page.extract_words()
-                    if not words: continue
-                    df_w = pd.DataFrame(words)
-                    df_w['y'] = (df_w['top'] / 2).round(0) * 2 # Gom hàng
+                    text_full = page.extract_text().upper() if page.extract_text() else ""
+                    # Chỉ quét trang có bảng thông số
+                    if not any(x in text_full for x in ["WAIST", "HIP", "INSEAM", "POM NAME", "MEASUREMENT"]): continue
                     
-                    # 1. Tìm Header Size ( XS, S, M hoặc 2, 4, 6...)
+                    words = page.extract_words()
+                    df_w = pd.DataFrame(words)
+                    df_w['y'] = (df_w['top'] / 2).round(0) * 2
+                    
+                    # 1. Dò tìm mốc Size (Anchors)
                     size_lanes = []
-                    valid_sz = r'^(XXS|XS|S|M|L|XL|XXL|1X|2X|3X|[0-9]{1,2}|000|00|0)$'
+                    # Danh mục các size chuẩn để nhận diện tiêu đề cột
+                    sz_standard = ["XXS","XS","S","M","L","XL","XXL","1X","2X","3X","000","00","0","2","4","6","8","10","12","14"]
+                    
                     for y, gp in df_w.groupby('y'):
                         sorted_gp = gp.sort_values('x0')
                         line_txt = " ".join(sorted_gp['text']).upper()
-                        # Dòng tiêu đề thường có chữ Size hoặc nhiều mã Size đứng cạnh nhau
+                        # Tìm dòng chứa nhiều size chuẩn nằm cạnh nhau
                         candidates = []
                         for _, r in sorted_gp.iterrows():
                             t = r['text'].strip().upper()
-                            if re.match(valid_sz, t) and r['x0'] > 180:
-                                if t not in ["TOL", "GRADE", "SPEC", "POM"]:
-                                    candidates.append({"sz": t, "x0": r['x0']-12, "x1": r['x1']+12})
-                        
+                            if t in sz_standard and r['x0'] > 250: # Size thường nằm bên phải
+                                candidates.append({"sz": t, "x0": r['x0']-10, "x1": r['x1']+10})
                         if len(candidates) >= 2:
                             size_lanes = candidates
                             break 
 
                     if not size_lanes: continue
 
-                    # 2. Quét cạn từng dòng (Greedy Scan)
+                    # 2. Bốc dữ liệu theo tọa độ dọc của Size
                     first_sz_x = min([c['x0'] for c in size_lanes])
                     for y, gp in df_w.groupby('y'):
                         sorted_gp = gp.sort_values('x0')
-                        # Lấy tên POM bên trái (Description)
-                        pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_sz_x]['text']).strip()
+                        # Lấy POM Name (vùng x từ 80 đến cột size đầu tiên)
+                        pom_raw = " ".join(sorted_gp[(sorted_gp['x1'] > 80) & (sorted_gp['x1'] < first_sz_x)]['text']).strip()
+                        # Làm sạch tên POM để khớp nối (Xóa dấu chấm, số thứ tự, khoảng trắng)
+                        pom_clean = re.sub(r'[^a-zA-Z0-9]', '', pom_raw).upper()
                         
-                        # Lọc rác: Bỏ dòng quá ngắn hoặc dòng tiêu đề lặp lại
-                        if len(pom_raw) > 5 and not any(x in pom_raw.upper() for x in ["SIZE", "DATE", "PAGE", "STYLE", "COLORWAY"]):
+                        if len(pom_clean) > 4 and not any(x in pom_clean for x in ["PAGE", "STYLE", "SIZE", "TOL"]):
                             for col in size_lanes:
                                 cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
                                 if not cell.empty:
-                                    txt_v = " ".join(cell['text'])
-                                    # Chuyển đổi phân số 1/2, 1/4...
-                                    m = re.findall(r"(\d+)\s+(\d+)/(\d+)|(\d+)/(\d+)|(\d+\.?\d*)", txt_v)
-                                    val = None
-                                    if m:
-                                        t = m[0]
-                                        if t[0] and t[1]: val = float(t[0]) + int(t[1])/int(t[2])
-                                        elif t[3]: val = int(t[3])/int(t[4])
-                                        elif t[5]: val = float(t[5])
-                                    
+                                    val = parse_any_fraction(" ".join(cell['text']))
                                     if val is not None:
-                                        if col['sz'] not in specs_dict: specs_dict[col['sz']] = {}
-                                        specs_dict[col['sz']][pom_raw] = val
-            return specs_dict
+                                        if col['sz'] not in specs_data: specs_data[col['sz']] = {}
+                                        specs_data[col['sz']][pom_clean] = {"orig": pom_raw, "val": val}
+            return specs_data
         except: return {}
 
-    # --- UI & LOGIC SO SÁNH ---
+    # --- UI & SO SÁNH ---
     if st.button("🗑️ Làm mới hệ thống"):
         st.session_state['up_key'] += 1; st.session_state['ver_results'] = None; st.rerun()
 
     c1, c2 = st.columns(2)
-    f1 = c1.file_uploader("Bản cũ (A)", type="pdf", key=f"v1_{st.session_state['up_key']}")
+    f1 = c1.file_uploader("Bản A (Cũ)", type="pdf", key=f"v1_{st.session_state['up_key']}")
     f2 = c2.file_uploader("Bản mới (B)", type="pdf", key=f"v2_{st.session_state['up_key']}")
 
     if f1 and f2:
-        if st.button("⚡ BẮT ĐẦU SO SÁNH 100% THÔNG SỐ", use_container_width=True):
-            with st.spinner("Đang quét mọi ngóc ngách của PDF..."):
-                d_a = get_all_specs_greedy(f1.getvalue())
-                d_b = get_all_specs_greedy(f2.getvalue())
+        if st.button("⚡ CHẠY SO SÁNH CHÍNH XÁC 100%", use_container_width=True):
+            with st.spinner("Đang khóa tọa độ cột Size và xử lý phân số..."):
+                d_a = get_specs_by_coordinates(f1.getvalue())
+                d_b = get_specs_by_coordinates(f2.getvalue())
                 if d_a and d_b:
                     st.session_state['ver_results'] = {"a": d_a, "b": d_b}
-                else: st.error("❌ Không tìm thấy bảng thông số.")
+                else: st.error("❌ Không tìm thấy bảng thông số Measurement Chart.")
 
     if st.session_state.get('ver_results'):
         vr = st.session_state['ver_results']
         s_a, s_b = vr['a'], vr['b']
         
-        # Sắp xếp Size
-        sz_order = ["XXS","XS","S","M","L","XL","XXL","1X","2X","3X","000","00","0","2","4","6","8","10","12","14"]
-        raw_sizes = list(set(s_a.keys()) | set(s_b.keys()))
-        all_sizes = [s for s in sz_order if s in raw_sizes] or sorted(raw_sizes)
-        
-        tabs = st.tabs([f"Size {s}" for s in all_sizes])
-        for i, sz in enumerate(all_sizes):
+        # Sắp xếp Size chuyên nghiệp
+        sz_order = ["XXS","XS","S","M","L","XL","XXL","1X","2X","3X","000","00","0","2","4","6","8","10","12"]
+        raw_sz = list(set(s_a.keys()) | set(s_b.keys()))
+        all_sz = [s for s in sz_order if s in raw_sz] or sorted(raw_sz)
+
+        tabs = st.tabs([f"Size {s}" for s in all_sz])
+        for i, sz in enumerate(all_sz):
             with tabs[i]:
                 dict_a = s_a.get(sz, {})
                 dict_b = s_b.get(sz, {})
                 
-                # Gom tất cả POM từ cả 2 bản để không sót dòng nào
-                all_poms = sorted(list(set(dict_a.keys()) | set(dict_b.keys())))
+                # Gom tất cả POM đã làm sạch để so sánh chéo
+                all_poms_clean = sorted(list(set(dict_a.keys()) | set(dict_b.keys())))
                 rows = []
-                for p in all_poms:
-                    v1 = dict_a.get(p)
-                    v2 = dict_b.get(p)
+                for pc in all_poms_clean:
+                    data_a = dict_a.get(pc, {})
+                    data_b = dict_b.get(pc, {})
+                    
+                    v1 = data_a.get('val')
+                    v2 = data_b.get('val')
+                    name = data_b.get('orig') or data_a.get('orig')
                     
                     if v1 is not None and v2 is not None:
                         diff = round(v2 - v1, 3)
                         status = "✅ Khớp" if abs(diff) < 0.01 else "❌ Lệch"
                         diff_txt = f"{diff:+.3f}"
                     else:
-                        diff_txt, status = "N/A", "⚠️ Thiếu thông tin"
+                        diff_txt, status = "N/A", "⚠️ Thiếu dữ liệu"
                         
                     rows.append({
-                        "POM Description": p,
+                        "POM Description": name,
                         "Bản A": v1 if v1 is not None else "-",
                         "Bản B": v2 if v2 is not None else "-",
                         "Lệch": diff_txt,
                         "Kết quả": status
                     })
-                
-                # Hiển thị bảng
-                df_res = pd.DataFrame(rows)
-                st.dataframe(df_res, use_container_width=True, height=600)
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, height=600)
