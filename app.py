@@ -330,3 +330,10 @@ elif mode == "🔄 Version Control":
             )
         else:
             st.warning("⚠️ Không có dữ liệu để xuất Excel")
+            # =========================
+# ❌ CLEAR UPLOAD FILES
+# =========================
+if st.button("🗑️ Xoá file đã upload", use_container_width=True):
+    st.session_state['up_key'] += 1   # reset uploader
+    st.success("✅ Đã xoá file upload")
+    st.rerun()
