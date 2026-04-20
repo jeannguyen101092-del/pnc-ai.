@@ -582,8 +582,9 @@ if mode == "🔍 Audit Mode":
                                             st.session_state['sel_audit'] = item.to_dict()
                                             st.rerun()
 elif mode == "Version Control":
-    st.subheader("🔄 So sánh 2 file PDF (QUÉT TẤT CẢ SIZE)")
+    st.subheader("🔄 So sánh 2 file PDF (ALL SIZE)")
 
+    # Nút xóa để reset uploader
     if st.button("🗑️ Xoá file đã upload", use_container_width=True):
         st.session_state['up_key'] += 1         
         st.session_state['ver_results'] = None  
@@ -593,25 +594,34 @@ elif mode == "Version Control":
     f1 = c1.file_uploader("Bản cũ (A):", type="pdf", key=f"v1_{st.session_state['up_key']}")
     f2 = c2.file_uploader("Bản mới (B):", type="pdf", key=f"v2_{st.session_state['up_key']}")
 
+    # =========================
+    # RUN COMPARE
+    # =========================
     if f1 and f2:
         if st.button("⚡ Bắt đầu so sánh toàn diện", use_container_width=True):
-            with st.spinner("Đang bóc tách bảng thông số..."):
+            with st.spinner("Đang quét toàn bộ dữ liệu..."):
                 d1 = extract_full_data(f1.getvalue())
                 d2 = extract_full_data(f2.getvalue())
 
-                if d1 and d2 and d1.get('all_specs'):
-                    st.session_state['ver_results'] = {"d1": d1, "d2": d2, "f1_name": f1.name, "f2_name": f2.name}
+                if d1 and d2 and d1.get('all_specs') and d2.get('all_specs'):
+                    st.session_state['ver_results'] = {
+                        "d1": d1, "d2": d2,
+                        "f1_name": f1.name, "f2_name": f2.name
+                    }
                 else:
-                    st.error("❌ Không tìm thấy bảng thông số. Hãy kiểm tra lại file PDF.")
+                    st.error("❌ Không đọc được bảng thông số từ một trong hai file.")
 
+    # =========================
+    # SHOW RESULT
+    # =========================
     if st.session_state.get('ver_results'):
         vr = st.session_state['ver_results']
         st.divider()
 
-        # Hiển thị ảnh mẫu
+        # Hiển thị ảnh minh họa
         col_img_a, col_img_b = st.columns(2)
-        col_img_a.image(vr['d1']['img'], caption="Bản A", use_container_width=True)
-        col_img_b.image(vr['d2']['img'], caption="Bản B", use_container_width=True)
+        col_img_a.image(vr['d1']['img'], caption=f"Bản A: {vr['f1_name']}", use_container_width=True)
+        col_img_b.image(vr['d2']['img'], caption=f"Bản B: {vr['f2_name']}", use_container_width=True)
 
         all_sz = sorted(list(set(vr['d1']['all_specs'].keys()) | set(vr['d2']['all_specs'].keys())))
         version_dfs, ver_sheets = [], []
@@ -624,41 +634,26 @@ elif mode == "Version Control":
         for sz in all_sz:
             with st.expander(f"📊 CHI TIẾT SIZE: {sz}", expanded=True):
                 s1, s2 = vr['d1']['all_specs'].get(sz, {}), vr['d2']['all_specs'].get(sz, {})
-                # Lấy tất cả POM của size này
-                poms = sorted(list(set(s1.keys()) | set(s2.keys())))
+                all_poms = sorted(list(set(s1.keys()) | set(s2.keys())))
                 rows = []
 
-                for p in poms:
+                for p in all_poms:
                     v1, v2 = s1.get(p), s2.get(p)
                     if v1 is not None and v2 is not None:
-                        diff = round(v2 - v1, 3)
-                        status = "✅ Khớp" if abs(diff) < 0.001 else "❌ Lệch"
-                        diff_txt = f"{diff:+.3f}"
+                        diff_val = round(v2 - v1, 3)
+                        status = "✅ Khớp" if abs(diff_val) < 0.001 else "❌ Lệch"
+                        diff_txt = f"{diff_val:+.3f}"
                     else:
                         diff_txt, status = "N/A", "⚠️ Thiếu"
 
                     rows.append({"POM": p, "Bản A": v1, "Bản B": v2, "Chênh lệch": diff_txt, "Kết quả": status})
 
-                if rows:
-                    df_sz = pd.DataFrame(rows)
-                    try:
-                        st.dataframe(df_sz.style.map(color_status, subset=['Kết quả']), use_container_width=True)
-                    except:
-                        st.dataframe(df_sz.style.applymap(color_status, subset=['Kết quả']), use_container_width=True)
-                    
-                    version_dfs.append(df_sz)
-                    ver_sheets.append(f"Size_{sz}")
-
-        if version_dfs:
-            col_exp, col_reset = st.columns(2)
-            with col_exp:
-                st.download_button("📥 Xuất Excel So Sánh", to_excel(version_dfs, ver_sheets), "Comparison.xlsx", use_container_width=True)
-            with col_reset:
-                if st.button("🗑️ Xóa & Làm lại", use_container_width=True):
-                    st.session_state['ver_results'] = None
-                    st.session_state['up_key'] += 1
-                    st.rerun()
-
+                df_sz = pd.DataFrame(rows)
+                try:
+                    st.dataframe(df_sz.style.map(color_status, subset=['Kết quả']), use_container_width=True)
+                except:
+                    st.dataframe(df_sz.style.applymap(color_status, subset=['Kết quả']), use_container_width=True)
+                
                 version_dfs.append(df_sz)
                 ver_sheets.append(f"Size_{sz}")
 
