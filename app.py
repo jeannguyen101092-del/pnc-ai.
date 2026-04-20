@@ -269,14 +269,13 @@ if mode == "🔍 Audit Mode":
 elif mode == "🔄 Version Control":
     st.subheader("🔄 So sánh 2 file PDF (ALL PAGE + ALL SIZE)")
 
-    # --- NÚT XÓA FILE (Đưa lên đầu để reset trạng thái) ---
+    # --- NÚT XÓA FILE ---
     if st.button("🗑️ Xoá file đã upload", use_container_width=True):
-        st.session_state['up_key'] += 1         # Thay đổi key để reset widget uploader
-        st.session_state['ver_results'] = None  # Xóa kết quả so sánh cũ
+        st.session_state['up_key'] += 1
+        st.session_state['ver_results'] = None
         st.rerun()
 
     c1, c2 = st.columns(2)
-    # Thêm biến up_key vào key để Streamlit nhận diện reset khi bấm nút
     f1 = c1.file_uploader("Bản cũ (A):", type="pdf", key=f"v1_{st.session_state['up_key']}")
     f2 = c2.file_uploader("Bản mới (B):", type="pdf", key=f"v2_{st.session_state['up_key']}")
 
@@ -285,31 +284,20 @@ elif mode == "🔄 Version Control":
     # =========================
     if f1 and f2:
         if st.button("⚡ Bắt đầu so sánh toàn diện", use_container_width=True):
-            with st.spinner("Đang quét toàn bộ dữ liệu..."):
+            with st.spinner("Đang quét toàn bộ dữ liệu tất cả các size..."):
                 d1 = extract_full_data(f1.getvalue())
                 d2 = extract_full_data(f2.getvalue())
 
-                # DEBUG SIZE
-                size_a = list(d1['all_specs'].keys()) if d1 and d1.get('all_specs') else []
-                size_b = list(d2['all_specs'].keys()) if d2 and d2.get('all_specs') else []
-
-                st.write("📊 SIZE A:", size_a)
-                st.write("📊 SIZE B:", size_b)
-
-                # CHECK DATA
-                if not size_a:
-                    st.error("❌ File A không đọc được bảng thông số")
+                if not d1 or not d1.get('all_specs'):
+                    st.error("❌ File A không đọc được dữ liệu")
                     st.stop()
-
-                if not size_b:
-                    st.error("❌ File B không đọc được bảng thông số")
+                if not d2 or not d2.get('all_specs'):
+                    st.error("❌ File B không đọc được dữ liệu")
                     st.stop()
 
                 st.session_state['ver_results'] = {
-                    "d1": d1,
-                    "d2": d2,
-                    "f1_name": f1.name,
-                    "f2_name": f2.name
+                    "d1": d1, "d2": d2,
+                    "f1_name": f1.name, "f2_name": f2.name
                 }
 
     # =========================
@@ -317,95 +305,80 @@ elif mode == "🔄 Version Control":
     # =========================
     if st.session_state.get('ver_results'):
         vr = st.session_state['ver_results']
-
         st.divider()
 
-        col_a, col_b = st.columns(2)
-        col_a.image(vr['d1']['img'], caption="Bản A", use_container_width=True)
-        col_b.image(vr['d2']['img'], caption="Bản B", use_container_width=True)
+        # Hiển thị ảnh minh họa 2 bản
+        col_img_a, col_img_b = st.columns(2)
+        col_img_a.image(vr['d1']['img'], caption=f"Bản A: {vr['f1_name']}", use_container_width=True)
+        col_img_b.image(vr['d2']['img'], caption=f"Bản B: {vr['f2_name']}", use_container_width=True)
 
-        # lấy tất cả size
-        all_sz = sorted(
-            list(set(vr['d1']['all_specs'].keys()) | set(vr['d2']['all_specs'].keys())),
-            key=lambda x: str(x)
-        )
-
-        if not all_sz:
-            st.warning("⚠️ Không tìm thấy SIZE nào để so sánh")
-            st.stop()
+        # Lấy danh sách duy nhất tất cả các Size từ cả 2 file
+        all_sz = sorted(list(set(vr['d1']['all_specs'].keys()) | set(vr['d2']['all_specs'].keys())))
 
         version_dfs = []
         ver_sheets = []
 
-        # =========================
-        # LOOP SIZE
-        # =========================
+        # Lặp qua từng Size để so sánh
         for sz in all_sz:
-            with st.expander(f"SIZE: {sz}", expanded=True):
-
+            with st.expander(f"📊 CHI TIẾT SIZE: {sz}", expanded=True):
                 s1 = vr['d1']['all_specs'].get(sz, {})
                 s2 = vr['d2']['all_specs'].get(sz, {})
 
-                if not s1 and not s2:
-                    st.warning(f"⚠️ SIZE {sz} không có dữ liệu")
-                    continue
-
-                poms = sorted(list(set(s1.keys()) | set(s2.keys())))
+                # Lấy danh sách tất cả các Point of Measure (POM)
+                all_poms = sorted(list(set(s1.keys()) | set(s2.keys())))
                 rows = []
 
-                for p in poms:
+                for p in all_poms:
                     v1 = s1.get(p)
                     v2 = s2.get(p)
-
-                    if v1 is None or v2 is None:
-                        diff = "N/A"
-                        status = "⚠️ Missing"
+                    
+                    # Tính toán chênh lệch
+                    if v1 is not None and v2 is not None:
+                        diff_val = round(v2 - v1, 3)
+                        diff_txt = f"{diff_val:+.3f}" if diff_val != 0 else "0.000"
+                        status = "✅ Khớp" if abs(diff_val) < 0.001 else "❌ Lệch"
                     else:
-                        diff_val = v2 - v1
-                        diff = f"{diff_val:+.3f}"
-                        status = "✅" if abs(diff_val) < 1e-6 else "⚠️"
+                        diff_txt = "N/A"
+                        status = "⚠️ Thiếu dữ liệu"
 
                     rows.append({
-                        "Point": p,
-                        "Ver A": v1,
-                        "Ver B": v2,
-                        "Diff": diff,
-                        "Status": status
+                        "POM (Vị trí đo)": p,
+                        f"Bản A ({sz})": v1 if v1 is not None else "-",
+                        f"Bản B ({sz})": v2 if v2 is not None else "-",
+                        "Chênh lệch": diff_txt,
+                        "Kết quả": status
                     })
 
                 if rows:
                     df_sz = pd.DataFrame(rows)
-                    st.dataframe(df_sz, use_container_width=True)
+                    
+                    # Hàm tô màu: Lệch thì đỏ, Khớp thì xanh
+                    def color_status(val):
+                        if val == "❌ Lệch": return 'background-color: #ffcccc; color: #990000'
+                        if val == "✅ Khớp": return 'background-color: #ccffcc; color: #006600'
+                        return 'background-color: #fff3cd; color: #856404'
+
+                    # Hiển thị bảng đã được tô màu
+                    st.dataframe(df_sz.style.applymap(color_status, subset=['Kết quả']), use_container_width=True)
 
                     version_dfs.append(df_sz)
                     ver_sheets.append(f"Size_{sz}")
 
         # =========================
-                # =========================
-        # EXPORT EXCEL & RESET
+        # NÚT XUẤT EXCEL & RESET (DƯỚI CÙNG)
         # =========================
+        st.divider()
         if version_dfs:
-            # Tạo 2 cột để nút Xuất và nút Xóa nằm cạnh nhau
             col_exp, col_reset = st.columns(2)
-            
             with col_exp:
                 st.download_button(
-                    "📥 Xuất Excel So Sánh",
+                    "📥 Tải File Excel So Sánh (.xlsx)",
                     to_excel(version_dfs, ver_sheets),
-                    "Comparison.xlsx",
+                    f"So_sanh_PPJ_{uuid.uuid4()[:4]}.xlsx",
                     use_container_width=True
                 )
-            
             with col_reset:
-                # Nút bấm để xóa toàn bộ kết quả vừa so sánh
-                if st.button("🗑️ Xóa & Làm mới", use_container_width=True, type="secondary"):
-                    # 1. Xóa các kết quả lưu trong session_state
-                    st.session_state['sel_audit'] = None
+                if st.button("🗑️ Xóa & Làm lại", use_container_width=True):
                     st.session_state['ver_results'] = None
-                    
-                    # 2. Reset cái file_uploader bằng cách tăng key
                     st.session_state['up_key'] += 1
-                    
-                    # 3. Reload lại trang để đưa về trạng thái trắng
                     st.rerun()
-
