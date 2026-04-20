@@ -381,16 +381,22 @@ elif mode == "🔄 Version Control":
                     ver_sheets.append(f"Size_{sz}")
 
         # =========================
-        # EXPORT EXCEL
+                # =========================
+        # EXPORT EXCEL & RESET
         # =========================
         if version_dfs:
-            st.download_button(
-                "📥 Xuất Excel So Sánh",
-                to_excel(version_dfs, ver_sheets),
-                "Comparison.xlsx",
-                use_container_width=True
-            )
-              with col_reset:
+            # Tạo 2 cột để nút Xuất và nút Xóa nằm cạnh nhau
+            col_exp, col_reset = st.columns(2)
+            
+            with col_exp:
+                st.download_button(
+                    "📥 Xuất Excel So Sánh",
+                    to_excel(version_dfs, ver_sheets),
+                    "Comparison.xlsx",
+                    use_container_width=True
+                )
+            
+            with col_reset:
                 # Nút bấm để xóa toàn bộ kết quả vừa so sánh
                 if st.button("🗑️ Xóa & Làm mới", use_container_width=True, type="secondary"):
                     # 1. Xóa các kết quả lưu trong session_state
@@ -402,3 +408,4 @@ elif mode == "🔄 Version Control":
                     
                     # 3. Reload lại trang để đưa về trạng thái trắng
                     st.rerun()
+
