@@ -137,17 +137,16 @@ with st.sidebar:
     new_files = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"sy_{st.session_state['up_key']}")
     if new_files and st.button("🚀 SYNCHRONIZE", use_container_width=True):
                 # --- DÁN ĐOẠN NÀY VÀO DÒNG 155 ---
-        st.divider()
+               # --- ĐOẠN NÂNG CẤP CHUẨN ---
         st.subheader("⚙️ Bảo trì hệ thống")
         with st.expander("Nâng cấp kho dữ liệu AI"):
-            st.info("Quét lại 2.000+ mẫu để nhận diện Quần/Áo chính xác hơn.")
+            st.info("Quét lại 1.390+ mẫu để nhận diện Quần/Áo chính xác hơn.")
             if st.button("🚀 BẮT ĐẦU NÂNG CẤP", use_container_width=True):
                 res = supabase.table("ai_data").select("id, image_url").execute()
                 items = res.data
                 if items:
                     prog_bar = st.progress(0)
                     status_txt = st.empty()
-                    start_time = time.time()
                     for i, item in enumerate(items):
                         try:
                             resp = requests.get(item['image_url'], timeout=10)
@@ -155,14 +154,16 @@ with st.sidebar:
                                 new_vec = get_vector(resp.content)
                                 if new_vec:
                                     supabase.table("ai_data").update({"vector": new_vec}).eq("id", item['id']).execute()
-                            
-                            # Cập nhật giao diện
                             percent = (i + 1) / len(items)
                             prog_bar.progress(percent)
                             status_txt.markdown(f"**⏳ Tiến độ:** {i+1}/{len(items)} mẫu")
                         except: continue
                     st.success("✅ Hoàn tất nâng cấp!")
                     st.balloons()
+                    time.sleep(2)
+                    st.rerun()
+        st.divider()
+
                     time.sleep(2)
                     st.rerun()
 
