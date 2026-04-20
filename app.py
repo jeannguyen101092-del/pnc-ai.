@@ -166,161 +166,76 @@ mode = st.radio("Chế độ:", ["🔍 Audit Mode", "🔄 Version Control"], hor
 
 if mode == "🔍 Audit Mode":
     f_audit = st.file_uploader("Upload Target PDF:", type="pdf")
-
-    # =========================
-    # 🔥 DETECT TYPE FROM SPEC
-    # =========================
-    def detect_type_from_spec(spec):
-        try:
-            keys = set()
-
-            for sz in spec:
-                for k in spec[sz]:
-                    keys.add(k.upper())
-
-            keys_str = " ".join(keys)
-
-            # PANT
-            if any(x in keys_str for x in ["INSEAM", "OUTSEAM", "THIGH"]):
-                return "PANT"
-
-            # TOP
-            if any(x in keys_str for x in ["CHEST", "SLEEVE", "BODY LENGTH"]):
-                return "TOP"
-
-            # SHORT (inseam nhỏ)
-            for sz in spec:
-                for k, v in spec[sz].items():
-                    if "INSEAM" in k.upper() and v < 40:
-                        return "SHORT"
-
-            return "OTHER"
-        except:
-            return "OTHER"
-
     if f_audit:
         target = extract_full_data(f_audit.getvalue())
-
         if target and target['img']:
-
-            # 🔥 detect type từ spec
-            target_type = detect_type_from_spec(target['all_specs'])
+            # 1. LẤY "CHỮ KÝ" CẤU TRÚC (Danh sách các điểm đo POM)
+            # File Quần sẽ có: Waist, Inseam, Hip...
+            # File Áo sẽ có: Chest, Sleeve, Neck...
+            target_poms = set()
+            for sz in target['all_specs'].values():
+                target_poms.update([p.upper() for p in sz.keys()])
+            
+            # Xác định nhanh loại hình qua từ khóa POM
+            is_bottom = any(x in " ".join(target_poms) for x in ["WAIST", "INSEAM", "HIP", "THIGH"])
+            is_top = any(x in " ".join(target_poms) for x in ["CHEST", "NECK", "SLEEVE", "BUST"])
+            type_label = "BOTTOM" if is_bottom else "TOP" if is_top else "OTHER"
 
             res = supabase.table("ai_data").select("id, vector, file_name, spec_json").execute()
-
+            
             if res.data:
                 t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
-
                 valid_rows = []
-
+                
                 for r in res.data:
-                    try:
-                        if not r.get('vector') or len(r['vector']) != 512:
-                            continue
+                    # 2. SO KHỚP CẤU TRÚC JSON (Mạnh hơn Vector)
+                    ref_spec = r.get('spec_json', {})
+                    ref_poms = set()
+                    if isinstance(ref_spec, dict):
+                        # Lấy tất cả POM của tất cả các size trong JSON mẫu
+                        for sz_val in ref_spec.values():
+                            if isinstance(sz_val, dict):
+                                ref_poms.update([p.upper() for p in sz_val.keys()])
+                    
+                    # Tính độ tương đồng Jaccard giữa 2 bộ khung POM (0.0 -> 1.0)
+                    intersect = len(target_poms.intersection(ref_poms))
+                    union = len(target_poms.union(ref_poms))
+                    sim_spec = intersect / union if union > 0 else 0
+                    
+                    # 3. SO KHỚP HÌNH ẢNH (VECTOR)
+                    sim_img = 0
+                    if r['vector'] and len(r['vector']) == 512:
+                        sim_img = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1)).flatten()[0]
 
-                        ref_spec = r.get("spec_json", {})
+                    # 4. CHẶN ĐỨNG SAI LOẠI (Nếu cấu trúc khác nhau quá 70%, loại bỏ luôn)
+                    if sim_spec < 0.3: continue 
 
-                        # 🔥 detect type ref
-                        ref_type = detect_type_from_spec(ref_spec)
-
-                        # =========================
-                        # ❌ FILTER CỨNG
-                        # =========================
-                        if target_type != "OTHER" and ref_type != target_type:
-                            continue
-
-                        # =========================
-                        # 🔥 IMAGE SIM
-                        # =========================
-                        ref_vec = np.array(r['vector']).reshape(1, -1)
-                        img_sim = cosine_similarity(t_vec, ref_vec).flatten()[0]
-
-                        # =========================
-                        # 🔥 SPEC SIM (THÊM VÀO)
-                        # =========================
-                        spec_sim = 0
-                        try:
-                            scores = []
-                            for sz in target['all_specs']:
-                                if sz in ref_spec:
-                                    t_s = target['all_specs'][sz]
-                                    r_s = ref_spec[sz]
-
-                                    common = set(t_s.keys()) & set(r_s.keys())
-                                    if not common:
-                                        continue
-
-                                    diffs = []
-                                    for k in common:
-                                        v1 = t_s[k]
-                                        v2 = r_s[k]
-                                        if v1 and v2:
-                                            diffs.append(abs(v1 - v2))
-
-                                    if diffs:
-                                        scores.append(1 / (1 + np.mean(diffs)))
-
-                            spec_sim = np.mean(scores) if scores else 0
-                        except:
-                            spec_sim = 0
-
-                        # =========================
-                        # 🔥 FINAL SCORE (QUAN TRỌNG)
-                        # =========================
-                        final_score = img_sim * 0.4 + spec_sim * 0.6
-
-                        # ❌ bỏ match rác
-                        if final_score < 0.3:
-                            continue
-
-                        valid_rows.append({
-                            "id": r['id'],
-                            "file_name": r['file_name'],
-                            "sim_final": final_score,
-                            "img_sim": img_sim,
-                            "spec_sim": spec_sim
-                        })
-
-                    except:
-                        continue
-
-                # =========================
-                # SHOW RESULT
-                # =========================
+                    # 5. TÍNH ĐIỂM TỔNG HỢP (70% Cấu trúc + 30% Hình ảnh)
+                    sim_final = (sim_spec * 0.7) + (sim_img * 0.3)
+                    
+                    r['sim_final'] = sim_final
+                    r['sim_spec'] = sim_spec
+                    r['sim_img'] = sim_img
+                    valid_rows.append(r)
+                
+                # Hiển thị kết quả
+                st.subheader(f"🎯 AI Matches | TYPE: {type_label}")
                 if not valid_rows:
-                    st.warning("❌ Không tìm thấy mẫu phù hợp")
+                    st.error("❌ Không tìm thấy mẫu nào có cấu trúc thông số tương đồng!")
                 else:
-                    df_db = pd.DataFrame(valid_rows)\
-                        .sort_values('sim_final', ascending=False)\
-                        .head(3)
-
-                    st.subheader(f"🎯 AI Matches | TYPE: {target_type}")
-
+                    df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(3)
                     cols = st.columns(4)
-                    cols[0].image(target['img'], caption="TARGET", use_container_width=True)
-
-                    for idx, (_, row) in enumerate(df_db.iterrows()):
-                        if idx + 1 >= len(cols):
-                            break
-
-                        det = supabase.table("ai_data")\
-                            .select("image_url, spec_json")\
-                            .eq("id", row['id'])\
-                            .execute().data
-
+                    cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
+                    
+                    for i, (idx, row) in enumerate(df_db.iterrows()):
+                        det = supabase.table("ai_data").select("image_url").eq("id", row['id']).execute().data
                         if det:
-                            with cols[idx + 1]:
-                                st.image(det[0]['image_url'],
-                                         caption=f"{row['sim_final']:.1%}")
-
-                                st.caption(f"IMG: {row['img_sim']:.2f} | SPEC: {row['spec_sim']:.2f}")
-
-                                if st.button(f"CHỌN {idx+1}", key=f"s_{row['id']}", use_container_width=True):
-                                    st.session_state['sel_audit'] = {
-                                        **row,
-                                        **det[0]
-                                    }
-
+                            with cols[i+1]:
+                                st.image(det[0]['image_url'], 
+                                         caption=f"Match: {row['sim_final']:.1%}\n(Dữ liệu: {row['sim_spec']:.1%})")
+                                if st.button(f"CHỌN {i+1}", key=f"s_{idx}", use_container_width=True):
+                                    full_det = supabase.table("ai_data").select("*").eq("id", row['id']).execute().data[0]
+                                    st.session_state['sel_audit'] = full_det
 
 
 elif mode == "🔄 Version Control":
