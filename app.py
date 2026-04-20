@@ -215,15 +215,14 @@ if mode == "🔍 Audit Mode":
 elif mode == "🔄 Version Control":
     st.subheader("🔄 So sánh & Đối chiếu Thông số Kỹ thuật")
     
-    # 1. Tải lên 2 file để đối chiếu
     c1, c2 = st.columns(2)
     f1 = c1.file_uploader("Chọn File A (Gốc):", type="pdf", key="v1")
     f2 = c2.file_uploader("Chọn File B (Mới):", type="pdf", key="v2")
 
     if f1 and f2:
         if st.button("🚀 Bắt đầu truy quét toàn bộ các trang", use_container_width=True):
-            with st.spinner("🔍 Đang đọc dữ liệu từ trang 1 đến trang cuối..."):
-                # Gọi hàm xử lý (Đảm bảo hàm này duyệt qua page trong pdf.pages)
+            with st.spinner("🔍 Hệ thống đang lọc bỏ bảng phụ liệu và tìm bảng thông số đo..."):
+                # Gọi hàm xử lý (Hàm này cần trả về all_specs và imgs)
                 d1 = extract_full_data(f1.getvalue())
                 d2 = extract_full_data(f2.getvalue())
                 
@@ -233,84 +232,62 @@ elif mode == "🔄 Version Control":
                         "f1_name": f1.name, "f2_name": f2.name
                     }
 
-    # 2. Hiển thị kết quả so sánh nếu có dữ liệu
     if st.session_state.get('ver_results'):
         vr = st.session_state['ver_results']
         
-        # Hiển thị ảnh các trang để kiểm chứng hệ thống đã đọc đến trang 13 chưa
-        with st.expander("🖼️ Xem lại các trang PDF đã quét dữ liệu"):
-            t1, t2 = st.tabs([f"Trang trong {vr['f1_name']}", f"Trang trong {vr['f2_name']}"])
-            with t1:
-                imgs_a = vr['d1'].get('imgs', [])
-                st.image(imgs_a, caption=[f"Trang {i+1}" for i in range(len(imgs_a))], width=280)
-            with t2:
-                imgs_b = vr['d2'].get('imgs', [])
-                st.image(imgs_b, caption=[f"Trang {i+1}" for i in range(len(imgs_b))], width=280)
+        # Xem lại ảnh để kiểm chứng
+        with st.expander("🖼️ Xem lại danh sách trang đã quét"):
+            t1, t2 = st.tabs([f"Trang trong File A", f"Trang trong File B"])
+            t1.image(vr['d1'].get('imgs', []), width=280)
+            t2.image(vr['d2'].get('imgs', []), width=280)
 
-        # Gom tất cả các Size tìm thấy trên mọi trang của cả 2 file
-        all_sz = sorted(list(set(vr['d1']['all_specs'].keys()) | set(vr['d2']['all_specs'].keys())))
+        # LẤY TẤT CẢ SIZE (Loại bỏ các size rác nếu có)
+        all_sz = sorted([s for s in set(vr['d1']['all_specs'].keys()) | set(vr['d2']['all_specs'].keys()) if s])
         
         version_dfs, ver_sheets = [], []
-        st.write(f"### 📊 Bảng so sánh chi tiết ({len(all_sz)} Size được tìm thấy)")
+        st.write(f"### 📊 Bảng so sánh chi tiết ({len(all_sz)} Size)")
 
-        if not all_sz:
-            st.error("❌ Không tìm thấy bảng thông số POM. Hãy kiểm tra lại cấu trúc file.")
-        
         for sz in all_sz:
-            with st.expander(f"📏 CHI TIẾT SIZE: {sz}", expanded=True):
-                s1 = vr['d1']['all_specs'].get(sz, {})
-                s2 = vr['d2']['all_specs'].get(sz, {})
-                
-                # Lấy tất cả các điểm đo (POM) tìm thấy trên mọi trang
-                all_poms = sorted(list(set(s1.keys()) | set(s2.keys())))
-                
+            s1 = vr['d1']['all_specs'].get(sz, {})
+            s2 = vr['d2']['all_specs'].get(sz, {})
+            
+            # Lọc bỏ các dòng chứa từ khóa phụ liệu (Bag, Poly, Label...) để làm sạch bảng
+            garbage_keywords = ['bag', 'poly', 'label', 'thread', 'zipper', 'button', 'sticker']
+            all_poms = sorted([p for p in set(s1.keys()) | set(s2.keys()) 
+                               if not any(k in str(p).lower() for k in garbage_keywords)])
+            
+            if not all_poms: continue # Nếu size này chỉ chứa rác thì bỏ qua
+
+            with st.expander(f"📏 DỮ LIỆU SIZE: {sz}", expanded=True):
                 rows = []
                 for p in all_poms:
                     v1, v2 = s1.get(p, 0), s2.get(p, 0)
                     
-                    # Tính toán chênh lệch (xử lý cả trường hợp số phân số)
+                    # Logic tính chênh lệch
                     try:
                         diff = float(v2) - float(v1)
                         diff_str = f"{diff:+.3f}" if diff != 0 else "0"
                     except:
-                        diff_str = "N/A"
+                        diff_str = "-"
 
-                    # Phân loại trạng thái để tô màu
-                    if v1 == v2: 
-                        status = "✅ Khớp"
-                    elif v1 != 0 and (v2 == 0 or v2 is None): 
-                        status = "❌ File B bị mất"
-                    elif (v1 == 0 or v1 is None) and v2 != 0: 
-                        status = "➕ File B thêm mới"
-                    else: 
-                        status = "⚠️ Lệch"
+                    if v1 == v2: status = "✅ Khớp"
+                    elif v1 != 0 and v2 == 0: status = "❓ File B thiếu"
+                    elif v1 == 0 and v2 != 0: status = "➕ File B thêm"
+                    else: status = "⚠️ Lệch"
 
                     rows.append({
-                        "Mã & Mô tả POM": p,
-                        "File A": v1,
-                        "File B": v2,
+                        "Điểm đo (POM)": p,
+                        "Giá trị File A": v1,
+                        "Giá trị File B": v2,
                         "Chênh lệch": diff_str,
-                        "Trạng thái": status
+                        "Kết luận": status
                     })
 
                 df_sz = pd.DataFrame(rows)
                 
-                # Style để làm nổi bật lỗi chênh lệch
-                def highlight_diff(row):
-                    color = ''
-                    if "⚠️" in row['Trạng thái']: color = 'background-color: #fff3cd' # Vàng
-                    elif "❌" in row['Trạng thái']: color = 'background-color: #f8d7da' # Đỏ
-                    elif "➕" in row['Trạng thái']: color = 'background-color: #d1ecf1' # Xanh dương
-                    return [color] * len(row)
-
-                st.dataframe(df_sz.style.apply(highlight_diff, axis=1), use_container_width=True)
+                # Hiển thị bảng với màu sắc cảnh báo
+                st.dataframe(df_sz.style.apply(lambda x: ['background-color: #fff3cd' if "⚠️" in x['Kết luận'] else '' for _ in x], axis=1), use_container_width=True)
                 version_dfs.append(df_sz); ver_sheets.append(str(sz))
 
-        # 3. Xuất file Excel tổng hợp mọi trang
         st.divider()
-        st.download_button(
-            label="📥 Tải báo cáo so sánh đầy đủ (.xlsx)",
-            data=to_excel(version_dfs, ver_sheets),
-            file_name=f"Full_Comparison_Report.xlsx",
-            use_container_width=True
-        )
+        st.download_button("📥 Tải báo cáo so sánh (.xlsx)", to_excel(version_dfs, ver_sheets), "Comparison_Report.xlsx", use_container_width=True)
