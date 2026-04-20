@@ -167,58 +167,67 @@ if mode == "🔍 Audit Mode":
     f_audit = st.file_uploader("Upload Target PDF:", type="pdf")
     if f_audit:
         target = extract_full_data(f_audit.getvalue())
-        
-        if target and target.get('img'):
-            # 1. TRÍCH XUẤT VECTOR CỦA FILE ĐANG KIỂM
-            t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
+        if target and target.get('all_specs'):
+            # --- 1. TRÍCH XUẤT "VÂN TAY" CẤU TRÚC (POMs) ---
+            target_poms = set([p.upper().strip() for sz in target['all_specs'].values() for p in sz.keys()])
             
-            with st.spinner("🕵️ AI đang đối soát hình ảnh với 2.000 mẫu trong kho..."):
-                # 2. TRUY VẤN TOÀN BỘ DATABASE (CHỈ LẤY VECTOR VÀ THÔNG TIN ẢNH)
-                res = supabase.table("ai_data").select("id, vector, file_name, image_url").execute()
+            # Tự động nhận diện nhóm sản phẩm (Top vs Bottom)
+            is_target_bottom = any(k in " ".join(target_poms) for k in ["WAIST", "INSEAM", "HIP", "THIGH"])
+            is_target_top = any(k in " ".join(target_poms) for k in ["CHEST", "BUST", "SLEEVE", "NECK"])
+
+            with st.spinner("🕵️ Đang thực hiện đối soát chuyên sâu (AI + JSON Structure)..."):
+                res = supabase.table("ai_data").select("id, vector, file_name, spec_json, image_url").execute()
                 
                 if res.data:
+                    t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
                     valid_rows = []
-                    for r in res.data:
-                        if r['vector'] and len(r['vector']) == 512:
-                            # TÍNH ĐỘ GIỐNG NHAU THUẦN TÚY QUA HÌNH ẢNH (COSINE SIMILARITY)
-                            sim_img = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1)).flatten()[0]
-                            
-                            # Lưu kết quả
-                            r['sim_final'] = float(sim_img)
-                            valid_rows.append(r)
                     
-                    # 3. SẮP XẾP VÀ LẤY ĐÚNG 8 MÃ GIỐNG NHẤT
+                    for r in res.data:
+                        # --- 2. BỘ LỌC CHỦNG LOẠI (SIẾT CHẶT) ---
+                        ref_spec = r.get('spec_json', {})
+                        ref_poms = set([p.upper().strip() for sz in ref_spec.values() for p in sz.keys() if isinstance(sz, dict)])
+                        
+                        is_ref_bottom = any(k in " ".join(ref_poms) for k in ["WAIST", "INSEAM", "HIP"])
+                        is_ref_top = any(k in " ".join(ref_poms) for k in ["CHEST", "BUST", "SLEEVE"])
+
+                        # CHẶN ĐỨNG SAI LOẠI: Nếu khác chủng loại thì loại bỏ ngay
+                        if (is_target_bottom and not is_ref_bottom) or (is_target_top and not is_ref_top):
+                            continue
+
+                        # --- 3. TÍNH ĐỘ TƯƠNG ĐỒNG KÉP ---
+                        # So khớp hình ảnh (AI Vector)
+                        sim_img = cosine_similarity(t_vec, np.array(r['vector']).reshape(1, -1)).flatten()[0]
+                        
+                        # So khớp cấu trúc JSON (Jaccard)
+                        intersect = len(target_poms.intersection(ref_poms))
+                        union = len(target_poms.union(ref_poms))
+                        sim_struct = intersect / union if union > 0 else 0
+                        
+                        # ĐIỂM SIẾT CHẶT: 50% Ảnh + 50% Cấu trúc dữ liệu
+                        sim_final = (sim_img * 0.5) + (sim_struct * 0.5)
+                        
+                        # Thưởng điểm nếu tên file có cùng mã hiệu hoặc từ khóa chính
+                        if any(k in f_audit.name.upper() and k in r['file_name'].upper() for k in ["SHORT", "PANT", "JACKET", "SHIRT"]):
+                            sim_final += 0.1
+
+                        r['sim_final'] = min(sim_final, 1.0)
+                        r['sim_struct'] = sim_struct
+                        valid_rows.append(r)
+                    
+                    # 4. HIỂN THỊ KẾT QUẢ TOP 8 ĐÃ QUA BỘ LỌC
                     df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(8)
                     
-                    st.subheader(f"🎯 Top 8 thiết kế có hình dáng tương đồng nhất")
-                    
-                    # Hiển thị mẫu gốc trước
-                    st.info("📸 Mẫu bạn vừa upload:")
-                    st.image(target['img'], width=250)
-                    st.divider()
-
-                    # 4. HIỂN THỊ 8 KẾT QUẢ TRÊN 2 HÀNG (Mỗi hàng 4 mẫu)
-                    for row_idx in range(2): # 2 hàng
-                        cols = st.columns(4) # Mỗi hàng 4 cột
-                        for col_idx in range(4):
-                            idx = row_idx * 4 + col_idx
-                            if idx < len(df_db):
-                                item = df_db.iloc[idx]
-                                with cols[col_idx]:
-                                    st.image(item['image_url'], use_container_width=True)
-                                    # Hiển thị độ giống thực tế từ AI
-                                    score = item['sim_final']
-                                    st.write(f"**Độ giống: {score:.1%}**")
-                                    st.caption(f"📄 {item['file_name'][:25]}")
-                                    
-                                    if st.button("Chọn mẫu này", key=f"select_{idx}"):
-                                        # Vẫn cho phép chọn để xem chi tiết nếu cần
-                                        full_data = supabase.table("ai_data").select("*").eq("id", item['id']).execute().data
-                                        st.session_state['sel_audit'] = full_data[0] if full_data else None
-                                        st.rerun()
-                else:
-                    st.error("Không tìm thấy dữ liệu trong Database.")
-
+                    st.subheader(f"🎯 Top 8 mẫu đối soát chính xác nhất")
+                    cols = st.columns(4)
+                    for i, (idx, row) in enumerate(df_db.iterrows()):
+                        with cols[i % 4]:
+                            st.image(row['image_url'], use_container_width=True)
+                            # Hiển thị mức độ chính xác (AI + Cấu trúc)
+                            st.write(f"**Chính xác: {row['sim_final']:.1%}**")
+                            st.caption(f"📄 {row['file_name'][:25]}")
+                            if st.button("Chọn Audit", key=f"sel_{idx}"):
+                                st.session_state['sel_audit'] = row.to_dict()
+                                st.rerun()
 
 
 
