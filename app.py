@@ -266,13 +266,13 @@ if mode == "🔍 Audit Mode":
 
 
 
-elif mode == "🔄 Version Control":
+elif mode == "Version Control":
     st.subheader("🔄 So sánh 2 file PDF (ALL PAGE + ALL SIZE)")
 
-    # --- NÚT XÓA FILE ---
+    # --- NÚT XÓA FILE (Reset trạng thái) ---
     if st.button("🗑️ Xoá file đã upload", use_container_width=True):
-        st.session_state['up_key'] += 1
-        st.session_state['ver_results'] = None
+        st.session_state['up_key'] += 1         
+        st.session_state['ver_results'] = None  
         st.rerun()
 
     c1, c2 = st.columns(2)
@@ -289,10 +289,10 @@ elif mode == "🔄 Version Control":
                 d2 = extract_full_data(f2.getvalue())
 
                 if not d1 or not d1.get('all_specs'):
-                    st.error("❌ File A không đọc được dữ liệu")
+                    st.error("❌ File A không đọc được bảng thông số")
                     st.stop()
                 if not d2 or not d2.get('all_specs'):
-                    st.error("❌ File B không đọc được dữ liệu")
+                    st.error("❌ File B không đọc được bảng thông số")
                     st.stop()
 
                 st.session_state['ver_results'] = {
@@ -312,19 +312,26 @@ elif mode == "🔄 Version Control":
         col_img_a.image(vr['d1']['img'], caption=f"Bản A: {vr['f1_name']}", use_container_width=True)
         col_img_b.image(vr['d2']['img'], caption=f"Bản B: {vr['f2_name']}", use_container_width=True)
 
-        # Lấy danh sách duy nhất tất cả các Size từ cả 2 file
+        # Lấy danh sách tất cả các Size (Không bỏ sót size nào)
         all_sz = sorted(list(set(vr['d1']['all_specs'].keys()) | set(vr['d2']['all_specs'].keys())))
 
         version_dfs = []
         ver_sheets = []
 
-        # Lặp qua từng Size để so sánh
+        # Hàm tô màu (Sửa lỗi AttributeError)
+        def color_status(val):
+            if val == "❌ Lệch": 
+                return 'background-color: #ffcccc; color: #990000; font-weight: bold;'
+            if val == "✅ Khớp": 
+                return 'background-color: #ccffcc; color: #006600;'
+            return 'background-color: #fff3cd; color: #856404;'
+
+        # Lặp qua từng Size
         for sz in all_sz:
             with st.expander(f"📊 CHI TIẾT SIZE: {sz}", expanded=True):
                 s1 = vr['d1']['all_specs'].get(sz, {})
                 s2 = vr['d2']['all_specs'].get(sz, {})
 
-                # Lấy danh sách tất cả các Point of Measure (POM)
                 all_poms = sorted(list(set(s1.keys()) | set(s2.keys())))
                 rows = []
 
@@ -332,14 +339,13 @@ elif mode == "🔄 Version Control":
                     v1 = s1.get(p)
                     v2 = s2.get(p)
                     
-                    # Tính toán chênh lệch
                     if v1 is not None and v2 is not None:
                         diff_val = round(v2 - v1, 3)
                         diff_txt = f"{diff_val:+.3f}" if diff_val != 0 else "0.000"
                         status = "✅ Khớp" if abs(diff_val) < 0.001 else "❌ Lệch"
                     else:
                         diff_txt = "N/A"
-                        status = "⚠️ Thiếu dữ liệu"
+                        status = "⚠️ Thiếu"
 
                     rows.append({
                         "POM (Vị trí đo)": p,
@@ -349,22 +355,13 @@ elif mode == "🔄 Version Control":
                         "Kết quả": status
                     })
 
-                                if rows:
+                if rows:
                     df_sz = pd.DataFrame(rows)
                     
-                    # Hàm tô màu: Lệch thì đỏ, Khớp thì xanh
-                    def color_status(val):
-                        if val == "❌ Lệch": 
-                            return 'background-color: #ffcccc; color: #990000; font-weight: bold;'
-                        if val == "✅ Khớp": 
-                            return 'background-color: #ccffcc; color: #006600;'
-                        return 'background-color: #fff3cd; color: #856404;'
-
-                    # SỬA LỖI TẠI ĐÂY: Dùng .map thay vì .applymap
+                    # Áp dụng màu sắc (Tương thích cả Pandas cũ và mới)
                     try:
                         styled_df = df_sz.style.map(color_status, subset=['Kết quả'])
                     except AttributeError:
-                        # Dành cho phiên bản Pandas cũ hơn nếu cần
                         styled_df = df_sz.style.applymap(color_status, subset=['Kết quả'])
                     
                     st.dataframe(styled_df, use_container_width=True)
@@ -373,7 +370,7 @@ elif mode == "🔄 Version Control":
                     ver_sheets.append(f"Size_{sz}")
 
         # =========================
-        # NÚT XUẤT EXCEL & RESET (DƯỚI CÙNG)
+        # NÚT XUẤT EXCEL & RESET (Dưới cùng)
         # =========================
         st.divider()
         if version_dfs:
@@ -382,11 +379,11 @@ elif mode == "🔄 Version Control":
                 st.download_button(
                     "📥 Tải File Excel So Sánh (.xlsx)",
                     to_excel(version_dfs, ver_sheets),
-                    f"So_sanh_PPJ_{uuid.uuid4()[:4]}.xlsx",
+                    f"Comparison_Report_{uuid.uuid4()[:4]}.xlsx",
                     use_container_width=True
                 )
             with col_reset:
-                if st.button("🗑️ Xóa & Làm lại", use_container_width=True):
+                if st.button("🗑️ Xóa kết quả & Làm lại", use_container_width=True):
                     st.session_state['ver_results'] = None
                     st.session_state['up_key'] += 1
                     st.rerun()
