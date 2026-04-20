@@ -217,27 +217,26 @@ elif mode == "Version Control":
         with pdfplumber.open(io.BytesIO(content)) as pdf:
             for page in pdf.pages:
                 words = page.extract_words()
-                if not words: continue
+                if not words:
+                    continue
 
                 df_w = pd.DataFrame(words)
                 df_w['y'] = (df_w['top'] / 2).round(0) * 2
 
-                # ===== 1. DETECT SIZE HEADER MẠNH HƠN =====
+                # ===== 1. DETECT SIZE HEADER =====
                 size_lanes = []
                 sz_pattern = r'^(XXS|XS|S|M|L|XL|XXL|XXXL|1X|2X|3X|[0-9]{1,3}|000|00|0)$'
 
                 for y, gp in df_w.groupby('y'):
                     sorted_gp = gp.sort_values('x0')
-                    texts = [str(t).strip().upper().replace("*","") for t in sorted_gp['text']]
+                    texts = [str(t).strip().upper().replace("*", "") for t in sorted_gp['text']]
 
                     valid_sizes = []
                     for i, t in enumerate(texts):
                         if re.match(sz_pattern, t):
                             valid_sizes.append((t, sorted_gp.iloc[i]))
 
-                    # 👉 chỉ cần >=3 size là coi là header
                     if len(valid_sizes) >= 3:
-                        size_lanes = []
                         for t, row in valid_sizes:
                             size_lanes.append({
                                 "sz": t,
@@ -249,23 +248,21 @@ elif mode == "Version Control":
                 if not size_lanes:
                     continue
 
-                # ===== 2. LẤY POM + VALUE =====
+                # ===== 2. EXTRACT DATA =====
                 first_x = min([c['x0'] for c in size_lanes])
 
                 for y, gp in df_w.groupby('y'):
                     sorted_gp = gp.sort_values('x0')
 
-                    # 👉 lấy tên POM bên trái
                     pom_words = sorted_gp[sorted_gp['x1'] < first_x]
                     pom_raw = " ".join(pom_words['text']).strip()
 
-                    # lọc rác mạnh hơn
                     if len(pom_raw) < 3:
                         continue
-                    if any(x in pom_raw.upper() for x in ["PAGE","DATE","STYLE","SPEC","SIZE"]):
+
+                    if any(x in pom_raw.upper() for x in ["PAGE", "DATE", "STYLE", "SPEC", "SIZE"]):
                         continue
 
-                    # ===== 3. MAP VALUE =====
                     for col in size_lanes:
                         cell = sorted_gp[
                             (sorted_gp['x0'] >= col['x0']) &
