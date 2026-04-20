@@ -309,28 +309,30 @@ elif mode == "🔄 Version Control":
     f1 = c1.file_uploader("Bản cũ (A):", type="pdf", key="v1")
     f2 = c2.file_uploader("Bản mới (B):", type="pdf", key="v2")
 
+    # =========================
+    # RUN COMPARE
+    # =========================
     if f1 and f2:
         if st.button("⚡ Bắt đầu so sánh toàn diện", use_container_width=True):
             with st.spinner("Đang quét toàn bộ dữ liệu..."):
                 d1 = extract_full_data(f1.getvalue())
                 d2 = extract_full_data(f2.getvalue())
 
-                # =========================
                 # DEBUG SIZE
-                # =========================
-                st.write("📊 SIZE A:", list(d1['all_specs'].keys()) if d1 else "None")
-                st.write("📊 SIZE B:", list(d2['all_specs'].keys()) if d2 else "None")
+                size_a = list(d1['all_specs'].keys()) if d1 and d1.get('all_specs') else []
+                size_b = list(d2['all_specs'].keys()) if d2 and d2.get('all_specs') else []
 
-                # =========================
-                # CHECK EMPTY
-                # =========================
-                if not d1 or not d1['all_specs']:
+                st.write("📊 SIZE A:", size_a)
+                st.write("📊 SIZE B:", size_b)
+
+                # CHECK DATA
+                if not size_a:
                     st.error("❌ File A không đọc được bảng thông số")
-                    return
+                    st.stop()
 
-                if not d2 or not d2['all_specs']:
+                if not size_b:
                     st.error("❌ File B không đọc được bảng thông số")
-                    return
+                    st.stop()
 
                 st.session_state['ver_results'] = {
                     "d1": d1,
@@ -346,10 +348,12 @@ elif mode == "🔄 Version Control":
         vr = st.session_state['ver_results']
 
         st.divider()
+
         col_a, col_b = st.columns(2)
         col_a.image(vr['d1']['img'], caption="Bản A", use_container_width=True)
         col_b.image(vr['d2']['img'], caption="Bản B", use_container_width=True)
 
+        # lấy tất cả size
         all_sz = sorted(
             list(set(vr['d1']['all_specs'].keys()) | set(vr['d2']['all_specs'].keys())),
             key=lambda x: str(x)
@@ -357,12 +361,17 @@ elif mode == "🔄 Version Control":
 
         if not all_sz:
             st.warning("⚠️ Không tìm thấy SIZE nào để so sánh")
-            return
+            st.stop()
 
-        version_dfs, ver_sheets = [], []
+        version_dfs = []
+        ver_sheets = []
 
+        # =========================
+        # LOOP SIZE
+        # =========================
         for sz in all_sz:
             with st.expander(f"SIZE: {sz}", expanded=True):
+
                 s1 = vr['d1']['all_specs'].get(sz, {})
                 s2 = vr['d2']['all_specs'].get(sz, {})
 
