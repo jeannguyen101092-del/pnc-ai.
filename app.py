@@ -170,59 +170,60 @@ if mode == "🔍 Audit Mode":
         
         if target and target.get('img'):
             # --- 1. HIỂN THỊ MẪU GỐC ---
-            st.image(target['img'], width=300, caption="Mẫu bạn đang kiểm tra")
+            st.image(target['img'], width=280, caption="Mẫu bạn đang kiểm tra")
             st.divider()
 
-            # --- 2. TRUY VẤN DATABASE ---
-            with st.spinner("🕵️ AI đang phân loại và đối soát hình dáng..."):
-                res = supabase.table("ai_data").select("id, vector, file_name, image_url, spec_json").execute()
+            # 2. XÁC ĐỊNH CHỦNG LOẠI CỦA FILE UPLOAD (TARGET)
+            t_name = f_audit.name.upper()
+            is_t_bottom = any(x in t_name for x in ["PANT", "SHORT", "TROUSER", "JEAN", "LEG"])
+            is_t_top = any(x in t_name for x in ["SHIRT", "JACKET", "TOP", "TEE", "POLO", "HOODIE"])
+
+            with st.spinner("🕵️ AI đang đối soát và lọc chủng loại..."):
+                res = supabase.table("ai_data").select("id, vector, file_name, image_url").execute()
                 
                 if res.data:
-                    # Trích xuất Vector của Target
-                    t_vec_raw = get_vector(target['img'])
-                    t_vec = np.array(t_vec_raw).reshape(1, -1)
-                    
+                    t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
                     valid_rows = []
+                    
                     for r in res.data:
-                        if r['vector'] and len(r['vector']) == 512:
-                            r_vec = np.array(r['vector']).reshape(1, -1)
-                            # Tính độ tương đồng hình ảnh (AI Vector)
-                            sim_img = float(cosine_similarity(t_vec, r_vec).flatten()[0])
-                            
-                            # --- 3. BỘ LỌC THÔNG MINH (TRÁNH NHẦM ÁO/QUẦN) ---
-                            # Nếu AI thấy giống dưới 60%, khả năng cao là sai chủng loại (Áo vs Quần)
-                            # Chúng ta sẽ trừ điểm rất nặng cho các mẫu có "dáng" khác biệt hoàn toàn
-                            score_final = sim_img
-                            
-                            # Thưởng điểm nếu cùng từ khóa trong tên file (Pant/Short/Shirt)
-                            t_name = f_audit.name.upper()
-                            r_name = r['file_name'].upper()
-                            if any(k in t_name and k in r_name for k in ["PANT", "SHORT", "SHIRT", "JEAN", "JACKET"]):
-                                score_final += 0.15
+                        r_name = r['file_name'].upper()
+                        # XÁC ĐỊNH CHỦNG LOẠI TRONG DATABASE
+                        is_r_bottom = any(x in r_name for x in ["PANT", "SHORT", "TROUSER", "JEAN"])
+                        is_r_top = any(x in r_name for x in ["SHIRT", "JACKET", "TOP", "TEE"])
 
-                            r['sim_final'] = min(score_final, 1.0)
+                        # --- BỘ LỌC CỨNG (HARD FILTER) ---
+                        # Nếu cùng là Quần hoặc cùng là Áo thì mới tính tiếp
+                        if (is_t_bottom == is_r_bottom) or (is_t_top == is_r_top):
+                            sim_img = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1)).flatten()[0]
+                            
+                            # Thưởng điểm nếu khớp chính xác từ khóa (Vd: Cùng là SHORT)
+                            if ("SHORT" in t_name and "SHORT" in r_name) or ("PANT" in t_name and "PANT" in r_name):
+                                sim_img += 0.15
+                            
+                            r['sim_final'] = min(sim_img, 1.0)
                             valid_rows.append(r)
                     
-                    # 4. SẮP XẾP VÀ HIỂN THỊ TOP 8
-                    # Lấy Top 8 có điểm cao nhất sau khi đã cộng thưởng từ khóa
-                    df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(8)
-                    
-                    st.subheader("🎯 Top 8 mẫu có hình dáng tương đồng nhất")
-                    
-                    # Hiển thị lưới 2 hàng x 4 cột
-                    for row_idx in range(2):
-                        cols = st.columns(4)
-                        for col_idx in range(4):
-                            idx = row_idx * 4 + col_idx
-                            if idx < len(df_db):
-                                item = df_db.iloc[idx]
-                                with cols[col_idx]:
-                                    st.image(item['image_url'], use_container_width=True)
-                                    st.write(f"**Chính xác: {item['sim_final']:.1%}**")
-                                    st.caption(f"📄 {item['file_name'][:25]}")
-                                    if st.button("Chọn mẫu này", key=f"btn_{idx}"):
-                                        st.session_state['sel_audit'] = item.to_dict()
-                                        st.rerun()
+                    # 3. HIỂN THỊ TOP 8 (CHỈ HIỆN CÙNG LOẠI)
+                    if not valid_rows:
+                        st.warning("⚠️ Không tìm thấy mẫu nào cùng chủng loại (Quần/Áo) trong Database.")
+                    else:
+                        df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(8)
+                        st.subheader(f"🎯 Top 8 mẫu {'QUẦN' if is_t_bottom else 'ÁO' if is_t_top else ''} tương đồng nhất")
+                        
+                        for r_idx in range(2):
+                            cols = st.columns(4)
+                            for c_idx in range(4):
+                                idx = r_idx * 4 + c_idx
+                                if idx < len(df_db):
+                                    item = df_db.iloc[idx]
+                                    with cols[c_idx]:
+                                        st.image(item['image_url'], use_container_width=True)
+                                        st.write(f"**Chính xác: {item['sim_final']:.1%}**")
+                                        st.caption(f"📄 {item['file_name'][:20]}...")
+                                        if st.button("Chọn mẫu này", key=f"btn_{idx}"):
+                                            st.session_state['sel_audit'] = item.to_dict()
+                                            st.rerun()
+
 
 
 elif mode == "🔄 Version Control":
