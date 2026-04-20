@@ -213,81 +213,165 @@ if mode == "🔍 Audit Mode":
                 st.download_button("📥 Xuất Excel", to_excel(audit_dfs, sheet_names), f"Audit_{sel['file_name']}.xlsx")
 
 elif mode == "🔄 Version Control":
-    st.subheader("🔄 So sánh & Đối chiếu Thông số Kỹ thuật")
-    
+    st.subheader("🔄 So sánh 2 file PDF (ALL PAGE + ALL SIZE)")
+
+    import fitz, pdfplumber, re, io
+    import pandas as pd
+    from PIL import Image
+
+    # =========================
+    # EXTRACT FULL DATA
+    # =========================
+    def extract_full_data(pdf_bytes):
+        all_specs = {}
+        img_bytes = None
+
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+
+            # preview ảnh
+            pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+            img_bytes = Image.open(io.BytesIO(pix.tobytes()))
+
+            # 👉 QUÉT TOÀN BỘ PAGE
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                for page in pdf.pages:
+                    tables = page.extract_tables()
+
+                    for table in tables:
+                        if not table or len(table) < 2:
+                            continue
+
+                        header = table[0]
+
+                        # detect size
+                        sizes = []
+                        for h in header:
+                            if h:
+                                h_clean = str(h).strip().upper()
+                                if re.search(r"(XS|S|M|L|XL|XXL|\d+)", h_clean):
+                                    sizes.append(h_clean)
+                                else:
+                                    sizes.append(None)
+                            else:
+                                sizes.append(None)
+
+                        # đọc dữ liệu
+                        for row in table[1:]:
+                            if not row or not row[0]:
+                                continue
+
+                            point = str(row[0]).strip()
+
+                            for i, val in enumerate(row[1:], start=1):
+                                if i >= len(sizes):
+                                    continue
+
+                                size = sizes[i]
+
+                                if size and val:
+                                    try:
+                                        num = float(str(val).replace(",", "."))
+                                    except:
+                                        continue
+
+                                    if size not in all_specs:
+                                        all_specs[size] = {}
+
+                                    all_specs[size][point] = num
+
+            return {"all_specs": all_specs, "img": img_bytes}
+
+        except Exception as e:
+            st.error(f"Lỗi đọc PDF: {e}")
+            return None
+
+    # =========================
+    # EXPORT EXCEL
+    # =========================
+    def to_excel(dfs, sheet_names):
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            for df, name in zip(dfs, sheet_names):
+                df.to_excel(writer, sheet_name=str(name)[:31], index=False)
+        return output.getvalue()
+
+    # =========================
+    # UI
+    # =========================
     c1, c2 = st.columns(2)
-    f1 = c1.file_uploader("Chọn File A (Gốc):", type="pdf", key="v1")
-    f2 = c2.file_uploader("Chọn File B (Mới):", type="pdf", key="v2")
+    f1 = c1.file_uploader("Bản cũ (A):", type="pdf", key="v1")
+    f2 = c2.file_uploader("Bản mới (B):", type="pdf", key="v2")
 
     if f1 and f2:
-        if st.button("🚀 Bắt đầu truy quét toàn bộ các trang", use_container_width=True):
-            with st.spinner("🔍 Hệ thống đang lọc bỏ bảng phụ liệu và tìm bảng thông số đo..."):
-                # Gọi hàm xử lý (Hàm này cần trả về all_specs và imgs)
+        if st.button("⚡ Bắt đầu so sánh toàn diện", use_container_width=True):
+            with st.spinner("Đang quét toàn bộ dữ liệu..."):
                 d1 = extract_full_data(f1.getvalue())
                 d2 = extract_full_data(f2.getvalue())
-                
+
                 if d1 and d2:
                     st.session_state['ver_results'] = {
-                        "d1": d1, "d2": d2, 
-                        "f1_name": f1.name, "f2_name": f2.name
+                        "d1": d1,
+                        "d2": d2,
+                        "f1_name": f1.name,
+                        "f2_name": f2.name
                     }
 
+    # =========================
+    # SHOW RESULT
+    # =========================
     if st.session_state.get('ver_results'):
         vr = st.session_state['ver_results']
-        
-        # Xem lại ảnh để kiểm chứng
-        with st.expander("🖼️ Xem lại danh sách trang đã quét"):
-            t1, t2 = st.tabs([f"Trang trong File A", f"Trang trong File B"])
-            t1.image(vr['d1'].get('imgs', []), width=280)
-            t2.image(vr['d2'].get('imgs', []), width=280)
 
-        # LẤY TẤT CẢ SIZE (Loại bỏ các size rác nếu có)
-        all_sz = sorted([s for s in set(vr['d1']['all_specs'].keys()) | set(vr['d2']['all_specs'].keys()) if s])
-        
+        st.divider()
+        col_a, col_b = st.columns(2)
+        col_a.image(vr['d1']['img'], caption="Bản A", use_container_width=True)
+        col_b.image(vr['d2']['img'], caption="Bản B", use_container_width=True)
+
+        all_sz = sorted(
+            list(set(vr['d1']['all_specs'].keys()) | set(vr['d2']['all_specs'].keys())),
+            key=lambda x: str(x)
+        )
+
         version_dfs, ver_sheets = [], []
-        st.write(f"### 📊 Bảng so sánh chi tiết ({len(all_sz)} Size)")
 
         for sz in all_sz:
-            s1 = vr['d1']['all_specs'].get(sz, {})
-            s2 = vr['d2']['all_specs'].get(sz, {})
-            
-            # Lọc bỏ các dòng chứa từ khóa phụ liệu (Bag, Poly, Label...) để làm sạch bảng
-            garbage_keywords = ['bag', 'poly', 'label', 'thread', 'zipper', 'button', 'sticker']
-            all_poms = sorted([p for p in set(s1.keys()) | set(s2.keys()) 
-                               if not any(k in str(p).lower() for k in garbage_keywords)])
-            
-            if not all_poms: continue # Nếu size này chỉ chứa rác thì bỏ qua
+            with st.expander(f"SIZE: {sz}", expanded=True):
+                s1 = vr['d1']['all_specs'].get(sz, {})
+                s2 = vr['d2']['all_specs'].get(sz, {})
 
-            with st.expander(f"📏 DỮ LIỆU SIZE: {sz}", expanded=True):
+                poms = sorted(list(set(s1.keys()) | set(s2.keys())))
                 rows = []
-                for p in all_poms:
-                    v1, v2 = s1.get(p, 0), s2.get(p, 0)
-                    
-                    # Logic tính chênh lệch
-                    try:
-                        diff = float(v2) - float(v1)
-                        diff_str = f"{diff:+.3f}" if diff != 0 else "0"
-                    except:
-                        diff_str = "-"
 
-                    if v1 == v2: status = "✅ Khớp"
-                    elif v1 != 0 and v2 == 0: status = "❓ File B thiếu"
-                    elif v1 == 0 and v2 != 0: status = "➕ File B thêm"
-                    else: status = "⚠️ Lệch"
+                for p in poms:
+                    v1 = s1.get(p)
+                    v2 = s2.get(p)
+
+                    if v1 is None or v2 is None:
+                        diff = "N/A"
+                        status = "⚠️ Missing"
+                    else:
+                        diff_val = v2 - v1
+                        diff = f"{diff_val:+.3f}"
+                        status = "✅" if abs(diff_val) < 1e-6 else "⚠️"
 
                     rows.append({
-                        "Điểm đo (POM)": p,
-                        "Giá trị File A": v1,
-                        "Giá trị File B": v2,
-                        "Chênh lệch": diff_str,
-                        "Kết luận": status
+                        "Point": p,
+                        "Ver A": v1,
+                        "Ver B": v2,
+                        "Diff": diff,
+                        "Status": status
                     })
 
                 df_sz = pd.DataFrame(rows)
-                
-                # Hiển thị bảng với màu sắc cảnh báo
-                st.dataframe(df_sz.style.apply(lambda x: ['background-color: #fff3cd' if "⚠️" in x['Kết luận'] else '' for _ in x], axis=1), use_container_width=True)
-                version_dfs.append(df_sz); ver_sheets.append(str(sz))
+                st.dataframe(df_sz, use_container_width=True)
 
-        st.divider()
-        st.download_button("📥 Tải báo cáo so sánh (.xlsx)", to_excel(version_dfs, ver_sheets), "Comparison_Report.xlsx", use_container_width=True)
+                version_dfs.append(df_sz)
+                ver_sheets.append(f"Size_{sz}")
+
+        st.download_button(
+            "📥 Xuất Excel So Sánh",
+            to_excel(version_dfs, ver_sheets),
+            "Comparison.xlsx",
+            use_container_width=True
+        )
