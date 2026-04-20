@@ -177,22 +177,25 @@ if mode == "Audit Mode":
                             st.info(f"Độ giống: {item['score']:.1%}")
 
 elif mode == "Version Control":
-    st.subheader("🔄 So sánh Toàn diện (Quét cạn 100% POM & Size)")
+    st.subheader("🔄 So sánh Toàn diện (Đã Fix lỗi lệch thông số giữa các Size)")
 
-    # --- HÀM XỬ LÝ SỐ CHUẨN (31 1/4 -> 31.25) ---
-    def parse_final_num(text):
+    # --- HÀM XỬ LÝ SỐ CHUẨN (HỖ TRỢ PHÂN SỐ 31 1/4) ---
+    def parse_final_value(text):
         try:
             text = text.strip().lower()
+            # Xử lý số hỗn hợp (ví dụ: 31 1/4)
             mixed = re.match(r'(\d+)\s+(\d+)/(\d+)', text)
             if mixed: return float(mixed.group(1)) + int(mixed.group(2))/int(mixed.group(3))
+            # Xử lý phân số đơn (ví dụ: 1/2)
             frac = re.match(r'^(\d+)/(\d+)$', text)
             if frac: return int(frac.group(1))/int(frac.group(2))
+            # Số thập phân
             num = re.findall(r"[-+]?\d*\.\d+|\d+", text)
             return float(num[0]) if num else None
         except: return None
 
-    # --- HÀM QUÉT SIÊU MẠNH (DÒ TÌM LÂN CẬN) ---
-    def deep_precision_scan(content):
+    # --- THUẬT TOÁN PHÂN VÙNG CỘT CỨNG (GRID LOCK) ---
+    def grid_lock_scan(content):
         all_data = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -200,49 +203,51 @@ elif mode == "Version Control":
                     words = page.extract_words()
                     if not words: continue
                     df = pd.DataFrame(words)
-                    # Nhóm hàng linh hoạt hơn một chút (sai số 2.5 đơn vị)
-                    df['y_grid'] = (df['top'] / 2.5).round(0) * 2.5
+                    # Gom hàng ngang chính xác
+                    df['y_grid'] = (df['top'] / 2.0).round(0) * 2.0
                     
-                    # 1. TÌM TẤT CẢ TIÊU ĐỀ SIZE (ANCHORS)
-                    size_anchors = []
+                    # 1. TÌM VỊ TRÍ CỘT SIZE VÀ THIẾT LẬP "ĐƯỜNG RAY" DỌC
+                    size_lanes = []
                     for y, gp in df.groupby('y_grid'):
                         line_txt = " ".join(gp.sort_values('x0')['text']).upper()
-                        if any(x in line_txt for x in ["SIZE", "POM", "DESCRIPTION", "GRADE"]):
+                        if any(x in line_txt for x in ["SIZE", "SPEC", "POM", "GRADE"]):
                             sorted_gp = gp.sort_values('x0')
                             for _, r in sorted_gp.iterrows():
                                 t = r['text'].strip().upper()
-                                # Chấp nhận mọi size từ 000 đến 16 hoặc XS-XXL
-                                if (re.match(r'^\d+$', t) or t in ["000", "00", "XS", "S", "M", "L", "XL", "XXL"]) and r['x0'] > 200:
-                                    size_anchors.append({"sz": t, "x_center": (r['x0'] + r['x1']) / 2})
-                            if size_anchors: break 
+                                # Chỉ lấy các cột Size thật sự ở phía bên phải
+                                if (re.match(r'^\d+$', t) or t in ["000", "00", "XS", "S", "M", "L", "XL", "XXL"]) and r['x0'] > 220:
+                                    # Tạo "đường ray" cho size này (lấy từ x0 tới x1 của tiêu đề)
+                                    size_lanes.append({
+                                        "sz": t, 
+                                        "x0": r['x0'] - 6, 
+                                        "x1": r['x1'] + 6
+                                    })
+                            if size_lanes: break 
 
-                    if not size_anchors: continue
+                    if not size_lanes: continue
 
-                    # 2. QUÉT TỪNG DÒNG DỮ LIỆU
+                    # 2. QUÉT DỮ LIỆU VÀ KHÓA CHẶT VÀO ĐƯỜNG RAY
                     for y, gp in df.groupby('y_grid'):
                         sorted_gp = gp.sort_values('x0')
-                        # Lấy cột mô tả (POM) - thường nằm bên trái x < 250
+                        # Lấy POM Description (bên trái x < 250)
                         pom_desc = " ".join(sorted_gp[sorted_gp['x1'] < 250]['text']).strip()
                         
                         if 3 < len(pom_desc) < 100 and not any(x in pom_desc.upper() for x in ["STYLE", "DATE", "PAGE", "EVERLANE"]):
-                            # Với mỗi từ (con số) trên dòng này
-                            for _, row in sorted_gp.iterrows():
-                                val = parse_final_num(row['text'])
-                                if val is not None and 0.1 <= val < 300:
-                                    # TÌM SIZE CÓ CỘT GẦN VỚI CON SỐ NÀY NHẤT (DÒ LÂN CẬN)
-                                    x_val = (row['x0'] + row['x1']) / 2
-                                    # Tìm size có khoảng cách X nhỏ nhất tới con số này
-                                    best_sz = min(size_anchors, key=lambda s: abs(s['x_center'] - x_val))
-                                    
-                                    # Chỉ nhận nếu khoảng cách cột không quá 35 pixel (tránh bốc nhầm cột Tol)
-                                    if abs(best_sz['x_center'] - x_val) < 35:
-                                        s_name = best_sz['sz']
-                                        if s_name not in all_data: all_data[s_name] = {}
-                                        all_data[s_name][pom_desc] = val
+                            for lane in size_lanes:
+                                # Chỉ lấy từ nào có tọa độ X nằm TRỌN VẸN trong đường ray của Size đó
+                                cell_data = sorted_gp[
+                                    (sorted_gp['x0'] >= lane['x0']) & 
+                                    (sorted_gp['x1'] <= lane['x1'])
+                                ]
+                                if not cell_data.empty:
+                                    val = parse_final_value(" ".join(cell_data['text']))
+                                    if val is not None and 0.1 <= val < 300:
+                                        if lane['sz'] not in all_data: all_data[lane['sz']] = {}
+                                        all_data[lane['sz']][pom_desc] = val
             return all_data
         except: return None
 
-    # --- UI & HIỂN THỊ ---
+    # --- UI ---
     if st.button("🗑️ Làm mới hệ thống", use_container_width=True):
         st.session_state['up_key'] += 1; st.session_state['ver_results'] = None; st.rerun()
 
@@ -251,19 +256,19 @@ elif mode == "Version Control":
     f2 = c2.file_uploader("Bản B (Mới)", type="pdf", key=f"v2_{st.session_state['up_key']}")
 
     if f1 and f2:
-        if st.button("⚡ BẮT ĐẦU QUÉT TOÀN DIỆN", use_container_width=True):
-            with st.spinner("Đang thu thập thông số cho tất cả các size..."):
-                d1_specs = deep_precision_scan(f1.getvalue())
-                d2_specs = deep_precision_scan(f2.getvalue())
+        if st.button("⚡ BẮT ĐẦU SO SÁNH CHÍNH XÁC", use_container_width=True):
+            with st.spinner("Đang khóa đường ray tọa độ cho từng Size..."):
+                d1_specs = grid_lock_scan(f1.getvalue())
+                d2_specs = grid_lock_scan(f2.getvalue())
                 if d1_specs and d2_specs:
                     st.session_state['ver_results'] = {"s1": d1_specs, "s2": d2_specs}
-                else: st.error("❌ Lỗi: Không tìm thấy bảng Specs. Kiểm tra PDF gốc.")
+                else: st.error("❌ Không tìm thấy bảng Specs. Kiểm tra lại PDF.")
 
     if st.session_state.get('ver_results'):
         vr = st.session_state['ver_results']
         s1, s2 = vr['s1'], vr['s2']
         
-        # Sắp xếp size (000 -> 16)
+        # Thứ tự Size chuẩn
         sz_order = ["000", "00", "0", "2", "4", "6", "8", "10", "12", "14", "16"]
         all_sz = [s for s in sz_order if s in s1 or s in s2] or sorted(list(set(s1.keys()) | set(s2.keys())))
 
@@ -271,7 +276,6 @@ elif mode == "Version Control":
         for i, sz in enumerate(all_sz):
             with tabs[i]:
                 data1, data2 = s1.get(sz, {}), s2.get(sz, {})
-                # Lấy tất cả POM tìm được cho size này
                 poms = sorted(list(set(data1.keys()) | set(data2.keys())))
                 rows = []
                 for p in poms:
