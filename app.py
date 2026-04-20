@@ -321,12 +321,6 @@ if mode == "🔍 Audit Mode":
                 
                 df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(3)
                 
-                st.subheader("🎯 AI Matches")
-                cols = st.columns(4)
-                cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
-                for i, (idx, row) in enumerate(df_db.iterrows()):
-                   res = supabase.table("ai_data").select("id, vector, file_name, spec_json").execute()
-
 if res.data:
     t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
     t_type = get_product_type(target_name)
