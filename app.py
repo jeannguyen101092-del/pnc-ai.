@@ -164,82 +164,74 @@ with st.sidebar:
 st.title("👔 AI SMART AUDITOR PRO")
 mode = st.radio("Chế độ:", ["🔍 Audit Mode", "🔄 Version Control"], horizontal=True)
 
-if mode == "🔍 Audit Mode":
-    f_audit = st.file_uploader("Upload Target PDF:", type="pdf")
-    if f_audit:
-        target = extract_full_data(f_audit.getvalue())
-        
-        # KIỂM TRA: Nếu k tìm thấy specs thì lấy tạm từ khóa từ tên file để cứu vãn
-        target_all_text = ""
-        if target and target.get('all_specs'):
-            target_all_text = " ".join([str(p) for sz in target['all_specs'].values() for p in sz.keys()]).upper()
-        
-        # 1. TRUY VẤN DATABASE
-        res = supabase.table("ai_data").select("id, vector, file_name, spec_json").execute()
-        
+if file_audit:
+    a_bytes = file_audit.read()
+    target = extract_pdf_multi_size(a_bytes)
+    if target and target["all_specs"]:
+        res = supabase.table("ai_data").select("*").execute()
         if res.data:
-            # Lấy vector ảnh target
-            t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
-            valid_rows = []
+            df_db = pd.DataFrame(res.data)
             
-            for r in res.data:
-                # --- SO KHỚP CẤU TRÚC JSON ---
-                ref_spec = r.get('spec_json', {})
-                ref_text = str(ref_spec).upper()
-                
-                # Tính điểm khớp cấu trúc đơn giản: Tìm các từ khóa vàng (Waist, Hip, Chest...)
-                core_keys = ["WAIST", "HIP", "INSEAM", "CHEST", "SLEEVE", "NECK", "THIGH", "LEG"]
-                match_points = 0
-                for k in core_keys:
-                    if k in target_all_text and k in ref_text:
-                        match_points += 1
-                
-                # --- SO KHỚP HÌNH ẢNH ---
-                sim_img = 0
-                if r['vector'] and len(r['vector']) == 512:
-                    sim_img = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1)).flatten()[0]
-
-                # --- ĐIỂM TỔNG HỢP ---
-                # Nếu khớp > 1 từ khóa cấu trúc, ưu tiên hàng đầu
-                struct_bonus = 0.4 if match_points >= 2 else 0.0
-                
-                # Thưởng nếu cùng loại Quần/Áo qua tên file
-                file_bonus = 0
-                t_name = f_audit.name.upper()
-                r_name = r['file_name'].upper()
-                if any(k in t_name and k in r_name for k in ["PANT", "SHORT", "JEAN", "SHIRT", "TEE"]):
-                    file_bonus = 0.3
-
-                sim_final = sim_img + struct_bonus + file_bonus
-                
-                # CHỈ LỌC NẾU QUÁ KHÁC BIỆT (Ví dụ: đang tìm Quần mà Database là Áo)
-                # Nếu target có 'WAIST' mà ref có 'CHEST' -> Trừ điểm nặng
-                if ("WAIST" in target_all_text and "CHEST" in ref_text) or \
-                   ("CHEST" in target_all_text and "WAIST" in ref_text):
-                    sim_final -= 0.5
-
-                r['sim_final'] = sim_final
-                valid_rows.append(r)
+            # --- LOGIC NÂNG CẤP: SO KHỚP CẤU TRÚC JSON ---
+            # 1. Lấy danh sách điểm đo (POM) của file đang upload
+            target_poms = set()
+            for sz_val in target["all_specs"].values():
+                target_poms.update([p.upper().strip() for p in sz_val.keys()])
             
-            # Sắp xếp và lấy kết quả tốt nhất
-            df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(3)
+            # 2. Tính toán độ tương đồng AI Vector và Cấu trúc
+            t_vec = np.array(get_image_vector(target['img'])).reshape(1, -1)
             
-            # 2. HIỂN THỊ (Ép hiển thị kết quả)
-            st.subheader("🎯 Top mẫu tương đồng nhất")
+            def calculate_combined_sim(row):
+                # Độ giống hình ảnh (AI Vector)
+                sim_img = cosine_similarity(t_vec, np.array(row['vector']).reshape(1, -1)).flatten()[0]
+                
+                # Độ giống cấu trúc (JSON POMs)
+                ref_poms = set()
+                if isinstance(row['spec_json'], dict):
+                    for sz_val in row['spec_json'].values():
+                        if isinstance(sz_val, dict):
+                            ref_poms.update([p.upper().strip() for p in sz_val.keys()])
+                
+                # Tính tỉ lệ trùng khớp POM
+                intersect = len(target_poms.intersection(ref_poms))
+                union = len(target_poms.union(ref_poms))
+                sim_struct = intersect / union if union > 0 else 0
+                
+                # Trọng số: 60% Hình ảnh + 40% Cấu trúc JSON
+                final_score = (sim_img * 0.6) + (sim_struct * 0.4)
+                
+                # PHẠT NẶNG: Nếu Target có 'INSEAM' (quần) mà Ref có 'CHEST' (áo) -> Trừ điểm
+                if any(x in " ".join(target_poms) for x in ["WAIST", "INSEAM"]) and \
+                   any(x in " ".join(ref_poms) for x in ["CHEST", "BUST"]):
+                    final_score -= 0.5
+                    
+                return pd.Series([final_score, sim_struct])
+
+            df_db[['sim_final', 'sim_struct']] = df_db.apply(calculate_combined_sim, axis=1)
+            
+            # Lấy Top 3 sau khi đã lọc theo cấu trúc JSON
+            top_3 = df_db.sort_values('sim_final', ascending=False).head(3)
+            
+            st.subheader(f"🎯 AI Best Matches (Đã đối soát cấu trúc JSON)")
             cols = st.columns(4)
-            if target and target.get('img'):
-                cols[0].image(target['img'], caption="MẪU ĐANG KIỂM", use_container_width=True)
+            with cols[0]:
+                st.image(target['img'], caption="SOURCE FILE", use_container_width=True)
             
-            for i, (idx, row) in enumerate(df_db.iterrows()):
-                det = supabase.table("ai_data").select("image_url").eq("id", row['id']).execute().data
-                if det:
-                    with cols[i+1]:
-                        st.image(det[0]['image_url'], caption=f"Độ khớp: {min(row['sim_final'], 1.0):.1%}")
-                        if st.button(f"CHỌN {i+1}", key=f"s_{idx}", use_container_width=True):
-                            # Lấy full data để tiến hành Audit
-                            full_det = supabase.table("ai_data").select("*").eq("id", row['id']).execute().data
-                            st.session_state['sel_audit'] = full_det[0]
-                            st.rerun()
+            for i, (idx, row) in enumerate(top_3.iterrows()):
+                with cols[i+1]:
+                    # Hiển thị Match tổng hợp và Match cấu trúc để kiểm chứng
+                    st.image(row['image_url'], 
+                             caption=f"Match: {row['sim_final']:.1%} (Data: {row['sim_struct']:.1%})", 
+                             use_container_width=True)
+                    
+                    if st.button(f"SELECT MODEL {i+1}", key=f"btn_{idx}", use_container_width=True):
+                        st.session_state['sel'] = row.to_dict()
+
+            # Hiển thị bảng so sánh chi tiết nếu đã chọn Model
+            best = st.session_state.get('sel', top_3.iloc[0].to_dict())
+            st.success(f"**REFERENCE SKU:** {best['file_name']}")
+            
+            # (Phần code so sánh thông số chi tiết của bạn có thể tiếp tục ở đây...)
 
 
 
