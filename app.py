@@ -177,62 +177,62 @@ if mode == "Audit Mode":
                             st.info(f"Độ giống: {item['score']:.1%}")
 
 elif mode == "Version Control":
-    st.subheader("🔄 So sánh Toàn diện (Quét đủ bộ Size hãng EXPRESS)")
+    st.subheader("🔄 So sánh Toàn diện (Đã sửa lỗi không tìm thấy bảng)")
 
-    # --- HÀM XỬ LÝ PHÂN SỐ CHUYÊN SÂU ---
-    def parse_express_val(text):
+    # --- HÀM XỬ LÝ SỐ & PHÂN SỐ ---
+    def parse_any_num(text):
         try:
             text = text.strip().lower()
-            # Xử lý số hỗn hợp (ví dụ: 31 1/4)
             mixed = re.match(r'(\d+)\s+(\d+)/(\d+)', text)
             if mixed: return float(mixed.group(1)) + int(mixed.group(2))/int(mixed.group(3))
-            # Số thập phân/Số nguyên
             num = re.findall(r"[-+]?\d*\.\d+|\d+", text)
             if num: return float(num[0])
             return None
         except: return None
 
-    # --- THUẬT TOÁN QUÉT NGANG ĐA SIZE ---
-    def express_multi_scan(content):
+    # --- THUẬT TOÁN DÒ TÌM BẢNG KHÔNG CẦN CHỮ "SIZE" ---
+    def auto_detect_express_table(content):
         all_specs = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
-                # Quét tất cả các trang
                 for page in pdf.pages:
                     words = page.extract_words()
                     if not words: continue
                     df = pd.DataFrame(words)
-                    df['y'] = (df['top'] / 2).round(0) * 2
+                    df['y'] = (df['top'] / 2.5).round(0) * 2.5
                     
-                    # 1. TÌM DÒNG HEADER CHỨA TẤT CẢ SIZE (XS, S, M, L, XL, XXL)
+                    # 1. DÒ TÌM DÒNG HEADER (Dòng chứa các Size liên tiếp)
                     size_lanes = []
                     for y, gp in df.groupby('y'):
                         sorted_gp = gp.sort_values('x0')
-                        line_txt = " ".join(sorted_gp['text']).upper()
-                        # Dấu hiệu dòng Header của Express: Có các size tiêu chuẩn nằm xa bên phải
-                        if any(sz in line_txt for sz in [" XS ", " S ", " M ", " L ", " XL "]):
-                            for _, r in sorted_gp.iterrows():
-                                t = r['text'].strip().upper()
-                                # Lấy mọi token khớp với bộ Size chuẩn
-                                if t in ["28","29","30","31","32","33","34","36","38","40","XS","S","M","L","XL","XXL","XXXL"] and r['x0'] > 200:
-                                    size_lanes.append({"sz": t, "x0": r['x0'] - 15, "x1": r['x1'] + 15})
-                            if size_lanes: break 
+                        candidates = []
+                        for _, r in sorted_gp.iterrows():
+                            t = r['text'].strip().upper()
+                            # Kiểm tra nếu là Size số (28-40) hoặc Size chữ (XS-XXXL)
+                            if (re.match(r'^\d{2,3}$', t) or t in ["XS","S","M","L","XL","XXL","XXXL"]) and r['x0'] > 200:
+                                candidates.append({"sz": t, "x0": r['x0']-12, "x1": r['x1']+12})
+                        
+                        # Nếu một dòng có từ 3 Size trở lên nằm sát nhau -> Đây chính là Header
+                        if len(candidates) >= 3:
+                            size_lanes = candidates
+                            break
 
-                    if not size_lanes: continue
+                    if not size_lanes: continue # Trang này không có bảng -> Tìm trang tiếp theo
 
-                    # 2. QUÉT DỮ LIỆU THEO TỌA ĐỘ DỌC
+                    # 2. QUÉT DỮ LIỆU DƯỚI HEADER
                     for y, gp in df.groupby('y'):
                         sorted_gp = gp.sort_values('x0')
-                        # Lấy cột POM / Description bên trái
-                        pom_name = " ".join(sorted_gp[sorted_gp['x1'] < 250]['text']).strip()
+                        # POM Description nằm bên trái (x1 < cột Size đầu tiên)
+                        first_sz_x = size_lanes[0]['x0']
+                        pom_parts = sorted_gp[sorted_gp['x1'] < first_sz_x]['text'].values
+                        pom_name = " ".join(pom_parts).strip()
                         
-                        if 3 < len(pom_name) < 100 and not any(x in pom_name.upper() for x in ["DATE", "PAGE", "SIZE"]):
+                        if 3 < len(pom_name) < 100 and not any(x in pom_name.upper() for x in ["DATE", "PAGE", "STYLE"]):
                             for lane in size_lanes:
-                                # Dò tìm con số nằm trong phạm vi cột Size đó
                                 cell = sorted_gp[(sorted_gp['x0'] >= lane['x0']) & (sorted_gp['x1'] <= lane['x1'])]
                                 if not cell.empty:
-                                    v = parse_express_val(" ".join(cell['text']))
-                                    if v is not None:
+                                    v = parse_any_num(" ".join(cell['text']))
+                                    if v is not None and 0.1 <= v < 300:
                                         if lane['sz'] not in all_specs: all_specs[lane['sz']] = {}
                                         all_specs[lane['sz']][pom_name] = v
             return all_specs
@@ -247,17 +247,21 @@ elif mode == "Version Control":
     f2 = c2.file_uploader("Bản mới (B)", type="pdf", key=f"v2_{st.session_state['up_key']}")
 
     if f1 and f2:
-        if st.button("⚡ BẮT ĐẦU SO SÁNH ĐỦ BỘ SIZE", use_container_width=True):
-            with st.spinner("Đang bóc tách toàn bộ các cột XS -> XXXL..."):
-                s1, s2 = express_multi_scan(f1.getvalue()), express_multi_scan(f2.getvalue())
-                if s1 and s2: st.session_state['ver_results'] = {"s1": s1, "s2": s2}
-                else: st.error("❌ Không tìm thấy bảng Specs. Kiểm tra trang PDF.")
+        if st.button("⚡ BẮT ĐẦU SO SÁNH", use_container_width=True):
+            with st.spinner("Đang tự động dò tìm bảng thông số..."):
+                s1 = auto_detect_express_table(f1.getvalue())
+                s2 = auto_detect_express_table(f2.getvalue())
+                if s1 and s2:
+                    st.session_state['ver_results'] = {"s1": s1, "s2": s2}
+                else:
+                    st.error("❌ Vẫn không tìm thấy bảng Specs. Hãy đảm bảo PDF không phải là dạng ảnh quét (Scan).")
 
     if st.session_state.get('ver_results'):
         vr = st.session_state['ver_results']
         s1, s2 = vr['s1'], vr['s2']
-        # Sắp xếp size theo thứ tự XS -> XL
-        sz_order = ["28","29","30","31","32","33","34","36","38","40","XS","S","M","L","XL","XXL","XXXL"]
+        
+        # Sắp xếp Size theo thứ tự may mặc
+        sz_order = ["28","29","30","31","32","33","34","36","38","40","XS","S","M","L","XL","XXL"]
         all_sz = [s for s in sz_order if s in s1 or s in s2] or sorted(list(set(s1.keys()) | set(s2.keys())))
 
         tabs = st.tabs([f"Size {sz}" for sz in all_sz])
