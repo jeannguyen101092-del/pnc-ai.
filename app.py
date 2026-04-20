@@ -168,13 +168,14 @@ if mode == "🔍 Audit Mode":
     f_audit = st.file_uploader("Upload Target PDF:", type="pdf")
     if f_audit:
         target = extract_full_data(f_audit.getvalue())
-        if target and target['img']:
-            # 1. Lấy bộ POM từ Target và chuẩn hóa
-            target_poms = []
-            for sz in target['all_specs'].values():
-                target_poms.extend([p.upper().strip() for p in sz.keys()])
-            target_poms = set(target_poms)
+        if target and target['all_specs']:
+            # 1. LẤY DANH SÁCH POM ĐỂ DEBUG (Hiển thị để bạn biết hệ thống có đọc được chữ không)
+            target_poms = set([p.upper().strip() for sz in target['all_specs'].values() for p in sz.keys()])
             
+            with st.expander("🔍 Kiểm tra các từ khóa hệ thống đọc được từ PDF"):
+                st.write(list(target_poms)[:15]) # Hiện 15 từ đầu tiên như WAIST, HIP...
+
+            # 2. TRUY VẤN DATABASE
             res = supabase.table("ai_data").select("id, vector, file_name, spec_json").execute()
             
             if res.data:
@@ -182,7 +183,7 @@ if mode == "🔍 Audit Mode":
                 valid_rows = []
                 
                 for r in res.data:
-                    # 2. SO KHỚP CẤU TRÚC JSON (Dùng Fuzzy để tăng tỉ lệ khớp)
+                    # Lấy POM từ JSON trong Database
                     ref_spec = r.get('spec_json', {})
                     ref_poms = set()
                     if isinstance(ref_spec, dict):
@@ -190,40 +191,40 @@ if mode == "🔍 Audit Mode":
                             if isinstance(sz_val, dict):
                                 ref_poms.update([p.upper().strip() for p in sz_val.keys()])
                     
-                    # Tính số điểm đo khớp nhau (Cho phép sai lệch nhỏ trong cách viết)
-                    match_count = 0
-                    for tp in target_poms:
-                        # Nếu tìm thấy từ khóa tương đồng (VD: 'WAIST' nằm trong 'WAIST WIDTH')
-                        if any(tp in rp or rp in tp for rp in ref_poms if len(rp) > 3):
-                            match_count += 1
+                    # --- CHIẾN THUẬT SO KHỚP MỜ (NỚI LỎNG) ---
+                    match_score = 0
+                    if target_poms and ref_poms:
+                        # Kiểm tra xem các từ khóa chính (Waist, Hip, Inseam) có xuất hiện ở cả 2 bên không
+                        core_keywords = ["WAIST", "HIP", "INSEAM", "THIGH", "LEG", "RISE", "CHEST", "NECK", "SLEEVE"]
+                        for k in core_keywords:
+                            if any(k in tp for tp in target_poms) and any(k in rp for rp in ref_poms):
+                                match_score += 1
                     
-                    sim_spec = match_count / len(target_poms) if target_poms else 0
+                    sim_struct = match_score / 4 # Giả định khớp 4 từ khóa cốt lõi là đạt yêu cầu chủng loại
                     
-                    # 3. SO KHỚP HÌNH ẢNH
+                    # So khớp hình ảnh
                     sim_img = 0
                     if r['vector'] and len(r['vector']) == 512:
                         sim_img = cosine_similarity(t_vec, np.array(r['vector']).reshape(1,-1)).flatten()[0]
 
-                    # 4. ĐIỀU CHỈNH NGƯỠNG LỌC (Hạ xuống 20% để thấy mẫu tương đồng)
-                    if sim_spec < 0.2: continue 
-
-                    # Ưu tiên cấu trúc JSON để định hình chủng loại
-                    sim_final = (sim_spec * 0.7) + (sim_img * 0.3)
+                    # --- BỘ LỌC THÔNG MINH ---
+                    # Nếu Target là quần (có từ Waist/Hip) mà Ref cũng là quần -> Giữ lại
+                    sim_final = (sim_img * 0.4) + (min(sim_struct, 1.0) * 0.6)
                     
-                    # Thưởng điểm nếu tên file có từ khóa giống nhau
-                    if ("SHORT" in f_audit.name.upper() and "SHORT" in r['file_name'].upper()):
-                        sim_final += 0.2
+                    # Thưởng điểm cực mạnh nếu tên file trùng mã hoặc loại
+                    if any(k in f_audit.name.upper() and k in r['file_name'].upper() for k in ["PANT", "SHORT", "JEAN"]):
+                        sim_final += 0.3
 
-                    r['sim_final'] = min(sim_final, 1.0)
-                    r['sim_spec'] = sim_spec
-                    valid_rows.append(r)
+                    if sim_final > 0.4: # Hạ ngưỡng để đảm bảo LUÔN ra kết quả tốt nhất
+                        r['sim_final'] = min(sim_final, 1.0)
+                        valid_rows.append(r)
                 
-                # Hiển thị kết quả
+                # 3. HIỂN THỊ KẾT QUẢ
                 if not valid_rows:
-                    st.warning("🔭 AI đã lọc bỏ các mẫu sai chủng loại. Hiện chưa tìm thấy mẫu Quần nào tương tự trong kho 1390 SKUs.")
+                    st.warning("⚠️ Vẫn chưa tìm thấy mẫu khớp. Có thể Database chưa có loại sản phẩm này.")
                 else:
                     df_db = pd.DataFrame(valid_rows).sort_values('sim_final', ascending=False).head(3)
-                    st.subheader(f"🎯 Kết quả đối soát cấu trúc JSON")
+                    st.subheader(f"🎯 Top mẫu tương đồng nhất (AI & Cấu trúc JSON)")
                     cols = st.columns(4)
                     cols[0].image(target['img'], caption="MẪU ĐANG KIỂM", use_container_width=True)
                     
@@ -231,9 +232,10 @@ if mode == "🔍 Audit Mode":
                         det = supabase.table("ai_data").select("image_url").eq("id", row['id']).execute().data
                         if det:
                             with cols[i+1]:
-                                st.image(det[0]['image_url'], caption=f"Khớp cấu trúc: {row['sim_spec']:.1%}")
+                                st.image(det[0]['image_url'], caption=f"Khớp: {row['sim_final']:.1%}")
                                 if st.button(f"CHỌN {i+1}", key=f"s_{idx}", use_container_width=True):
                                     st.session_state['sel_audit'] = {**row.to_dict(), **det[0]}
+
 
 
 elif mode == "🔄 Version Control":
