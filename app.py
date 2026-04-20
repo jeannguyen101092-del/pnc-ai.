@@ -433,7 +433,7 @@ if mode == "🔍 Audit Mode":
                 st.divider()
                 st.success(f"📈 So sánh với: **{sel['file_name']}**")
 
-                audit_dfs, sheet_names = []
+                audit_dfs, sheet_names = [], []
 
                 for sz, t_specs in target['all_specs'].items():
                     with st.expander(f"SIZE: {sz}", expanded=True):
