@@ -298,9 +298,10 @@ st.title("👔 AI SMART AUDITOR PRO")
 mode = st.radio("Chế độ:", ["🔍 Audit Mode", "🔄 Version Control"], horizontal=True)
 
 if mode == "🔍 Audit Mode":
+    f_audit = st.file_uploader("Upload Target PDF:", type="pdf")
 
     # =========================
-    # HELPER FUNCTIONS
+    # HELPER (GIỮ TRONG BLOCK CHO GỌN)
     # =========================
     def get_product_type(name):
         name = name.upper()
@@ -322,28 +323,23 @@ if mode == "🔍 Audit Mode":
                     s1 = spec1[sz]
                     s2 = spec2[sz]
 
-                    common_keys = set(s1.keys()) & set(s2.keys())
-                    if not common_keys:
+                    common = set(s1.keys()) & set(s2.keys())
+                    if not common:
                         continue
 
                     diffs = []
-                    for k in common_keys:
-                        v1 = s1.get(k)
-                        v2 = s2.get(k)
+                    for k in common:
+                        v1 = s1[k]
+                        v2 = s2[k]
                         if v1 and v2:
                             diffs.append(abs(v1 - v2))
 
                     if diffs:
                         scores.append(1 / (1 + np.mean(diffs)))
 
-            return float(np.mean(scores)) if scores else 0
+            return np.mean(scores) if scores else 0
         except:
             return 0
-
-    # =========================
-    # UPLOAD FILE
-    # =========================
-    f_audit = st.file_uploader("Upload Target PDF:", type="pdf")
 
     if f_audit:
         target = extract_full_data(f_audit.getvalue())
@@ -351,14 +347,10 @@ if mode == "🔍 Audit Mode":
         if target and target['img']:
             target_name = f_audit.name.upper()
 
-            # =========================
-            # LOAD DATABASE
-            # =========================
+            # 🔥 FIX: thêm spec_json
             res = supabase.table("ai_data").select("id, vector, file_name, spec_json").execute()
 
-            if not res.data:
-                st.warning("⚠️ Database trống")
-            else:
+            if res.data:
                 t_vec = np.array(get_vector(target['img'])).reshape(1, -1)
                 t_type = get_product_type(target_name)
 
@@ -366,22 +358,22 @@ if mode == "🔍 Audit Mode":
 
                 for r in res.data:
                     try:
-                        if not r.get('vector') or len(r['vector']) != 512:
+                        if not r['vector'] or len(r['vector']) != 512:
                             continue
 
                         db_vec = np.array(r['vector']).reshape(1, -1)
 
-                        # IMAGE SIM
+                        # IMAGE
                         img_sim = cosine_similarity(t_vec, db_vec).flatten()[0]
 
                         # TYPE FILTER
-                        db_type = get_product_type(r.get('file_name', ""))
+                        db_type = get_product_type(r['file_name'])
                         if t_type != "OTHER" and db_type != t_type:
                             continue
 
-                        # SPEC SIM
+                        # SPEC
                         spec_sim = spec_similarity(
-                            target.get('all_specs', {}),
+                            target['all_specs'],
                             r.get('spec_json', {})
                         )
 
@@ -399,71 +391,70 @@ if mode == "🔍 Audit Mode":
                     except:
                         continue
 
-                if not valid_rows:
-                    st.warning("❌ Không tìm thấy match phù hợp")
-                else:
-                    df_db = pd.DataFrame(valid_rows)\
-                        .sort_values('sim_final', ascending=False)\
-                        .head(3)
+                df_db = pd.DataFrame(valid_rows)\
+                    .sort_values('sim_final', ascending=False)\
+                    .head(3)
 
-                    st.subheader("🎯 AI Matches")
+                st.subheader("🎯 AI Matches")
 
-                    cols = st.columns(4)
-                    cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
+                cols = st.columns(4)
+                cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
 
-                    for idx, (_, row) in enumerate(df_db.iterrows()):
-    with cols[idx + 1]:
-                        det = supabase.table("ai_data")\
-                            .select("image_url, spec_json")\
-                            .eq("id", row['id'])\
-                            .execute().data
+                # 🔥 FIX INDEX + INDENT
+                for idx, (_, row) in enumerate(df_db.iterrows()):
+                    if idx + 1 >= len(cols):
+                        break
 
-                        if det:
-                            with cols[i+1]:
-                                st.image(det[0]['image_url'],
-                                         caption=f"Match: {min(row['sim_final'],1.0):.1%}")
+                    det = supabase.table("ai_data")\
+                        .select("image_url, spec_json")\
+                        .eq("id", row['id'])\
+                        .execute().data
 
-                                st.caption(f"IMG: {row['img_sim']:.2f} | SPEC: {row['spec_sim']:.2f}")
+                    if det:
+                        with cols[idx + 1]:
+                            st.image(
+                                det[0]['image_url'],
+                                caption=f"Match: {min(row['sim_final'],1.0):.1%}"
+                            )
 
-                                if st.button(f"CHỌN {i+1}", key=f"s_{row['id']}", use_container_width=True):
-                                    st.session_state['sel_audit'] = {
-                                        **row,
-                                        **det[0]
-                                    }
+                            st.caption(f"IMG: {row['img_sim']:.2f} | SPEC: {row['spec_sim']:.2f}")
+
+                            if st.button(f"CHỌN {idx+1}", key=f"s_{row['id']}", use_container_width=True):
+                                st.session_state['sel_audit'] = {
+                                    **row,
+                                    **det[0]
+                                }
 
             # =========================
-            # SO SÁNH SPEC
+            # SO SÁNH (GIỮ NGUYÊN)
             # =========================
-            sel = st.session_state.get('sel_audit')
-
+            sel = st.session_state['sel_audit']
             if sel:
                 st.divider()
                 st.success(f"📈 So sánh với: **{sel['file_name']}**")
 
-                audit_dfs, sheet_names = [], []
+                audit_dfs, sheet_names = []
 
                 for sz, t_specs in target['all_specs'].items():
                     with st.expander(f"SIZE: {sz}", expanded=True):
 
-                        ref_specs = sel.get('spec_json', {}).get(sz, {})
+                        m_sz = get_close_matches(sz, list(sel['spec_json'].keys()), 1, 0.4)
+                        r_specs = sel['spec_json'].get(m_sz[0] if m_sz else "", {})
 
                         rows = []
                         for p, v in t_specs.items():
-                            ref_val = ref_specs.get(p)
-
-                            diff = 0
-                            if ref_val:
-                                diff = v - ref_val
+                            ref_key = get_close_matches(p, list(r_specs.keys()), 1, 0.6)
+                            ref_val = r_specs.get(ref_key[0], 0) if ref_key else 0
 
                             rows.append({
                                 "Point": p,
                                 "Target": v,
-                                "Ref": ref_val if ref_val else 0,
-                                "Diff": f"{diff:+.3f}"
+                                "Ref": ref_val,
+                                "Diff": f"{v - ref_val:+.3f}"
                             })
 
                         df_sz = pd.DataFrame(rows)
-                        st.dataframe(df_sz, use_container_width=True)
+                        st.table(df_sz)
 
                         audit_dfs.append(df_sz)
                         sheet_names.append(sz)
