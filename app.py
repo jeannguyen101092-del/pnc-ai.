@@ -411,7 +411,8 @@ if mode == "🔍 Audit Mode":
                     cols = st.columns(4)
                     cols[0].image(target['img'], caption="TARGET PDF", use_container_width=True)
 
-                    for i, row in df_db.iterrows():
+                    for idx, (_, row) in enumerate(df_db.iterrows()):
+    with cols[idx + 1]:
                         det = supabase.table("ai_data")\
                             .select("image_url, spec_json")\
                             .eq("id", row['id'])\
