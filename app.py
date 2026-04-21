@@ -196,12 +196,11 @@ if mode == "Audit Mode":
                             st.info(f"Độ giống: {item['score']:.1%}")
 
 elif mode == "Version Control":
-    st.subheader("🔄 So sánh Toàn diện (Tự động nhận diện mọi khách hàng)")
+    st.subheader("🔄 So sánh Toàn diện (Bản vạn năng - Đã fix nhiễu Express)")
 
     def clean_pom_universal(t):
         if not t: return ""
         t = t.upper().strip()
-        # Tìm mã code (Ví dụ: LGT-001, C112, W084...) để làm khóa so sánh
         match = re.search(r'([A-Z]*\d{2,4}[A-Z]*)', t)
         if match: return match.group(1)
         return re.sub(r'[^A-Z0-9]', '', t)
@@ -228,30 +227,37 @@ elif mode == "Version Control":
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # --- LOGIC CẢM BIẾN HEADER TỰ ĐỘNG ---
+                    # --- BỘ LỌC SIZE CHUẨN (Fix lỗi bốc nhầm MENS, ALL, 2024...) ---
                     size_lanes = []
-                    for y, gp in df_w.groupby('top'):
-                        # Điều kiện: Tìm hàng có nhiều từ ngắn (<6 ký tự) nằm ở nửa phải trang giấy
-                        candidates = [w for _, w in gp.iterrows() if len(w['text'].strip()) <= 5 and w['x0'] > 150]
-                        # Lọc bỏ các từ gây nhiễu thông dụng
-                        candidates = [c for c in candidates if not any(x in c['text'].upper() for x in ["TOL", "SPEC", "DATE", "PAGE", "INCH"])]
-                        
-                        if len(candidates) >= 4: # Nếu thấy từ 4 cột size trở lên
-                            for s in candidates:
-                                size_lanes.append({"sz": s['text'].strip().upper(), "x0": s['x0']-10, "x1": s['x1']+28})
-                            break 
+                    # Danh sách Size "vạn năng" bao quát mọi khách hàng
+                    valid_patterns = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "1X", "2X", "3X", "000", "00"]
                     
+                    for y, gp in df_w.groupby('top'):
+                        candidates = []
+                        for _, w in gp.iterrows():
+                            t = w['text'].strip().upper().replace("*", "")
+                            # CHỈ CHẤP NHẬN: 1. Có trong list valid HOẶC 2. Là số nguyên từ 24-56
+                            is_size_num = t.isdigit() and (24 <= int(t) <= 56 or t in ["0", "2", "4", "6", "8"])
+                            is_size_char = t in valid_patterns
+                            
+                            if (is_size_num or is_size_char) and w['x0'] > 180:
+                                candidates.append({"sz": t, "x0": w['x0']-12, "x1": w['x1']+28})
+                        
+                        if len(candidates) >= 4:
+                            size_lanes = candidates
+                            break 
+
                     if not size_lanes: continue
                     first_x = min([c['x0'] for c in size_lanes])
 
-                    # Quét dữ liệu
                     for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
                         if gp.empty: continue
                         sorted_gp = gp.sort_values('x0')
                         pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_x]['text']).strip()
                         pom_key = clean_pom_universal(pom_raw)
                         
-                        if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["COPYRIGHT", "PRINTED"]):
+                        # Chỉ lấy dòng có mã POM (chứa số) để bỏ qua các dòng tiêu đề rác
+                        if re.search(r'\d', pom_key) and not any(x in pom_raw.upper() for x in ["COPYRIGHT", "PRINTED", "PAGE"]):
                             for col in size_lanes:
                                 cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
                                 val = parse_value_universal(" ".join(cell['text'].values))
@@ -261,7 +267,7 @@ elif mode == "Version Control":
             return specs_dict
         except: return {}
 
-    # --- UI & SO SÁNH ---
+    # --- UI & XUẤT FILE ---
     f1 = st.file_uploader("Bản cũ (A)", type="pdf", key="u_a")
     f2 = st.file_uploader("Bản mới (B)", type="pdf", key="u_b")
 
@@ -269,14 +275,9 @@ elif mode == "Version Control":
         if st.button("⚡ CHẠY SO SÁNH TỔNG LỰC", use_container_width=True):
             d1, d2 = get_specs_universal(f1.getvalue()), get_specs_universal(f2.getvalue())
             if d1 and d2:
-                # Lấy tất cả Size và POM, ưu tiên thứ tự xuất hiện
-                all_sz = list(set(d1.keys()) | set(d2.keys()))
-                # Thử sắp xếp size số nếu có thể
-                try: all_sz = sorted(all_sz, key=lambda x: int(re.sub(r'\D', '', x)) if re.search(r'\d', x) else 999)
-                except: all_sz = sorted(all_sz)
-                
+                all_sz = sorted(list(set(d1.keys()) | set(d2.keys())), key=lambda x: str(x).zfill(3))
                 all_keys = sorted(list(set([k for s in d1 for k in d1[s]]) | set([k for s in d2 for k in d2[s]])))
-
+                
                 final_rows = []
                 for k in all_keys:
                     name = next((d2[s][k]['orig'] for s in d2 if k in d2[s]), next((d1[s][k]['orig'] for s in d1 if k in d1[s]), k))
@@ -285,13 +286,13 @@ elif mode == "Version Control":
                         v1, v2 = d1.get(sz, {}).get(k, {}).get('val'), d2.get(sz, {}).get(k, {}).get('val')
                         if v1 is not None and v2 is not None:
                             diff = round(v2 - v1, 3)
-                            row[sz] = f"{v2} [0.00]" if abs(diff) < 0.01 else f"{v1} ➔ {v2} [{diff:+.2f}]"
+                            row[sz] = f"{v2}" if abs(diff) < 0.01 else f"{v1} ➔ {v2} [{diff:+.2f}]"
                         else: row[sz] = "-"
                     final_rows.append(row)
 
                 df_final = pd.DataFrame(final_rows)
                 
-                # Nút Xuất Excel
+                # Nút xuất Excel
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df_final.to_excel(writer, index=False)
@@ -299,4 +300,4 @@ elif mode == "Version Control":
 
                 # Hiển thị bôi đỏ
                 st.dataframe(df_final.style.map(lambda x: 'background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(x) else ''), use_container_width=True, height=600)
-            else: st.error("❌ Không tìm thấy bảng dữ liệu.")
+            else: st.error("❌ Không tìm thấy bảng dữ liệu chuẩn.")
