@@ -229,7 +229,6 @@ elif mode == "Version Control":
     def clean_pom_universal(t):
         if not t: return ""
         t = t.upper().strip()
-        # Tìm mã code (C112, W084...) để làm chìa khóa so sánh
         match = re.search(r'([A-Z]*\d{2,4}[A-Z]*)', t)
         return match.group(1) if match else t[:25]
 
@@ -239,14 +238,14 @@ elif mode == "Version Control":
         m = re.findall(r"(\d+)\s+(\d+)/(\d+)|(\d+)/(\d+)|(\d+\.?\d*)", text)
         if not m: return None
         try:
-            t = m[0] # Lấy kết quả đầu tiên tìm thấy
-            if t[0] and t[1]: return float(t[0]) + int(t[1])/int(t[2]) # Hỗn số
-            if t[3]: return int(t[3])/int(t[4]) # Phân số
-            if t[5]: return float(t[5]) # Số thập phân
+            t = m
+            if t and t: return float(t) + int(t)/int(t)
+            if t: return int(t)/int(t)
+            if t: return float(t)
         except: return None
         return None
 
-        def get_specs_v18(content):
+    def get_specs_v18(content):
         specs_dict = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -255,21 +254,18 @@ elif mode == "Version Control":
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # --- 1. TÌM HEADER VÙNG AN TOÀN (Bỏ qua số thứ tự lề trái) ---
+                    # --- 1. TÌM HEADER SIZE TRONG VÙNG AN TOÀN (x > 250) ---
                     size_lanes = []
-                    valid_sz_list = ["XXS","XS","S","M","L","XL","XXL","1X","2X","3X","00","000"]
-                    
+                    valid_sz = ["XXS","XS","S","M","L","XL","XXL","1X","2X","3X","00","000"]
                     for y, gp in df_w.groupby('top'):
                         candidates = []
                         for _, w in gp.iterrows():
                             t = w['text'].strip().upper()
-                            # ĐIỀU KIỆN GẮT: Phải ở nửa phải trang (x0 > 250) và là Size hợp lệ
-                            is_size_char = t in valid_sz_list
+                            # Chỉ lấy số nguyên may mặc thực tế và nằm bên phải trang
+                            is_size_char = t in valid_sz
                             is_size_num = t.isdigit() and (0 <= int(t) <= 60) and (int(t) % 2 == 0 or int(t) > 20)
-                            
                             if (is_size_char or is_size_num) and w['x0'] > 250:
                                 candidates.append({"sz": t, "x0": w['x0']-12, "x1": w['x1']+25})
-                        
                         if len(candidates) >= 3:
                             size_lanes = candidates
                             break 
@@ -277,15 +273,13 @@ elif mode == "Version Control":
                     if not size_lanes: continue
                     first_sz_x = min([c['x0'] for c in size_lanes])
 
-                    # --- 2. QUÉT DỮ LIỆU KHÓA TỌA ĐỘ ---
+                    # --- 2. QUÉT DỮ LIỆU ĐỐI CHIẾU TỌA ĐỘ ---
                     for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
                         if gp.empty: continue
                         sorted_gp = gp.sort_values('x0')
-                        # POM Name nằm bên trái cột Size đầu tiên
                         pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_sz_x]['text']).strip()
                         pom_key = clean_pom_universal(pom_raw)
-                        
-                        if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["PAGE", "COPYRIGHT", "SPEC"]):
+                        if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["PAGE", "SPEC", "COPYRIGHT"]):
                             for col in size_lanes:
                                 cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
                                 if not cell.empty:
@@ -296,14 +290,13 @@ elif mode == "Version Control":
             return specs_dict
         except: return {}
 
-
     f1 = st.file_uploader("Old Version (A)", type="pdf", key=f"ua_{st.session_state.up_key}")
     f2 = st.file_uploader("New Version (B)", type="pdf", key=f"ub_{st.session_state.up_key}")
 
     if f1 and f2:
         if st.button("⚡ RUN COMPREHENSIVE COMPARISON", use_container_width=True):
-            with st.spinner("Analyzing files..."):
-                d1, d2 = get_specs_v17(f1.getvalue()), get_specs_v17(f2.getvalue())
+            with st.spinner("Processing files..."):
+                d1, d2 = get_specs_v18(f1.getvalue()), get_specs_v18(f2.getvalue())
             
             if d1 and d2:
                 # Sắp xếp size: Số trước (tăng dần), chữ sau
@@ -325,19 +318,16 @@ elif mode == "Version Control":
                         else: row[sz] = "-"
                     final_rows.append(row)
 
-                df_final = pd.DataFrame(final_rows)
+                df_f = pd.DataFrame(final_rows)
                 
                 # Excel Export
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df_final.to_excel(writer, index=False)
-                st.download_button("📥 Download Excel Report", output.getvalue(), "Comparison_Report.xlsx")
+                out = io.BytesIO()
+                with pd.ExcelWriter(out, engine='xlsxwriter') as wr:
+                    df_f.to_excel(wr, index=False)
+                st.download_button("📥 Download Excel Report", out.getvalue(), "Comparison_Report.xlsx")
 
                 # Display
                 st.write("### 📊 Comparison Details")
-                st.dataframe(
-                    df_final.style.map(lambda x: 'background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(x) else ''),
-                    use_container_width=True, height=600
-                )
+                st.dataframe(df_f.style.map(lambda x: 'background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(x) else ''), use_container_width=True, height=600)
             else:
                 st.error("❌ Valid measurement table not found. Please check the PDF content.")
