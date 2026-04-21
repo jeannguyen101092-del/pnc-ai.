@@ -162,6 +162,28 @@ with st.sidebar:
         st.session_state['up_key'] += 1
         time.sleep(1)
         st.rerun()
+        st.divider()
+st.subheader("🧹 Dọn dữ liệu lỗi")
+
+if st.button("🗑️ Xóa file lỗi (không có ảnh)", use_container_width=True):
+    try:
+        res = supabase.table("ai_data").select("id, image_url").execute()
+        data = res.data
+
+        deleted = 0
+
+        for row in data:
+            img_url = row.get("image_url")
+
+            # ❌ điều kiện lỗi
+            if (not img_url) or ("null" in str(img_url).lower()) or (len(str(img_url)) < 10):
+                supabase.table("ai_data").delete().eq("id", row["id"]).execute()
+                deleted += 1
+
+        st.success(f"✅ Đã xóa {deleted} file lỗi")
+
+    except Exception as e:
+        st.error(f"❌ Lỗi: {str(e)}")
 
 # ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
