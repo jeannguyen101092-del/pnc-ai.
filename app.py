@@ -298,20 +298,31 @@ elif mode == "Version Control":
                                 row[sz] = f"{v1} ➔ {v2} [{diff:+.2f}]"
                         else:
                             row[sz] = "-"
+                                    # --- ĐOẠN HIỂN THỊ LUÔN HIỆN SO SÁNH KỂ CẢ KHI KHỚP ---
+                final_rows = []
+                for k in all_keys:
+                    name = next((d2[s][k]['orig'] for s in d2 if k in d2[s]), 
+                               next((d1[s][k]['orig'] for s in d1 if k in d1[s]), k))
+                    row = {"POM Description": name}
+                    for sz in all_sz:
+                        v1 = d1.get(sz, {}).get(k, {}).get('val')
+                        v2 = d2.get(sz, {}).get(k, {}).get('val')
+                        
+                        if v1 is not None and v2 is not None:
+                            diff = round(v2 - v1, 3)
+                            if abs(diff) < 0.01:
+                                # Khi khớp nhau: Hiện giá trị kèm [0.00]
+                                row[sz] = f"{v2} [0.00]"
+                            else:
+                                # Khi lệch: Hiện A ➔ B [+/- Chênh lệch] và sẽ tô đỏ
+                                row[sz] = f"{v1} ➔ {v2} [{diff:+.2f}]"
+                        else:
+                            row[sz] = "-"
                     final_rows.append(row)
 
-                # Hiển thị bảng kết quả
+                # Hiển thị và tô màu đỏ những ô có sự thay đổi (dấu ➔)
                 df_final = pd.DataFrame(final_rows)
-                st.write("### 📊 Kết quả đối soát: Giá trị [Chênh lệch]")
-                
-                # Tô đỏ những ô có sự thay đổi (dấu ➔)
                 st.dataframe(
                     df_final.style.map(lambda x: 'background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(x) else ''),
                     use_container_width=True, height=600
                 )
-            else:
-                st.error("❌ Không tìm thấy bảng thông số để so sánh.")
-
-    if st.button("🗑️ Làm mới hệ thống"):
-        st.session_state.up_key += 1
-        st.rerun()
