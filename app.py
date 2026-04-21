@@ -171,7 +171,7 @@ st.title("👔 AI SMART AUDITOR PRO")
 mode = st.radio("Chế độ:", ["Audit Mode", "Version Control"], horizontal=True)
 
 if mode == "Audit Mode":
-    st.subheader("🔍 Tìm kiếm mẫu tương đồng")
+   st.subheader("🔍 Search Similar Models")
     target_file = st.file_uploader("Upload Target PDF", type=['pdf'], key=f"aud_{st.session_state['up_key']}")
     if target_file:
         with st.spinner("Đang tìm kiếm..."):
@@ -196,11 +196,12 @@ if mode == "Audit Mode":
                             st.info(f"Độ giống: {item['score']:.1%}")
 
 elif mode == "Version Control":
+    # --- ĐỔI TÊN THÀNH TIẾNG ANH ---
     st.subheader("🔄 Comprehensive Comparison")
 
-    # --- HÀM RESET HỆ THỐNG ---
-    if st.button("🗑️ Xóa tất cả & Làm mới hệ thống", use_container_width=True):
-        st.session_state.up_key += 1  # Thay đổi key để xóa file trong file_uploader
+    # --- NÚT XÓA FILE & LÀM MỚI ---
+    if st.button("🗑️ Clear All & Reset", use_container_width=True):
+        st.session_state.up_key += 1
         st.rerun()
 
     def clean_pom_universal(t):
@@ -216,10 +217,10 @@ elif mode == "Version Control":
         m = re.findall(r"(\d+)\s+(\d+)/(\d+)|(\d+)/(\d+)|(\d+\.?\d*)", text)
         if not m: return None
         try:
-            t = m[0]
-            if t[0] and t[1]: return float(t[0]) + int(t[1])/int(t[2])
-            if t[3]: return int(t[3])/int(t[4])
-            if t[5]: return float(t[5])
+            t = m
+            if t and t: return float(t) + int(t)/int(t)
+            if t: return int(t)/int(t)
+            if t: return float(t)
         except: return None
         return None
 
@@ -266,13 +267,13 @@ elif mode == "Version Control":
             return specs_dict
         except: return {}
 
-    # --- UI UPLOAD (Sử dụng up_key để reset) ---
+    # --- UI UPLOAD ---
     c1, c2 = st.columns(2)
-    f1 = c1.file_uploader("Bản cũ (A)", type="pdf", key=f"ua_{st.session_state.up_key}")
-    f2 = c2.file_uploader("Bản mới (B)", type="pdf", key=f"ub_{st.session_state.up_key}")
+    f1 = c1.file_uploader("Old Version (A)", type="pdf", key=f"ua_{st.session_state.up_key}")
+    f2 = c2.file_uploader("New Version (B)", type="pdf", key=f"ub_{st.session_state.up_key}")
 
     if f1 and f2:
-        if st.button("⚡ RUN COMPREHENSIVE COMPARISON", use_container_width=True):
+        if st.button("⚡ Run Comparison", use_container_width=True):
             d1, d2 = get_specs_universal(f1.getvalue()), get_specs_universal(f2.getvalue())
             if d1 and d2:
                 all_sz = sorted(list(set(d1.keys()) | set(d2.keys())), key=lambda x: str(x).zfill(3))
@@ -292,12 +293,12 @@ elif mode == "Version Control":
 
                 df_final = pd.DataFrame(final_rows)
                 
-                # Nút xuất Excel
+                # Excel Export
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df_final.to_excel(writer, index=False)
-                st.download_button("📥 Tải báo cáo Excel", output.getvalue(), "Bao_cao_so_sanh.xlsx")
+                st.download_button("📥 Download Excel Report", output.getvalue(), "Comparison_Report.xlsx")
 
-                # Hiển thị
+                # Display with Red Highlight
                 st.dataframe(df_final.style.map(lambda x: 'background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(x) else ''), use_container_width=True, height=600)
-            else: st.error("❌ Không tìm thấy bảng dữ liệu chuẩn.")
+            else: st.error("❌ Valid measurement table not found.")
