@@ -261,50 +261,36 @@ elif mode == "Version Control":
                 all_sz = sorted(list(set(d1.keys()) | set(d2.keys())), key=lambda x: str(x).zfill(3))
                 all_keys = sorted(list(set([k for s in d1 for k in d1[s]]) | set([k for s in d2 for k in d2[s]])))
                 
-                                # --- ĐOẠN HIỂN THỊ LUÔN HIỆN SO SÁNH KỂ CẢ KHI KHỚP ---
                 final_rows = []
                 for k in all_keys:
-                    name = next((d2[s][k]['orig'] for s in d2 if k in d2[s]), 
-                               next((d1[s][k]['orig'] for s in d1 if k in d1[s]), k))
+                    name = next((d2[s][k]['orig'] for s in d2 if k in d2[s]), next((d1[s][k]['orig'] for s in d1 if k in d1[s]), k))
                     row = {"POM Description": name}
                     for sz in all_sz:
-                        v1 = d1.get(sz, {}).get(k, {}).get('val')
-                        v2 = d2.get(sz, {}).get(k, {}).get('val')
-                        
+                        v1, v2 = d1.get(sz, {}).get(k, {}).get('val'), d2.get(sz, {}).get(k, {}).get('val')
                         if v1 is not None and v2 is not None:
                             diff = round(v2 - v1, 3)
-                            if abs(diff) < 0.01:
-                                # Khi khớp nhau: Hiện giá trị kèm [0.00]
-                                row[sz] = f"{v2} [0.00]"
+                            # Nếu lệch (diff != 0) thì hiện mũi tên để kích hoạt tô màu đỏ
+                            if abs(diff) < 0.001:
+                                row[sz] = f"{v2}"
                             else:
-                                # Khi lệch: Hiện A ➔ B [+/- Chênh lệch] và sẽ tô đỏ
                                 row[sz] = f"{v1} ➔ {v2} [{diff:+.2f}]"
-                        else:
-                            row[sz] = "-"
+                        else: row[sz] = "-"
                     final_rows.append(row)
 
-                # Hiển thị và tô màu đỏ những ô có sự thay đổi (dấu ➔)
                 df_final = pd.DataFrame(final_rows)
-                st.dataframe(
-                    df_final.style.map(lambda x: 'background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(x) else ''),
-                    use_container_width=True, height=600
-                )
 
-
-                # --- NÚT XUẤT EXCEL ---
+                # --- 1. NÚT XUẤT EXCEL (Đưa lên trên bảng) ---
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df_final.to_excel(writer, index=False, sheet_name='Comparison_Report')
-                st.download_button(
-                    label="📥 Tải báo cáo Excel",
-                    data=output.getvalue(),
-                    file_name="Bao_cao_so_sanh_Techpack.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                    df_final.to_excel(writer, index=False, sheet_name='Comparison')
+                st.download_button(label="📥 Tải báo cáo Excel", data=output.getvalue(), 
+                                 file_name="Bao_cao_Techpack.xlsx", mime="application/vnd.ms-excel")
 
-                # --- HIỂN THỊ BẢNG BÔI ĐỎ ---
+                # --- 2. HIỂN THỊ BẢNG (Chỉ dùng 1 lần, bôi đỏ ô có dấu ➔) ---
+                st.write("### 📊 Chi tiết so sánh (Ô đỏ là có thay đổi)")
                 st.dataframe(
                     df_final.style.map(lambda x: 'background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(x) else ''),
                     use_container_width=True, height=600
                 )
-            else: st.error("❌ Không tìm thấy bảng thông số.")
+            else: 
+                st.error("❌ Không tìm thấy bảng thông số.")
