@@ -172,19 +172,38 @@ if st.button("🗑️ Xóa file lỗi (không có ảnh)", use_container_width=T
 
         deleted = 0
 
-        for row in data:
-            img_url = row.get("image_url")
+        import requests
 
-            # ❌ điều kiện lỗi
-            if (not img_url) or ("null" in str(img_url).lower()) or (len(str(img_url)) < 10):
-                supabase.table("ai_data").delete().eq("id", row["id"]).execute()
-                deleted += 1
+for row in data:
+    img_url = row.get("image_url")
+    is_bad = False
 
-        st.success(f"✅ Đã xóa {deleted} file lỗi")
+    # ❌ không có url
+    if not img_url or img_url == "":
+        is_bad = True
 
-    except Exception as e:
-        st.error(f"❌ Lỗi: {str(e)}")
+    else:
+        try:
+            r = requests.get(img_url, timeout=5)
 
+            # ❌ link chết
+            if r.status_code != 200:
+                is_bad = True
+
+            # ❌ không phải ảnh
+            elif "image" not in r.headers.get("Content-Type", ""):
+                is_bad = True
+
+            # ❌ ảnh lỗi (quá nhẹ)
+            elif len(r.content) < 2000:
+                is_bad = True
+
+        except:
+            is_bad = True
+
+    if is_bad:
+        supabase.table("ai_data").delete().eq("id", row["id"]).execute()
+        deleted += 1
 # ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
 
