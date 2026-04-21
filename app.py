@@ -118,21 +118,35 @@ with st.sidebar:
     st.progress(min(storage_mb/1024, 1.0))
     
     # --- ĐOẠN CODE DỌN DẸP BỎ VÀO ĐÂY ---
-    if st.button("🧹 Dọn dẹp data lỗi (Không ảnh)", use_container_width=True):
-        with st.spinner("Đang quét và lọc dữ liệu rác..."):
+       if st.button("🧹 Dọn dẹp Database (Lọc theo diện tích)", use_container_width=True):
+        with st.spinner("Đang phân tích sâu nội dung ảnh..."):
             all_data = supabase.table("ai_data").select("id, image_url").execute()
-            deleted_count = 0
+            deleted = 0
             for item in all_data.data:
                 try:
-                    # Kiểm tra dung lượng ảnh preview, nếu < 15KB thường là trang trắng/chỉ có chữ
-                    img_res = requests.get(item['image_url'])
-                    if len(img_res.content) < 15000: 
+                    r = requests.get(item['image_url'], timeout=5)
+                    img = Image.open(io.BytesIO(r.content))
+                    
+                    # KIỂM TRA ĐỘ PHỨC TẠP CỦA ẢNH
+                    # Những file như bạn gửi thường có màu sắc rất đơn điệu (toàn màu trắng)
+                    # Chúng ta chuyển sang ảnh xám và tính độ lệch chuẩn (std)
+                    img_gray = img.convert('L')
+                    stat = np.array(img_gray).std()
+                    
+                    # Nếu std < 10: Ảnh gần như là một màu trắng tinh hoặc xám đều (không có nét vẽ sketch)
+                    # Nếu dung lượng file < 25KB: Khả năng cao là chỉ có bảng biểu và logo nhỏ
+                    if stat < 10 or len(r.content) < 25000: 
                         supabase.table("ai_data").delete().eq("id", item['id']).execute()
-                        deleted_count += 1
+                        deleted += 1
+                    
+                    img.close()
+                    del r, img, img_gray
                 except: continue
-            st.success(f"🔥 Đã xóa {deleted_count} dòng không có ảnh!")
-            time.sleep(1)
+            
+            st.success(f"🔥 Đã dọn dẹp {deleted} file bảng biểu/trang trắng!")
+            gc.collect()
             st.rerun()
+
 
     if st.button("🔄 Làm mới số lượng"): st.rerun()
 
