@@ -198,8 +198,6 @@ if mode == "Audit Mode":
 elif mode == "Version Control":
     st.subheader("🔄 So sánh Toàn diện (Tổng hợp tất cả Size)")
 
-        # --- 1. CẢI TIẾN HÀM LÀM SẠCH POM (Giữ lại ý nghĩa mô tả) ---
-        # 1. Hàm làm sạch POM
     def clean_pom_v4(t):
         if not t: return ""
         t = t.upper().strip()
@@ -207,7 +205,6 @@ elif mode == "Version Control":
         t = re.sub(r'[^A-Z0-9\s/]', '', t)
         return t.strip()
 
-    # 2. Hàm xử lý số (phải để TRƯỚC khi gọi trong get_specs)
     def parse_value(text):
         if not text: return None
         text = text.replace("-", " ").strip()
@@ -215,13 +212,12 @@ elif mode == "Version Control":
         if not m: return None
         try:
             t = m[0]
-            if t[0] and t[1]: return float(t[0]) + int(t[1])/int(t[2]) # Hỗn số
-            if t[3]: return int(t[3])/int(t[4]) # Phân số
-            if t[5]: return float(t[5]) # Số thập phân
+            if t[0] and t[1]: return float(t[0]) + int(t[1])/int(t[2])
+            if t[3]: return int(t[3])/int(t[4])
+            if t[5]: return float(t[5])
         except: return None
         return None
 
-    # 3. Hàm quét PDF (Hãy đảm bảo thụt lề đúng như thế này)
     def get_specs_v5(content):
         specs_dict = {}
         try:
@@ -230,8 +226,6 @@ elif mode == "Version Control":
                     words = page.extract_words()
                     if not words: continue
                     df_w = pd.DataFrame(words)
-                    
-                    # Tìm cột Size
                     size_lanes = []
                     sz_list = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "2X", "3X"]
                     for y, gp in df_w.groupby('top'):
@@ -240,18 +234,14 @@ elif mode == "Version Control":
                             for s in found:
                                 size_lanes.append({"sz": s['text'].strip().upper(), "x0": s['x0']-2, "x1": s['x1']+25})
                             break 
-
                     if not size_lanes: continue
                     first_x = min([c['x0'] for c in size_lanes])
-
-                    # Quét dữ liệu (Gom dòng 12px để lấy phân số nằm dưới số nguyên)
                     for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
                         if gp.empty: continue
                         sorted_gp = gp.sort_values('x0')
                         pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_x]['text']).strip()
                         pom_c = clean_pom_v4(pom_raw)
-                        
-                        if len(pom_c) > 3 and not any(x in pom_raw.upper() for x in ["PAGE", "STYLE"]):
+                        if len(pom_c) > 3:
                             for col in size_lanes:
                                 cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
                                 val = parse_value(" ".join(cell['text'].values))
@@ -261,52 +251,32 @@ elif mode == "Version Control":
             return specs_dict
         except: return {}
 
-
-
-    # --- UI GIAO DIỆN ---
-    if st.button("🗑️ Làm mới hệ thống"):
-        st.session_state['up_key'] += 1; st.session_state['ver_results'] = None; st.rerun()
-
     c1, c2 = st.columns(2)
-    f1 = c1.file_uploader("Bản cũ (A)", type="pdf", key=f"v1_{st.session_state['up_key']}")
-    f2 = c2.file_uploader("Bản mới (B)", type="pdf", key=f"v2_{st.session_state['up_key']}")
+    f1 = c1.file_uploader("Bản cũ (A)", type="pdf")
+    f2 = c2.file_uploader("Bản mới (B)", type="pdf")
 
     if f1 and f2:
-        if st.button("⚡ CHẠY SO SÁNH CHUẨN 100%", use_container_width=True):
-            with st.spinner("Đang tách Description và bóc tách từng cột Size..."):
-                       # --- ĐOẠN GỌI HÀM VÀ HIỂN THỊ (Dán thay thế từ dòng 277) ---
         if st.button("⚡ CHẠY SO SÁNH TỔNG HỢP", use_container_width=True):
-            dict_a = get_specs_v5(f1.getvalue())
-            dict_b = get_specs_v5(f2.getvalue())
+            with st.spinner("Đang phân tích thông số..."):
+                dict_a = get_specs_v5(f1.getvalue())
+                dict_b = get_specs_v5(f2.getvalue())
             
             if dict_a and dict_b:
-                # 1. Lấy danh sách Size và POM để làm cột và hàng
                 all_sizes = sorted(list(set(dict_a.keys()) | set(dict_b.keys())), 
                                  key=lambda x: int(re.sub(r'\D', '', x)) if re.search(r'\d', x) else 99)
                 all_poms = sorted(list(set([p for sz in dict_a for p in dict_a[sz]]) | 
                                      set([p for sz in dict_b for p in dict_b[sz]])))
-
                 final_rows = []
                 for p in all_poms:
-                    # Lấy tên POM gốc
                     name = next((dict_b[sz][p]['orig'] for sz in dict_b if p in dict_b[sz]), 
                                next((dict_a[sz][p]['orig'] for sz in dict_a if p in dict_a[sz]), p))
                     row = {"POM Description": name}
                     for sz in all_sizes:
                         v1 = dict_a.get(sz, {}).get(p, {}).get('val')
                         v2 = dict_b.get(sz, {}).get(p, {}).get('val')
-                        if v1 == v2:
-                            row[f"Size {sz}"] = str(v1) if v1 is not None else "-"
-                        else:
-                            row[f"Size {sz}"] = f"{v1} ➔ {v2}"
+                        if v1 == v2: row[f"Size {sz}"] = str(v1) if v1 is not None else "-"
+                        else: row[f"Size {sz}"] = f"{v1} ➔ {v2}"
                     final_rows.append(row)
-
-                # 2. Hiển thị bảng kết quả
-                df_final = pd.DataFrame(final_rows)
-                st.write("### 📊 Kết quả so sánh (Chữ đỏ ➔ là có thay đổi)")
-                st.dataframe(
-                    df_final.style.apply(lambda x: ['color: #d73a49; font-weight: bold' if '➔' in str(v) else '' for v in x]),
-                    use_container_width=True, height=600
-                )
+                st.dataframe(pd.DataFrame(final_rows).style.apply(lambda x: ['color: #d73a49; font-weight: bold' if '➔' in str(v) else '' for v in x]), use_container_width=True, height=600)
             else:
-                st.error("❌ Không tìm thấy dữ liệu trong file. Hãy kiểm tra lại định dạng PDF.")
+                st.error("❌ Không tìm thấy dữ liệu. Kiểm tra lại PDF.")
