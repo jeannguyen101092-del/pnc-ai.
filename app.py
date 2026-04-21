@@ -102,6 +102,7 @@ def to_excel(df_list, sheet_names):
 # ================= 4. SIDEBAR (INCLUDES STORAGE METRIC) =================
 # ================= 4. SIDEBAR (BẢN FIX LỖI COLUMN SPECS) =================
 # ================= 4. SIDEBAR (BẢN ĐẦY ĐỦ CÓ LỌC & DỌN DẸP) =================
+# ================= 4. SIDEBAR (BẢN FIX LỖI & DỌN DEP) =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     
@@ -116,17 +117,20 @@ with st.sidebar:
     st.write(f"💾 **Storage:** {storage_mb:.1f}MB / 1024MB")
     st.progress(min(storage_mb/1024, 1.0))
     
-    # Nút dọn dẹp các file cũ trong Database không có hình (Vector bị trống)
-    if st.button("🧹 Dọn dẹp data lỗi (Không ảnh)"):
-        with st.spinner("Đang quét database..."):
-            # Lấy các dòng mà vector là null hoặc rỗng
-            all_data = supabase.table("ai_data").select("id, vector, image_url").execute()
-            to_delete = [item['id'] for item in all_data.data if item['vector'] is None]
-            
-            for rid in to_delete:
-                supabase.table("ai_data").delete().eq("id", rid).execute()
-            
-            st.success(f"Đã xóa {len(to_delete)} dòng lỗi!")
+    # --- ĐOẠN CODE DỌN DẸP BỎ VÀO ĐÂY ---
+    if st.button("🧹 Dọn dẹp data lỗi (Không ảnh)", use_container_width=True):
+        with st.spinner("Đang quét và lọc dữ liệu rác..."):
+            all_data = supabase.table("ai_data").select("id, image_url").execute()
+            deleted_count = 0
+            for item in all_data.data:
+                try:
+                    # Kiểm tra dung lượng ảnh preview, nếu < 15KB thường là trang trắng/chỉ có chữ
+                    img_res = requests.get(item['image_url'])
+                    if len(img_res.content) < 15000: 
+                        supabase.table("ai_data").delete().eq("id", item['id']).execute()
+                        deleted_count += 1
+                except: continue
+            st.success(f"🔥 Đã xóa {deleted_count} dòng không có ảnh!")
             time.sleep(1)
             st.rerun()
 
@@ -142,34 +146,29 @@ with st.sidebar:
         
         for i, f in enumerate(up_new):
             try:
-                # 1. Mở file PDF kiểm tra hình ảnh trước khi làm bất cứ việc gì
+                # 1. Mở file PDF kiểm tra ảnh trước
                 doc = fitz.open(stream=f.getvalue(), filetype="pdf")
                 page = doc.load_page(0)
                 
-                # KIỂM TRA: Nếu trang 1 không có đối tượng Image nào
+                # CHẶN FILE KHÔNG CÓ ẢNH NGAY TỪ ĐẦU
                 if len(page.get_images()) == 0:
-                    st.warning(f"⏩ Bỏ qua {f.name}: Không tìm thấy hình ảnh minh họa.")
+                    st.warning(f"⏩ Bỏ qua {f.name}: File chỉ có chữ/bảng biểu.")
                     doc.close()
-                    continue # Bỏ qua vòng lặp, sang file tiếp theo
-                
-                # 2. Nếu có ảnh, tiến hành lấy ảnh preview
+                    continue 
+
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 img_bytes = pix.tobytes("png")
                 doc.close()
 
-                # 3. Tạo ID và tên file duy nhất
                 unique_id = str(uuid.uuid4())[:8]
                 new_fname = f"{unique_id}_{f.name.replace(' ', '_')}.webp"
                 
-                # 4. Upload lên Storage
                 path = f"sketches/{new_fname}"
                 supabase.storage.from_(BUCKET).upload(path, img_bytes)
                 img_url = supabase.storage.from_(BUCKET).get_public_url(path)
                 
-                # 5. Tính Vector
                 vector_data = get_vector(img_bytes)
 
-                # 6. Ghi vào Database
                 supabase.table("ai_data").insert({
                     "file_name": str(f.name),
                     "image_url": str(img_url),
@@ -180,14 +179,12 @@ with st.sidebar:
                 p_bar.progress((i + 1) / len(up_new))
 
             except Exception as e:
-                st.error(f"❌ Lỗi file {f.name}: {str(e)}")
+                st.error(f"❌ Lỗi: {str(e)}")
         
-        st.success("🎉 Hoàn tất quá trình nạp kho!")
+        st.success("🎉 Hoàn tất!")
         st.session_state['up_key'] += 1
         time.sleep(1)
         st.rerun()
-
-
 
 
 
