@@ -280,3 +280,30 @@ elif mode == "Version Control":
                 st.dataframe(pd.DataFrame(final_rows).style.apply(lambda x: ['color: #d73a49; font-weight: bold' if '➔' in str(v) else '' for v in x]), use_container_width=True, height=600)
             else:
                 st.error("❌ Không tìm thấy dữ liệu. Kiểm tra lại PDF.")
+                # --- ĐOẠN HIỂN THỊ CẢI TIẾN ĐỂ THẤY RÕ SO SÁNH ---
+                final_rows = []
+                for p in all_poms:
+                    name = next((dict_b[sz][p]['orig'] for sz in dict_b if p in dict_b[sz]), 
+                               next((dict_a[sz][p]['orig'] for sz in dict_a if p in dict_a[sz]), p))
+                    
+                    # Tạo một dòng chứa thông tin so sánh cho từng Size
+                    row = {"POM Description": name}
+                    for sz in all_sizes:
+                        v1 = dict_a.get(sz, {}).get(p, {}).get('val')
+                        v2 = dict_b.get(sz, {}).get(p, {}).get('val')
+                        
+                        if v1 is not None and v2 is not None:
+                            diff = round(v2 - v1, 3)
+                            if diff == 0:
+                                row[f"Size {sz}"] = f"{v2} (OK)"
+                            else:
+                                row[f"Size {sz}"] = f"{v1} ➔ {v2} ({diff:+.2f})"
+                        else:
+                            row[f"Size {sz}"] = "-"
+                    final_rows.append(row)
+
+                st.write("### 📊 Kết quả đối soát chi tiết")
+                st.dataframe(
+                    pd.DataFrame(final_rows).style.apply(lambda x: ['background-color: #ffcccc' if '➔' in str(v) else '' for v in x], axis=1),
+                    use_container_width=True, height=600
+                )
