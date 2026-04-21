@@ -196,7 +196,7 @@ if mode == "Audit Mode":
                             st.info(f"Độ giống: {item['score']:.1%}")
 
 elif mode == "Version Control":
-    st.subheader("🔄 So sánh Toàn diện (Fix lỗi dính số & Ẩn số Bản A)")
+    st.subheader("🔄 So sánh Toàn diện (Tổng hợp tất cả Size)")
 
         # --- 1. CẢI TIẾN HÀM LÀM SẠCH POM (Giữ lại ý nghĩa mô tả) ---
     def clean_pom_strictly_v3(t):
