@@ -245,41 +245,47 @@ elif mode == "Version Control":
         except: return None
         return None
 
-    def get_specs_v18(content):
+        def get_specs_v19(content):
         specs_dict = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
+                # Quét tất cả các trang vì bảng Express thường nằm ở giữa/cuối file
                 for page in pdf.pages:
                     words = page.extract_words()
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # --- 1. TÌM HEADER SIZE TRONG VÙNG AN TOÀN (x > 250) ---
+                    # --- 1. TÌM HEADER VÙNG RỘNG (Hạ thấp x0 xuống 100 để bao quát bảng) ---
                     size_lanes = []
                     valid_sz = ["XXS","XS","S","M","L","XL","XXL","1X","2X","3X","00","000"]
+                    
                     for y, gp in df_w.groupby('top'):
                         candidates = []
                         for _, w in gp.iterrows():
                             t = w['text'].strip().upper()
-                            # Chỉ lấy số nguyên may mặc thực tế và nằm bên phải trang
+                            # Chấp nhận size chữ hoặc size số (Express: 24, 26, 28...)
                             is_size_char = t in valid_sz
-                            is_size_num = t.isdigit() and (0 <= int(t) <= 60) and (int(t) % 2 == 0 or int(t) > 20)
-                            if (is_size_char or is_size_num) and w['x0'] > 250:
+                            is_size_num = t.isdigit() and (0 <= int(t) <= 60)
+                            
+                            if (is_size_char or is_size_num) and w['x0'] > 100:
                                 candidates.append({"sz": t, "x0": w['x0']-12, "x1": w['x1']+25})
-                        if len(candidates) >= 3:
+                        
+                        # Nếu tìm thấy từ 4 cột size trở lên trên 1 hàng
+                        if len(candidates) >= 4:
                             size_lanes = candidates
                             break 
 
                     if not size_lanes: continue
                     first_sz_x = min([c['x0'] for c in size_lanes])
 
-                    # --- 2. QUÉT DỮ LIỆU ĐỐI CHIẾU TỌA ĐỘ ---
+                    # --- 2. QUÉT DỮ LIỆU ĐỐI CHIẾU ---
                     for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
                         if gp.empty: continue
                         sorted_gp = gp.sort_values('x0')
                         pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_sz_x]['text']).strip()
                         pom_key = clean_pom_universal(pom_raw)
-                        if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["PAGE", "SPEC", "COPYRIGHT"]):
+                        
+                        if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["PAGE", "COPYRIGHT", "SPEC"]):
                             for col in size_lanes:
                                 cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
                                 if not cell.empty:
@@ -287,6 +293,10 @@ elif mode == "Version Control":
                                     if val is not None:
                                         if col['sz'] not in specs_dict: specs_dict[col['sz']] = {}
                                         specs_dict[col['sz']][pom_key] = {"orig": pom_raw, "val": val}
+                
+                # Nếu đã quét hết các trang mà vẫn không có dữ liệu
+                if not specs_dict: return {}
+                
             return specs_dict
         except: return {}
 
