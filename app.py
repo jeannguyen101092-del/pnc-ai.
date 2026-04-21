@@ -168,32 +168,56 @@ with st.sidebar:
 
 # ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
-mode = st.radio("Chế độ:", ["Audit Mode", "Version Control"], horizontal=True)
+
+# Chuyển đổi các nhãn lựa chọn sang tiếng Anh
+mode = st.radio("Select Mode:", ["Audit Mode", "Version Control"], horizontal=True)
 
 if mode == "Audit Mode":
-   st.subheader("🔍 Search Similar Models")
-    target_file = st.file_uploader("Upload Target PDF", type=['pdf'], key=f"aud_{st.session_state['up_key']}")
+    st.subheader("🔍 Search Similar Models")
+    
+    # Đổi thông báo upload và spinner sang tiếng Anh
+    target_file = st.file_uploader("Upload Target Techpack (PDF)", type=['pdf'], key=f"aud_{st.session_state['up_key']}")
+    
     if target_file:
-        with st.spinner("Đang tìm kiếm..."):
+        with st.spinner("Searching for similar samples..."):
             t_data = extract_full_data(target_file.getvalue())
+            
             if t_data and t_data['img']:
                 t_vec = get_vector(t_data['img'])
+                
+                # Truy vấn dữ liệu từ Supabase
                 res = supabase.table("ai_data").select("file_name, image_url, vector").execute()
                 db_items = res.data
+                
                 if db_items and t_vec:
                     scores = []
                     for item in db_items:
                         if item['vector']:
-                            sim = cosine_similarity([t_vec], [item['vector']])
-                            scores.append({"name": item['file_name'], "url": item['image_url'], "score": sim[0][0]})
+                            # Tính toán độ tương đồng
+                            sim = cosine_similarity([t_vec], [eval(item['vector']) if isinstance(item['vector'], str) else item['vector']])
+                            scores.append({
+                                "name": item['file_name'], 
+                                "url": item['image_url'], 
+                                "score": sim[0][0]
+                            })
+                    
+                    # Lấy Top 8 mẫu giống nhất
                     top_8 = sorted(scores, key=lambda x: x['score'], reverse=True)[:8]
+                    
                     st.divider()
+                    st.write("### 🏆 Top Similar Matches")
+                    
                     cols = st.columns(4)
                     for idx, item in enumerate(top_8):
                         with cols[idx % 4]:
                             st.image(item['url'], use_container_width=True)
                             st.caption(f"**{item['name']}**")
-                            st.info(f"Độ giống: {item['score']:.1%}")
+                            # Đổi nhãn độ giống nhau sang tiếng Anh
+                            st.info(f"Similarity: {item['score']:.1%}")
+                else:
+                    st.warning("No data found in the database to compare.")
+            else:
+                st.error("Could not extract image from the uploaded PDF.")
 
 elif mode == "Version Control":
     # --- ĐỔI TÊN THÀNH TIẾNG ANH ---
