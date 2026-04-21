@@ -196,7 +196,12 @@ if mode == "Audit Mode":
                             st.info(f"Độ giống: {item['score']:.1%}")
 
 elif mode == "Version Control":
-    st.subheader("🔄 So sánh Toàn diện (Bản vạn năng - Đã fix nhiễu Express)")
+    st.subheader("🔄 Comprehensive Comparison")
+
+    # --- HÀM RESET HỆ THỐNG ---
+    if st.button("🗑️ Xóa tất cả & Làm mới hệ thống", use_container_width=True):
+        st.session_state.up_key += 1  # Thay đổi key để xóa file trong file_uploader
+        st.rerun()
 
     def clean_pom_universal(t):
         if not t: return ""
@@ -227,22 +232,17 @@ elif mode == "Version Control":
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # --- BỘ LỌC SIZE CHUẨN (Fix lỗi bốc nhầm MENS, ALL, 2024...) ---
                     size_lanes = []
-                    # Danh sách Size "vạn năng" bao quát mọi khách hàng
                     valid_patterns = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "1X", "2X", "3X", "000", "00"]
                     
                     for y, gp in df_w.groupby('top'):
                         candidates = []
                         for _, w in gp.iterrows():
                             t = w['text'].strip().upper().replace("*", "")
-                            # CHỈ CHẤP NHẬN: 1. Có trong list valid HOẶC 2. Là số nguyên từ 24-56
                             is_size_num = t.isdigit() and (24 <= int(t) <= 56 or t in ["0", "2", "4", "6", "8"])
                             is_size_char = t in valid_patterns
-                            
                             if (is_size_num or is_size_char) and w['x0'] > 180:
                                 candidates.append({"sz": t, "x0": w['x0']-12, "x1": w['x1']+28})
-                        
                         if len(candidates) >= 4:
                             size_lanes = candidates
                             break 
@@ -256,7 +256,6 @@ elif mode == "Version Control":
                         pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_x]['text']).strip()
                         pom_key = clean_pom_universal(pom_raw)
                         
-                        # Chỉ lấy dòng có mã POM (chứa số) để bỏ qua các dòng tiêu đề rác
                         if re.search(r'\d', pom_key) and not any(x in pom_raw.upper() for x in ["COPYRIGHT", "PRINTED", "PAGE"]):
                             for col in size_lanes:
                                 cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
@@ -267,12 +266,13 @@ elif mode == "Version Control":
             return specs_dict
         except: return {}
 
-    # --- UI & XUẤT FILE ---
-    f1 = st.file_uploader("Bản cũ (A)", type="pdf", key="u_a")
-    f2 = st.file_uploader("Bản mới (B)", type="pdf", key="u_b")
+    # --- UI UPLOAD (Sử dụng up_key để reset) ---
+    c1, c2 = st.columns(2)
+    f1 = c1.file_uploader("Bản cũ (A)", type="pdf", key=f"ua_{st.session_state.up_key}")
+    f2 = c2.file_uploader("Bản mới (B)", type="pdf", key=f"ub_{st.session_state.up_key}")
 
     if f1 and f2:
-        if st.button("⚡ CHẠY SO SÁNH TỔNG LỰC", use_container_width=True):
+        if st.button("⚡ RUN COMPREHENSIVE COMPARISON", use_container_width=True):
             d1, d2 = get_specs_universal(f1.getvalue()), get_specs_universal(f2.getvalue())
             if d1 and d2:
                 all_sz = sorted(list(set(d1.keys()) | set(d2.keys())), key=lambda x: str(x).zfill(3))
@@ -298,6 +298,6 @@ elif mode == "Version Control":
                     df_final.to_excel(writer, index=False)
                 st.download_button("📥 Tải báo cáo Excel", output.getvalue(), "Bao_cao_so_sanh.xlsx")
 
-                # Hiển thị bôi đỏ
+                # Hiển thị
                 st.dataframe(df_final.style.map(lambda x: 'background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(x) else ''), use_container_width=True, height=600)
             else: st.error("❌ Không tìm thấy bảng dữ liệu chuẩn.")
