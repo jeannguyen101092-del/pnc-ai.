@@ -199,37 +199,30 @@ elif mode == "Version Control":
     st.subheader("🔄 So sánh Toàn diện (Tổng hợp tất cả Size)")
 
         # --- 1. CẢI TIẾN HÀM LÀM SẠCH POM (Giữ lại ý nghĩa mô tả) ---
-    def clean_pom_strictly_v3(t):
+        # 1. Hàm làm sạch POM
+    def clean_pom_v4(t):
         if not t: return ""
         t = t.upper().strip()
-        # Loại bỏ số thứ tự đầu dòng ví dụ "01. ", "1 " 
-        t = re.sub(r'^\d+[\s\.]+', '', t)
-        # Chỉ xóa các ký tự đặc biệt rác, giữ lại chữ và số trong tên POM (ví dụ: 1/2 CHEST)
+        t = re.sub(r'^\d+[\s\.]+', '', t) 
         t = re.sub(r'[^A-Z0-9\s/]', '', t)
         return t.strip()
 
-    # --- 2. HÀM PARSE SỐ & PHÂN SỐ CHUẨN (Fix lỗi m[0]) ---
-    def parse_measurement(text):
+    # 2. Hàm xử lý số (phải để TRƯỚC khi gọi trong get_specs)
+    def parse_value(text):
         if not text: return None
         text = text.replace("-", " ").strip()
-        # Tìm phân số: ví dụ "31 1/4" hoặc "1/2" hoặc "31.5"
         m = re.findall(r"(\d+)\s+(\d+)/(\d+)|(\d+)/(\d+)|(\d+\.?\d*)", text)
         if not m: return None
-        
-        # m là một list các tuple, lấy tuple đầu tiên tìm được
-        t = m[0]
         try:
-            if t[0]: # Trường hợp: 31 1/4
-                return float(t[0]) + int(t[1])/int(t[2])
-            if t[3]: # Trường hợp: 1/2
-                return int(t[3])/int(t[4])
-            if t[5]: # Trường hợp: 31.5
-                return float(t[5])
+            t = m[0]
+            if t[0] and t[1]: return float(t[0]) + int(t[1])/int(t[2]) # Hỗn số
+            if t[3]: return int(t[3])/int(t[4]) # Phân số
+            if t[5]: return float(t[5]) # Số thập phân
         except: return None
         return None
 
-    # --- 3. THUẬT TOÁN ĐỊNH VỊ (Sửa phần lấy giá trị) ---
-            def get_specs_v5(content):
+    # 3. Hàm quét PDF (Hãy đảm bảo thụt lề đúng như thế này)
+    def get_specs_v5(content):
         specs_dict = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -238,45 +231,36 @@ elif mode == "Version Control":
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # 1. Tìm chính xác các cột Size để định vị
+                    # Tìm cột Size
                     size_lanes = []
                     sz_list = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "2X", "3X"]
-                    
                     for y, gp in df_w.groupby('top'):
-                        found_sizes = [w for _, w in gp.iterrows() if w['text'].strip().upper() in sz_list]
-                        if len(found_sizes) >= 3:
-                            for s in found_sizes:
-                                size_lanes.append({
-                                    "sz": s['text'].strip().upper(),
-                                    "x0": s['x0'] - 2, 
-                                    "x1": s['x1'] + 25 
-                                })
+                        found = [w for _, w in gp.iterrows() if w['text'].strip().upper() in sz_list]
+                        if len(found) >= 3:
+                            for s in found:
+                                size_lanes.append({"sz": s['text'].strip().upper(), "x0": s['x0']-2, "x1": s['x1']+25})
                             break 
 
                     if not size_lanes: continue
-                    first_sz_x = min([c['x0'] for c in size_lanes])
+                    first_x = min([c['x0'] for c in size_lanes])
 
-                    # 2. Gom cụm theo dòng (tầm 12px) để lấy cả số nguyên và phân số bên dưới
+                    # Quét dữ liệu (Gom dòng 12px để lấy phân số nằm dưới số nguyên)
                     for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
                         if gp.empty: continue
                         sorted_gp = gp.sort_values('x0')
+                        pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_x]['text']).strip()
+                        pom_c = clean_pom_v4(pom_raw)
                         
-                        # Lấy tên POM
-                        pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_sz_x]['text']).strip()
-                        pom_clean = clean_pom_v4(pom_raw)
-                        
-                        if len(pom_clean) > 3 and not any(x in pom_raw.upper() for x in ["PAGE", "STYLE"]):
+                        if len(pom_c) > 3 and not any(x in pom_raw.upper() for x in ["PAGE", "STYLE"]):
                             for col in size_lanes:
-                                # Lấy các chữ số nằm trong cột size này
-                                cell_words = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]['text'].values
-                                if len(cell_words) > 0:
-                                    val = parse_value(" ".join(cell_words))
-                                    if val is not None:
-                                        if col['sz'] not in specs_dict: specs_dict[col['sz']] = {}
-                                        specs_dict[col['sz']][pom_clean] = {"orig": pom_raw, "val": val}
+                                cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
+                                val = parse_value(" ".join(cell['text'].values))
+                                if val is not None:
+                                    if col['sz'] not in specs_dict: specs_dict[col['sz']] = {}
+                                    specs_dict[col['sz']][pom_c] = {"orig": pom_raw, "val": val}
             return specs_dict
-        except:
-            return {}
+        except: return {}
+
 
 
     # --- UI GIAO DIỆN ---
