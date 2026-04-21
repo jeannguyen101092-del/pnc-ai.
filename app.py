@@ -229,65 +229,53 @@ elif mode == "Version Control":
         return None
 
     # --- 3. THUẬT TOÁN ĐỊNH VỊ (Sửa phần lấy giá trị) ---
-        def get_specs_reitmans_v5(content):
+            def get_specs_v5(content):
         specs_dict = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
-                # Quét tất cả các trang, nhưng tập trung vào trang có bảng Grading (thường là cuối)
                 for page in pdf.pages:
                     words = page.extract_words()
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # Bước 1: Tìm hàng Header chứa danh sách Size
+                    # 1. Tìm chính xác các cột Size để định vị
                     size_lanes = []
-                    # Pattern chuẩn cho Reitmans: tìm dãy XXS, XS, S, M...
                     sz_list = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "2X", "3X"]
                     
-                    for y, gp in df_w.groupby('top'): # Reitmans Header thường nằm trên 1 đường thẳng 'top'
-                        row_text = [w['text'].strip().upper() for _, w in gp.iterrows()]
-                        # Nếu hàng này chứa ít nhất 3 size trong danh sách chuẩn
+                    for y, gp in df_w.groupby('top'):
                         found_sizes = [w for _, w in gp.iterrows() if w['text'].strip().upper() in sz_list]
-                        
                         if len(found_sizes) >= 3:
-                            # Tạo "làn đường" (lane) cho mỗi cột size dựa vào tọa độ x0, x1
                             for s in found_sizes:
                                 size_lanes.append({
                                     "sz": s['text'].strip().upper(),
-                                    "x0": s['x0'] - 5, # Nới rộng biên độ một chút
-                                    "x1": s['x1'] + 25  # Nới rộng sang phải để bao quát cả phân số
+                                    "x0": s['x0'] - 2, 
+                                    "x1": s['x1'] + 25 
                                 })
-                            break # Đã tìm thấy header, dừng tìm kiếm header
-                    
+                            break 
+
                     if not size_lanes: continue
-                    
-                    # Bước 2: Xác định ranh giới POM (thường bên trái cột size đầu tiên)
                     first_sz_x = min([c['x0'] for c in size_lanes])
-                    
-                    # Bước 3: Quét dữ liệu theo từng dòng POM
-                    # Gom nhóm các chữ theo cụm dòng (khoảng cách 10px để lấy cả số nguyên và phân số bên dưới)
-                    for y, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
+
+                    # 2. Gom cụm theo dòng (tầm 12px) để lấy cả số nguyên và phân số bên dưới
+                    for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
                         if gp.empty: continue
-                        
                         sorted_gp = gp.sort_values('x0')
-                        # Lấy POM Name
+                        
+                        # Lấy tên POM
                         pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_sz_x]['text']).strip()
                         pom_clean = clean_pom_v4(pom_raw)
                         
-                        if len(pom_clean) > 3:
+                        if len(pom_clean) > 3 and not any(x in pom_raw.upper() for x in ["PAGE", "STYLE"]):
                             for col in size_lanes:
-                                # Tìm tất cả các thành phần số trong ô này (cả số ở trên và phân số ở dưới)
-                                cell_elements = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
-                                if not cell_elements.empty:
-                                    cell_text = " ".join(cell_elements['text'])
-                                    val = parse_value(cell_text) # Hàm parse cũ sẽ tự cộng nếu text là "27 1/4"
-                                    
+                                # Lấy các chữ số nằm trong cột size này
+                                cell_words = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]['text'].values
+                                if len(cell_words) > 0:
+                                    val = parse_value(" ".join(cell_words))
                                     if val is not None:
                                         if col['sz'] not in specs_dict: specs_dict[col['sz']] = {}
                                         specs_dict[col['sz']][pom_clean] = {"orig": pom_raw, "val": val}
             return specs_dict
-        except Exception as e:
-            st.error(f"Lỗi đọc PDF: {e}")
+        except:
             return {}
 
 
