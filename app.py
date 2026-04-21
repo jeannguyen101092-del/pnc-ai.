@@ -174,7 +174,7 @@ if st.button("🗑️ Xóa file lỗi (không có ảnh)", use_container_width=T
 
         import requests
 
-for row in data:
+ for row in data:
     img_url = row.get("image_url")
     is_bad = False
 
