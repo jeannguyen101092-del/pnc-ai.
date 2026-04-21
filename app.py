@@ -246,7 +246,7 @@ elif mode == "Version Control":
         except: return None
         return None
 
-    def get_specs_v12(content):
+        def get_specs_v13(content):
         specs_dict = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -255,44 +255,42 @@ elif mode == "Version Control":
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # --- CẢI TIẾN: TÌM HEADER LINH HOẠT HƠN ---
+                    # --- 1. TÌM HEADER SIZE CHÍNH XÁC ---
                     size_lanes = []
-                    valid_patterns = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "1X", "2X", "3X", 
-                                     "000", "00", "0", "2", "4", "6", "8", "10", "12", "14", "16"]
+                    valid_sz = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "1X", "2X", "3X", 
+                                "000", "00", "0", "2", "4", "6", "8", "10", "12", "14", "16", "24", "26", "28", "30", "32"]
                     
                     for y, gp in df_w.groupby('top'):
-                        candidates = []
-                        for _, w in gp.iterrows():
-                            t = w['text'].strip().upper().replace("*", "")
-                            # Kiểm tra là Size chữ hoặc Size số (0-60)
-                            is_size_num = t.isdigit() and (0 <= int(t) <= 60)
-                            is_size_char = t in valid_patterns
-                            
-                            # Hạ thấp x0 xuống 100 để không bỏ lỡ bảng nằm rộng
-                            if (is_size_num or is_size_char) and w['x0'] > 100:
-                                candidates.append({"sz": t, "x0": w['x0']-12, "x1": w['x1']+30})
+                        # Điều kiện: Hàng phải chứa từ "SIZE" hoặc ít nhất 3 size chuẩn trong danh sách
+                        row_txt = " ".join(gp['text'].values).upper()
+                        candidates = [w for _, w in gp.iterrows() if w['text'].strip().upper() in valid_sz and w['x0'] > 150]
                         
-                        # Chỉ cần 3 cột size trở lên là chấp nhận
-                        if len(candidates) >= 3:
-                            size_lanes = candidates
+                        if len(candidates) >= 3 or "SIZE" in row_txt:
+                            for s in candidates:
+                                size_lanes.append({"sz": s['text'].strip().upper(), "x0": s['x0']-10, "x1": s['x1']+25})
                             break 
 
                     if not size_lanes: continue
-                    first_x = min([c['x0'] for c in size_lanes])
+                    first_sz_x = min([c['x0'] for c in size_lanes])
 
+                    # --- 2. QUÉT DỮ LIỆU ĐỐI CHIẾU TỌA ĐỘ ---
                     for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
                         if gp.empty: continue
                         sorted_gp = gp.sort_values('x0')
-                        pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_x]['text']).strip()
+                        
+                        # POM Description: Lấy phần văn bản bên trái cột Size đầu tiên
+                        pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_sz_x]['text']).strip()
                         pom_key = clean_pom_universal(pom_raw)
                         
-                        if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["COPYRIGHT", "PRINTED", "PAGE"]):
+                        if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["COPYRIGHT", "PAGE", "SPEC"]):
                             for col in size_lanes:
+                                # CHỈ lấy chữ số nằm TRONG phạm vi tọa độ x0, x1 của cột size đó
                                 cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
-                                val = parse_value_universal(" ".join(cell['text'].values))
-                                if val is not None:
-                                    if col['sz'] not in specs_dict: specs_dict[col['sz']] = {}
-                                    specs_dict[col['sz']][pom_key] = {"orig": pom_raw, "val": val}
+                                if not cell.empty:
+                                    val = parse_value_universal(" ".join(cell['text'].values))
+                                    if val is not None:
+                                        if col['sz'] not in specs_dict: specs_dict[col['sz']] = {}
+                                        specs_dict[col['sz']][pom_key] = {"orig": pom_raw, "val": val}
             return specs_dict
         except: return {}
 
