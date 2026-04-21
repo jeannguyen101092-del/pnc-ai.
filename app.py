@@ -196,15 +196,17 @@ if mode == "Audit Mode":
                             st.info(f"Độ giống: {item['score']:.1%}")
 
 elif mode == "Version Control":
-    st.subheader("🔄 So sánh Toàn diện (Đa khách hàng: Reitmans & Everlane)")
+    st.subheader("🔄 So sánh Toàn diện (Bản A vs Bản B)")
 
+    # 1. Làm sạch mã POM để đối soát 2 bản
     def clean_pom_final(t):
         if not t: return ""
         t = t.upper().strip()
-        match = re.search(r'([A-Z]*\d{2,4})', t)
+        match = re.search(r'([A-Z]*\d{2,4})', t) # Tìm mã số như C112 hoặc LGT-001
         if match: return match.group(1)
         return re.sub(r'[^A-Z0-9]', '', t)
 
+    # 2. Xử lý số và phân số (27 1/4 -> 27.25)
     def parse_value_final(text):
         if not text: return None
         text = text.replace("-", " ").strip()
@@ -218,7 +220,8 @@ elif mode == "Version Control":
         except: return None
         return None
 
-    def get_specs_v9(content):
+    # 3. Hàm quét dữ liệu vạn năng
+    def get_specs_v10(content):
         specs_dict = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -227,26 +230,25 @@ elif mode == "Version Control":
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # 1. TÌM HEADER SIZE CHUẨN (Lọc bỏ IN, ALL, ARE...)
+                    # Tìm Header Size (Lọc rác IN, ALL, ARE...)
                     size_lanes = []
                     valid_sz = ["000", "00", "0", "2", "4", "6", "8", "10", "12", "14", "16", "XXS", "XS", "S", "M", "L", "XL", "2X", "3X"]
                     for y, gp in df_w.groupby('top'):
                         candidates = [w for _, w in gp.iterrows() if w['text'].strip().upper() in valid_sz and w['x0'] > 180]
                         if len(candidates) >= 4:
                             for s in candidates:
-                                size_lanes.append({"sz": s['text'].strip().upper(), "x0": s['x0']-10, "x1": s['x1']+28})
+                                size_lanes.append({"sz": s['text'].strip().upper(), "x0": s['x0']-12, "x1": s['x1']+28})
                             break 
                     if not size_lanes: continue
                     first_x = min([c['x0'] for c in size_lanes])
 
-                    # 2. QUÉT DỮ LIỆU
+                    # Quét dữ liệu từng dòng
                     for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
                         if gp.empty: continue
                         sorted_gp = gp.sort_values('x0')
                         pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_x]['text']).strip()
                         pom_key = clean_pom_final(pom_raw)
-                        
-                        if len(pom_key) >= 3 and not any(x in pom_raw.upper() for x in ["PAGE", "PRINTED", "CHART"]):
+                        if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["PAGE", "PRINTED", "CHART"]):
                             for col in size_lanes:
                                 cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
                                 val = parse_value_final(" ".join(cell['text'].values))
@@ -256,16 +258,18 @@ elif mode == "Version Control":
             return specs_dict
         except: return {}
 
-    f1 = st.file_uploader("Bản cũ (A)", type="pdf", key="f1_v9")
-    f2 = st.file_uploader("Bản mới (B)", type="pdf", key="f2_v9")
+    # --- Giao diện Upload ---
+    f1 = st.file_uploader("Bản cũ (A)", type="pdf", key="v10_a")
+    f2 = st.file_uploader("Bản mới (B)", type="pdf", key="v10_b")
 
     if f1 and f2:
         if st.button("⚡ CHẠY SO SÁNH BIẾN ĐỘNG", use_container_width=True):
-            d1, d2 = get_specs_v9(f1.getvalue()), get_specs_v9(f2.getvalue())
+            d1, d2 = get_specs_v10(f1.getvalue()), get_specs_v10(f2.getvalue())
             if d1 and d2:
                 all_sz = sorted(list(set(d1.keys()) | set(d2.keys())), key=lambda x: str(x).zfill(3))
                 all_keys = sorted(list(set([k for s in d1 for k in d1[s]]) | set([k for s in d2 for k in d2[s]])))
-                rows = []
+                
+                final_rows = []
                 for k in all_keys:
                     name = next((d2[s][k]['orig'] for s in d2 if k in d2[s]), next((d1[s][k]['orig'] for s in d1 if k in d1[s]), k))
                     row = {"POM Description": name}
@@ -273,8 +277,17 @@ elif mode == "Version Control":
                         v1, v2 = d1.get(sz, {}).get(k, {}).get('val'), d2.get(sz, {}).get(k, {}).get('val')
                         if v1 is not None and v2 is not None:
                             diff = round(v2 - v1, 3)
-                            row[sz] = f"{v2}" if abs(diff) < 0.01 else f"{v1} ➔ {v2} [{diff:+.2f}]"
+                            # Hiển thị theo yêu cầu: Khớp hiện giá trị, lệch hiện A ➔ B [+/-]
+                            if abs(diff) < 0.01:
+                                row[sz] = f"{v2}"
+                            else:
+                                row[sz] = f"{v1} ➔ {v2} [{diff:+.2f}]"
                         else: row[sz] = "-"
-                    rows.append(row)
-                st.dataframe(pd.DataFrame(rows).style.map(lambda x: 'background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(x) else ''), use_container_width=True, height=600)
+                    final_rows.append(row)
+
+                # Hiển thị bảng
+                st.dataframe(
+                    pd.DataFrame(final_rows).style.map(lambda x: 'background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(x) else ''),
+                    use_container_width=True, height=600
+                )
             else: st.error("❌ Không tìm thấy bảng thông số.")
