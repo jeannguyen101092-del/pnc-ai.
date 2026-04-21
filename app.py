@@ -1,58 +1,48 @@
 import streamlit as st
 import io, fitz, pdfplumber, re, pandas as pd, numpy as np
-import torch, hashlib, time, uuid, requests, gc  # Thêm gc để dọn RAM
+import torch, hashlib, time, uuid, requests
 from PIL import Image, ImageOps, ImageEnhance
 from torchvision import models, transforms
+from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
 # ================= 1. CONFIGURATION =================
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
-supabase = create_client("YOUR_URL", "YOUR_KEY")
+supabase = create_client(URL, KEY)
 BUCKET = "fashion-imgs"
 
 st.set_page_config(layout="wide", page_title="PPJ AI Auditor Pro", page_icon="👔")
 
 if 'up_key' not in st.session_state: st.session_state['up_key'] = 0
+if 'ver_results' not in st.session_state: st.session_state['ver_results'] = None
 
-# ================= 2. AI CORE (OPTIMIZED) =================
+# ================= 2. AI CORE =================
 @st.cache_resource
 def load_model():
-    # Dùng ResNet18 nhưng ép về chế độ CPU và eval để nhẹ RAM
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-    model = torch.nn.Sequential(*(list(model.children())[:-1]))
-    return model.eval()
-
+    return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
 model_ai = load_model()
 
 def get_vector(img_bytes):
     try:
-        with Image.open(io.BytesIO(img_bytes)) as img:
-            img = img.convert('RGB')
-            w, h = img.size
-            img = img.crop((w*0.20, h*0.12, w*0.80, h*0.50)) 
-            img = ImageOps.grayscale(img)
-            img = ImageEnhance.Contrast(img).enhance(2.5).convert('RGB')
-            
-            tf = transforms.Compose([
-                transforms.Resize((224, 224)),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-            ])
-            
-            with torch.no_grad():
-                tensor = tf(img).unsqueeze(0)
-                vec = model_ai(tensor).flatten().numpy()
-                # Xóa tensor ngay sau khi tính xong
-                del tensor
-                
-                norm = np.linalg.norm(vec)
-                return (vec / norm).astype(np.float32).tolist() if norm > 0 else vec.tolist()
+        img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
+        w, h = img.size
+        img = img.crop((w*0.20, h*0.12, w*0.80, h*0.50)) 
+        img = ImageOps.grayscale(img)
+        img = ImageEnhance.Contrast(img).enhance(2.5).convert('RGB')
+        tf = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+        with torch.no_grad():
+            vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
+            norm = np.linalg.norm(vec)
+            return (vec / norm).astype(float).tolist() if norm > 0 else vec.tolist()
     except: return None
-    finally:
-        gc.collect() # Dọn dẹp RAM sau mỗi lần xử lý ảnh
 
-# ================= 3. SCRAPER (GIỮ NGUYÊN) =================
+# ================= 3. SCRAPER =================
 def parse_val(t):
     try:
         t = str(t).replace('"', '').strip().lower().replace(',', '.')
@@ -67,94 +57,134 @@ def parse_val(t):
 
 def extract_full_data(file_content):
     all_specs, img_bytes = {}, None
+    SIZE_PATTERN = r'^(xs|s|m|l|xl|xxl|\d+|[a-z]?\d+-\d+|[a-z]?\d+\.\d+)$'
     try:
         doc = fitz.open(stream=file_content, filetype="pdf")
-        page = doc.load_page(0)
-        pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # Giảm scale xuống 1.5 để nhẹ RAM
+        pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
         img_bytes = pix.tobytes("png")
         doc.close()
-        # Giải phóng bộ nhớ fitz
-        del doc, page, pix
-        gc.collect()
+        with pdfplumber.open(io.BytesIO(file_content)) as pdf:
+            for page in pdf.pages:
+                words = page.extract_words()
+                if not words: continue
+                df_w = pd.DataFrame(words)
+                df_w['y_grid'] = df_w['top'].round(0)
+                size_cols = []
+                for y, group in df_w.groupby('y_grid'):
+                    line_txt = " ".join(group.sort_values('x0')['text']).lower()
+                    if any(x in line_txt for x in ["size", "spec", "adopted"]):
+                        for _, row in group.iterrows():
+                            txt = row['text'].strip().lower()
+                            if re.match(SIZE_PATTERN, txt) and row['x0'] > 200:
+                                size_cols.append({"sz": txt.upper(), "x0": row['x0']-10, "x1": row['x1']+10})
+                        if size_cols: break
+                for y, group in df_w.groupby('y_grid'):
+                    sorted_group = group.sort_values('x0')
+                    pom_name = " ".join(sorted_group[sorted_group['x1'] < 300]['text']).strip()
+                    if 3 < len(pom_name) < 65 and not any(x in pom_name.upper() for x in ["STYLE", "DATE", "FABRIC", "PAGE"]):
+                        for col in size_cols:
+                            cell = sorted_group[(sorted_group['x0'] >= col['x0']) & (sorted_group['x1'] <= col['x1'])]
+                            if not cell.empty:
+                                val = parse_val(" ".join(cell['text']))
+                                if val > 0:
+                                    if col['sz'] not in all_specs: all_specs[col['sz']] = {}
+                                    all_specs[col['sz']][pom_name] = val
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
-# ================= 4. SIDEBAR (TỐI ƯU RAM & LỌC DỮ LIỆU) =================
+def to_excel(df_list, sheet_names):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        for df, name in zip(df_list, sheet_names):
+            df.to_excel(writer, index=False, sheet_name=str(name)[:31])
+    return output.getvalue()
+
+# ================= 4. SIDEBAR (INCLUDES STORAGE METRIC) =================
+# ================= 4. SIDEBAR (BẢN FIX LỖI COLUMN SPECS) =================
+# ================= 4. SIDEBAR (BẢN ĐẦY ĐỦ CÓ LỌC & DỌN DẸP) =================
+# ================= 4. SIDEBAR (BẢN FIX LỖI & DỌN DEP) =================
 with st.sidebar:
-    st.markdown("<h2 style='color: #1E3A8A;'>PPJ GROUP</h2>", unsafe_allow_html=True)
+    st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     
-    # Hiển thị số lượng
     try:
         res_db = supabase.table("ai_data").select("id", count="exact").execute()
         current_count = res_db.count or 0
-    except: current_count = 0
+    except:
+        current_count = 0
     
     st.metric("Models in Repo", f"{current_count} SKUs")
+    storage_mb = current_count * 0.08
+    st.write(f"💾 **Storage:** {storage_mb:.1f}MB / 1024MB")
+    st.progress(min(storage_mb/1024, 1.0))
     
-    # NÚT DỌN DẸP NÂNG CAO (Check dung lượng để xóa file trắng)
-    if st.button("🧹 Dọn dẹp Database (Xóa file rác)", use_container_width=True):
-        with st.spinner("Đang thanh lọc..."):
+    # --- ĐOẠN CODE DỌN DẸP BỎ VÀO ĐÂY ---
+    if st.button("🧹 Dọn dẹp data lỗi (Không ảnh)", use_container_width=True):
+        with st.spinner("Đang quét và lọc dữ liệu rác..."):
             all_data = supabase.table("ai_data").select("id, image_url").execute()
-            deleted = 0
+            deleted_count = 0
             for item in all_data.data:
                 try:
-                    r = requests.get(item['image_url'], timeout=5)
-                    if len(r.content) < 15000: # File < 15KB thường là trắng
+                    # Kiểm tra dung lượng ảnh preview, nếu < 15KB thường là trang trắng/chỉ có chữ
+                    img_res = requests.get(item['image_url'])
+                    if len(img_res.content) < 15000: 
                         supabase.table("ai_data").delete().eq("id", item['id']).execute()
-                        deleted += 1
-                    del r
+                        deleted_count += 1
                 except: continue
-            st.success(f"Đã xóa {deleted} mẫu lỗi.")
-            gc.collect()
+            st.success(f"🔥 Đã xóa {deleted_count} dòng không có ảnh!")
+            time.sleep(1)
             st.rerun()
+
+    if st.button("🔄 Làm mới số lượng"): st.rerun()
 
     st.divider()
     st.subheader("📥 Nạp kho mẫu mới")
-    up_new = st.file_uploader("Upload PDF", accept_multiple_files=True, key=f"up_{st.session_state['up_key']}")
+    up_new = st.file_uploader("Upload Tech-Packs", accept_multiple_files=True, key=f"side_up_{st.session_state['up_key']}")
     
     if up_new and st.button("🚀 ĐẨY VÀO KHO", use_container_width=True):
         p_bar = st.progress(0)
+        status = st.empty()
+        
         for i, f in enumerate(up_new):
             try:
-                f_bytes = f.getvalue()
-                doc = fitz.open(stream=f_bytes, filetype="pdf")
+                # 1. Mở file PDF kiểm tra ảnh trước
+                doc = fitz.open(stream=f.getvalue(), filetype="pdf")
                 page = doc.load_page(0)
                 
-                # Kiểm tra ảnh (Chặn file chỉ có bảng biểu)
+                # CHẶN FILE KHÔNG CÓ ẢNH NGAY TỪ ĐẦU
                 if len(page.get_images()) == 0:
-                    st.warning(f"Bỏ qua {f.name} (Không ảnh)")
+                    st.warning(f"⏩ Bỏ qua {f.name}: File chỉ có chữ/bảng biểu.")
                     doc.close()
-                    continue
+                    continue 
 
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-                img_png = pix.tobytes("png")
-                
-                # Upload & Vector
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+                img_bytes = pix.tobytes("png")
+                doc.close()
+
                 unique_id = str(uuid.uuid4())[:8]
-                path = f"sketches/{unique_id}_{f.name}.png"
-                supabase.storage.from_(BUCKET).upload(path, img_png)
+                new_fname = f"{unique_id}_{f.name.replace(' ', '_')}.webp"
+                
+                path = f"sketches/{new_fname}"
+                supabase.storage.from_(BUCKET).upload(path, img_bytes)
                 img_url = supabase.storage.from_(BUCKET).get_public_url(path)
                 
-                v_data = get_vector(img_png)
-                supabase.table("ai_data").insert({"file_name": f.name, "image_url": img_url, "vector": v_data}).execute()
+                vector_data = get_vector(img_bytes)
+
+                supabase.table("ai_data").insert({
+                    "file_name": str(f.name),
+                    "image_url": str(img_url),
+                    "vector": vector_data
+                }).execute()
                 
-                # GIẢI PHÓNG RAM NGAY LẬP TỨC
-                doc.close()
-                del doc, page, pix, img_png, f_bytes
-                gc.collect() 
-                
+                status.success(f"✅ Đã nạp: {f.name}")
                 p_bar.progress((i + 1) / len(up_new))
+
             except Exception as e:
-                st.error(f"Lỗi: {f.name}")
+                st.error(f"❌ Lỗi: {str(e)}")
         
+        st.success("🎉 Hoàn tất!")
         st.session_state['up_key'] += 1
+        time.sleep(1)
         st.rerun()
-
-# ================= 5. MAIN UI =================
-st.title("👔 AI SMART AUDITOR PRO")
-# ... (Phần UI tìm kiếm của bạn giữ nguyên, lưu ý dùng gc.collect() sau khi loop so sánh xong)
-
-
 
 
 
