@@ -198,7 +198,6 @@ if mode == "Audit Mode":
 elif mode == "Version Control":
     st.subheader("🔄 So sánh Toàn diện (Bản A vs Bản B)")
 
-    # Danh sách Size chuẩn để sắp xếp cột
     sz_list = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "1X", "2X", "3X"]
 
     def clean_pom_v6(t):
@@ -278,7 +277,7 @@ elif mode == "Version Control":
                         
                         if v1 is not None and v2 is not None:
                             diff = round(v2 - v1, 3)
-                            # Hiển thị Giá trị [Chênh lệch] - Luôn hiện diff theo yêu cầu
+                            # Hiển thị số liệu [chênh lệch] theo yêu cầu
                             if abs(diff) < 0.001:
                                 row[f"Size {sz}"] = f"{v2} [0]"
                             else:
@@ -289,11 +288,17 @@ elif mode == "Version Control":
                     final_rows.append(row)
 
                 df_final = pd.DataFrame(final_rows)
-                st.write("### 📊 Bảng đối soát chi tiết (Khớp hiện [0], lệch hiện [+/-])")
+                st.write("### 📊 Kết quả: Khớp hiện [0], lệch hiện [+/-]")
                 
+                # Hàm tô màu những ô có chênh lệch khác 0
                 def highlight_diff(val):
-                    if '➔' in str(val) or ('[' in str(val) and '[0]' not in str(val)):
+                    if '[' in str(val) and '[0]' not in str(val) and '-' not in str(val).split('[')[1]:
+                        # Nếu có chênh lệch dương hoặc âm (không phải [0])
+                        if '➔' in str(val):
+                            return 'background-color: #ffcccc; color: #b91c1c; font-weight: bold'
+                    elif '[' in str(val) and '[0]' not in str(val): # Trường hợp chênh lệch âm
                         return 'background-color: #ffcccc; color: #b91c1c; font-weight: bold'
                     return ''
 
-                st.dataframe(df_final.style.applymap(highlight_diff), use_container_width=True, height=600)
+                # Sử dụng .map() thay cho .applymap() để tránh lỗi AttributeError
+                st.dataframe(df_final.style.map(highlight_diff), use_container_width=True, height=600)
