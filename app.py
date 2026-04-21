@@ -7,6 +7,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from supabase import create_client
 
 # ================= 1. CONFIGURATION =================
+# Thay thế URL và KEY thực tế của bạn ở đây
 URL= "https://ewqqodsfvlvnrzsylawy.supabase.co"
 KEY = "sb_publishable_yxioECJT07sMQWL_rtSyFg_vJ1DF2ri"
 supabase = create_client(URL, KEY)
@@ -20,27 +21,33 @@ if 'ver_results' not in st.session_state: st.session_state['ver_results'] = None
 # ================= 2. AI CORE =================
 @st.cache_resource
 def load_model():
+    # Sử dụng weights=None và load sau để tránh tốn RAM khi khởi động
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
+
 model_ai = load_model()
 
 def get_vector(img_bytes):
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
         w, h = img.size
+        # Crop & Preprocess như logic cũ của bạn
         img = img.crop((w*0.20, h*0.12, w*0.80, h*0.50)) 
         img = ImageOps.grayscale(img)
         img = ImageEnhance.Contrast(img).enhance(2.5).convert('RGB')
+        
         tf = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
+        
         with torch.no_grad():
             vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
             norm = np.linalg.norm(vec)
             return (vec / norm).astype(float).tolist() if norm > 0 else vec.tolist()
-    except: return None
+    except Exception as e:
+        return None
 
 # ================= 3. SCRAPER =================
 def parse_val(t):
@@ -59,10 +66,11 @@ def extract_full_data(file_content):
     all_specs, img_bytes = {}, None
     SIZE_PATTERN = r'^(xs|s|m|l|xl|xxl|\d+|[a-z]?\d+-\d+|[a-z]?\d+\.\d+)$'
     try:
-        doc = fitz.open(stream=file_content, filetype="pdf")
-        pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-        img_bytes = pix.tobytes("png")
-        doc.close()
+        # Tối ưu: Dùng context manager 'with' để tự giải phóng RAM sau khi đọc PDF
+        with fitz.open(stream=file_content, filetype="pdf") as doc:
+            pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+            img_bytes = pix.tobytes("png")
+
         with pdfplumber.open(io.BytesIO(file_content)) as pdf:
             for page in pdf.pages:
                 words = page.extract_words()
@@ -78,6 +86,7 @@ def extract_full_data(file_content):
                             if re.match(SIZE_PATTERN, txt) and row['x0'] > 200:
                                 size_cols.append({"sz": txt.upper(), "x0": row['x0']-10, "x1": row['x1']+10})
                         if size_cols: break
+                
                 for y, group in df_w.groupby('y_grid'):
                     sorted_group = group.sort_values('x0')
                     pom_name = " ".join(sorted_group[sorted_group['x1'] < 300]['text']).strip()
@@ -92,21 +101,14 @@ def extract_full_data(file_content):
         return {"all_specs": all_specs, "img": img_bytes}
     except: return None
 
-def to_excel(df_list, sheet_names):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        for df, name in zip(df_list, sheet_names):
-            df.to_excel(writer, index=False, sheet_name=str(name)[:31])
-    return output.getvalue()
-
-# ================= 4. SIDEBAR (INCLUDES STORAGE METRIC) =================
-# ================= 4. SIDEBAR (BẢN FIX LỖI COLUMN SPECS) =================
+# ================= 4. SIDEBAR =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     
     try:
-        res_db = supabase.table("ai_data").select("id", count="exact").execute()
-        current_count = res_db.count or 0
+        # Tối ưu đếm số lượng bản ghi
+        res_db = supabase.table("ai_data").select("id", count="exact").limit(1).execute()
+        current_count = res_db.count if res_db.count else 0
     except:
         current_count = 0
     
@@ -115,7 +117,7 @@ with st.sidebar:
     st.write(f"💾 **Storage:** {storage_mb:.1f}MB / 1024MB")
     st.progress(min(storage_mb/1024, 1.0))
     
-    if st.button("🔄 Làm mới số lượng"): st.rerun()
+    if st.button("🔄 Làm mới trang"): st.rerun()
 
     st.divider()
     st.subheader("📥 Nạp kho mẫu mới")
@@ -127,13 +129,14 @@ with st.sidebar:
         
         for i, f in enumerate(up_new):
             try:
-                # 1. Lấy ảnh trang 1
-                doc = fitz.open(stream=f.getvalue(), filetype="pdf")
-                pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-                img_bytes = pix.tobytes("png")
-                doc.close()
+                # 1. Đọc nội dung file
+                f_content = f.getvalue()
+                
+                # 2. Lấy ảnh trang 1 (Dùng with để tránh leak RAM)
+                with fitz.open(stream=f_content, filetype="pdf") as doc:
+                    pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # Giảm matrix xuống 1.5 để tiết kiệm RAM
+                    img_bytes = pix.tobytes("png")
 
-                # 2. Tạo ID và tên file duy nhất
                 unique_id = str(uuid.uuid4())[:8]
                 new_fname = f"{unique_id}_{f.name.replace(' ', '_')}.webp"
                 
@@ -145,7 +148,7 @@ with st.sidebar:
                 # 4. Tính Vector
                 vector_data = get_vector(img_bytes)
 
-                # 5. Ghi vào Database (ĐÃ BỎ CỘT 'specs' ĐỂ KHÔNG BÁO LỖI)
+                # 5. Ghi vào Database
                 supabase.table("ai_data").insert({
                     "file_name": str(f.name),
                     "image_url": str(img_url),
@@ -154,70 +157,64 @@ with st.sidebar:
                 
                 status.success(f"✅ Đã nạp: {f.name}")
                 p_bar.progress((i + 1) / len(up_new))
+                
+                # Xóa dữ liệu tạm để giải phóng RAM ngay lập tức
+                del f_content, img_bytes
 
             except Exception as e:
-                st.error(f"❌ Lỗi: {str(e)}")
+                st.error(f"❌ Lỗi tại file {f.name}: {str(e)}")
         
         st.success("🎉 Nạp kho hoàn tất!")
         st.session_state['up_key'] += 1
-        time.sleep(1)
+        time.sleep(1.5)
         st.rerun()
-
-
-
 
 # ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
 
-# Chuyển đổi các nhãn lựa chọn sang tiếng Anh
 mode = st.radio("Select Mode:", ["Audit Mode", "Version Control"], horizontal=True)
 
 if mode == "Audit Mode":
     st.subheader("🔍 Search Similar Models")
-    
-    # Đổi thông báo upload và spinner sang tiếng Anh
-    target_file = st.file_uploader("Upload Target Techpack (PDF)", type=['pdf'], key=f"aud_{st.session_state['up_key']}")
+    target_file = st.file_uploader("Upload Target Techpack (PDF)", type=['pdf'], key=f"aud_file")
     
     if target_file:
-        with st.spinner("Searching for similar samples..."):
+        with st.spinner("Analyzing and searching..."):
             t_data = extract_full_data(target_file.getvalue())
             
             if t_data and t_data['img']:
                 t_vec = get_vector(t_data['img'])
                 
-                # Truy vấn dữ liệu từ Supabase
+                # Truy vấn vector từ DB
                 res = supabase.table("ai_data").select("file_name, image_url, vector").execute()
                 db_items = res.data
                 
                 if db_items and t_vec:
                     scores = []
+                    t_vec_np = np.array(t_vec).reshape(1, -1)
+                    
                     for item in db_items:
                         if item['vector']:
-                            # Tính toán độ tương đồng
-                            sim = cosine_similarity([t_vec], [eval(item['vector']) if isinstance(item['vector'], str) else item['vector']])
+                            db_vec_np = np.array(item['vector']).reshape(1, -1)
+                            sim = cosine_similarity(t_vec_np, db_vec_np)[0][0]
                             scores.append({
-                                "name": item['file_name'], 
-                                "url": item['image_url'], 
-                                "score": sim[0][0]
+                                "name": item['file_name'],
+                                "url": item['image_url'],
+                                "score": sim
                             })
                     
-                    # Lấy Top 8 mẫu giống nhất
-                    top_8 = sorted(scores, key=lambda x: x['score'], reverse=True)[:8]
+                    # Sắp xếp và hiển thị kết quả
+                    scores = sorted(scores, key=lambda x: x['score'], reverse=True)[:5]
                     
-                    st.divider()
-                    st.write("### 🏆 Top Similar Matches")
-                    
-                    cols = st.columns(4)
-                    for idx, item in enumerate(top_8):
-                        with cols[idx % 4]:
-                            st.image(item['url'], use_container_width=True)
-                            st.caption(f"**{item['name']}**")
-                            # Đổi nhãn độ giống nhau sang tiếng Anh
-                            st.info(f"Similarity: {item['score']:.1%}")
+                    cols = st.columns(5)
+                    for idx, s in enumerate(scores):
+                        with cols[idx]:
+                            st.image(s['url'], caption=f"Score: {s['score']:.2%}")
+                            st.caption(s['name'])
                 else:
-                    st.warning("No data found in the database to compare.")
+                    st.warning("No data found in repository to compare.")
             else:
-                st.error("Could not extract image from the uploaded PDF.")
+                st.error("Could not extract data from the uploaded PDF.")
 
 elif mode == "Version Control":
     st.subheader("🔄 Comprehensive Comparison")
