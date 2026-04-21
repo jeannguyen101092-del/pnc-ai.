@@ -220,7 +220,7 @@ elif mode == "Version Control":
         except: return None
         return None
 
-    def get_specs_universal(content):
+        def get_specs_universal(content):
         specs_dict = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -229,32 +229,42 @@ elif mode == "Version Control":
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # 1. TÌM HEADER SIZE TỰ ĐỘNG (Dựa trên hàng có nhiều số/chữ ngắn)
+                    # 1. TÌM HEADER SIZE CỰC CHUẨN
                     size_lanes = []
+                    # Danh sách các Size phổ biến của cả Reitmans và Everlane
+                    valid_sizes = ["000", "00", "0", "2", "4", "6", "8", "10", "12", "14", "16", 
+                                   "XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL", "1X", "2X", "3X"]
+                    
                     for y, gp in df_w.groupby('top'):
-                        sorted_gp = gp.sort_values('x0')
-                        candidates = []
-                        for _, r in sorted_gp.iterrows():
-                            t = r['text'].strip().upper()
-                            # Điều kiện: Chữ ngắn hoặc số đo, nằm từ giữa trang sang phải
-                            if 1 <= len(t) <= 4 and r['x0'] > 180:
-                                if not any(x in t for x in ["TOL", "SPEC", "PAGE", "DATE"]):
-                                    candidates.append({"sz": t, "x0": r['x0']-12, "x1": r['x1']+15})
-                        if len(candidates) >= 4: # Thường có ít nhất 4 size
-                            size_lanes = candidates
+                        # Chỉ lấy những từ nằm trong danh sách Size hợp lệ và nằm ở nửa phải trang giấy
+                        candidates = [w for _, w in gp.iterrows() if w['text'].strip().upper() in valid_sizes and w['x0'] > 180]
+                        
+                        # Nếu một dòng có từ 4 cột size trở lên thì mới là hàng Header chuẩn
+                        if len(candidates) >= 4:
+                            for s in candidates:
+                                size_lanes.append({
+                                    "sz": s['text'].strip().upper(),
+                                    "x0": s['x0'] - 10, # Nới lề trái ô
+                                    "x1": s['x1'] + 25  # Nới lề phải ô để lấy đủ phân số
+                                })
                             break 
 
                     if not size_lanes: continue
+                    
+                    # Xác định vị trí bắt đầu của cột Size đầu tiên để tách cột POM Description
                     first_x = min([c['x0'] for c in size_lanes])
 
-                    # 2. QUÉT DỮ LIỆU DÒNG (Dùng bin 12px để gom số nguyên + phân số tầng dưới)
+                    # 2. QUÉT DỮ LIỆU (Gom cụm 12px để lấy số nguyên + phân số tầng dưới)
                     for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
                         if gp.empty: continue
                         sorted_gp = gp.sort_values('x0')
-                        pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_x]['text']).strip()
-                        pom_key = clean_pom_final(pom_raw)
                         
-                        if len(pom_key) >= 2:
+                        # Lấy POM Description (tất cả chữ bên trái cột Size đầu tiên)
+                        pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_x]['text']).strip()
+                        pom_key = clean_pom_final(pom_raw) # Dùng hàm clean đã viết ở turn trước
+                        
+                        # Lọc bỏ dòng rác (không phải POM thực sự)
+                        if len(pom_key) >= 3 and not any(x in pom_raw.upper() for x in ["PAGE", "PRINTED", "POWERED", "CHART"]):
                             for col in size_lanes:
                                 cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
                                 val = parse_value_final(" ".join(cell['text'].values))
@@ -263,6 +273,7 @@ elif mode == "Version Control":
                                     specs_dict[col['sz']][pom_key] = {"orig": pom_raw, "val": val}
             return specs_dict
         except: return {}
+
 
     f1 = st.file_uploader("Bản cũ (A)", type="pdf", key="f1_final")
     f2 = st.file_uploader("Bản mới (B)", type="pdf", key="f2_final")
