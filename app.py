@@ -245,7 +245,7 @@ elif mode == "Version Control":
         except: return None
         return None
 
-    def get_specs_v19(content):
+        def get_specs_v20(content):
         specs_dict = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -254,31 +254,44 @@ elif mode == "Version Control":
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # Tìm Header Size (Quét rộng x0 > 100 để không bỏ lỡ bảng Express)
+                    # --- 1. SIÊU BỘ LỌC HEADER (Chỉ lấy Size thật, loại bỏ số rác 001, 1, 2...) ---
                     size_lanes = []
-                    valid_sz = ["XXS","XS","S","M","L","XL","XXL","1X","2X","3X","00","000"]
+                    # Danh sách Size chữ chuẩn
+                    char_sizes = ["XXS","XS","S","M","L","XL","XXL","3XL","1X","2X","3X","00","000"]
+                    
                     for y, gp in df_w.groupby('top'):
                         candidates = []
                         for _, w in gp.iterrows():
-                            t = w['text'].strip().upper()
-                            is_size_char = t in valid_sz
-                            is_size_num = t.isdigit() and (0 <= int(t) <= 60)
-                            if (is_size_char or is_size_num) and w['x0'] > 100:
+                            t = w['text'].strip().upper().replace("*", "")
+                            # Điều kiện 1: Là size chữ chuẩn
+                            is_char = t in char_sizes
+                            # Điều kiện 2: Là size số may mặc (thường 0-16 hoặc 24-60) và KHÔNG phải số thứ tự dòng
+                            # Lọc: Nếu là số < 10 thì phải nằm ở khu vực bên phải (x > 200) để tránh cột STT
+                            is_num = t.isdigit() and 0 <= int(t) <= 60
+                            if is_num and int(t) < 10 and w['x0'] < 200: is_num = False 
+                            
+                            if (is_char or is_num) and w['x0'] > 120:
                                 candidates.append({"sz": t, "x0": w['x0']-12, "x1": w['x1']+25})
-                        if len(candidates) >= 4:
+                        
+                        # Chỉ chấp nhận hàng Header nếu có từ 3 cột size trở lên
+                        if len(candidates) >= 3:
                             size_lanes = candidates
                             break 
-                    
+
                     if not size_lanes: continue
                     first_sz_x = min([c['x0'] for c in size_lanes])
 
+                    # --- 2. QUÉT DỮ LIỆU KHÓA TỌA ĐỘ DỌC ---
                     for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
                         if gp.empty: continue
                         sorted_gp = gp.sort_values('x0')
+                        # POM Name nằm bên trái cột Size đầu tiên
                         pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_sz_x]['text']).strip()
                         pom_key = clean_pom_universal(pom_raw)
-                        if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["PAGE", "SPEC", "COPYRIGHT"]):
+                        
+                        if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["PAGE", "COPYRIGHT", "SPEC", "SIZE"]):
                             for col in size_lanes:
+                                # Chỉ bốc số nếu nó nằm đúng cột dọc của Size đó
                                 cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
                                 if not cell.empty:
                                     val = parse_value_universal(" ".join(cell['text'].values))
