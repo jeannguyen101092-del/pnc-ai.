@@ -198,18 +198,18 @@ if mode == "Audit Mode":
 elif mode == "Version Control":
     st.subheader("🔄 So sánh Toàn diện (Đa khách hàng)")
 
-    def clean_pom_v7(t):
+    def clean_pom_final(t):
         if not t: return ""
         t = t.upper().strip()
-        # Ưu tiên lấy mã code nếu có (ví dụ LGT-001)
-        match = re.search(r'([A-Z]{2,3}-\d{3})', t)
+        # Ưu tiên lấy mã code như C112, LGT-001 để đối soát 2 bản
+        match = re.search(r'([A-Z]*\d{2,4})', t)
         if match: return match.group(1)
-        # Nếu không có mã, làm sạch chuỗi text để so khớp
         return re.sub(r'[^A-Z0-9]', '', t)
 
-    def parse_value_v7(text):
+    def parse_value_final(text):
         if not text: return None
         text = text.replace("-", " ").strip()
+        # Regex xử lý mọi dạng: "31 1/4", "1/2", "31.5"
         m = re.findall(r"(\d+)\s+(\d+)/(\d+)|(\d+)/(\d+)|(\d+\.?\d*)", text)
         if not m: return None
         try:
@@ -220,7 +220,7 @@ elif mode == "Version Control":
         except: return None
         return None
 
-    def get_specs_v7(content):
+    def get_specs_universal(content):
         specs_dict = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -229,69 +229,65 @@ elif mode == "Version Control":
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # TỰ ĐỘNG TÌM HEADER SIZE (Không phụ thuộc danh sách cứng)
+                    # 1. TÌM HEADER SIZE TỰ ĐỘNG (Dựa trên hàng có nhiều số/chữ ngắn)
                     size_lanes = []
-                    # Tìm hàng có nhiều ô chứa Size (Chữ ngắn hoặc số nguyên đứng cạnh nhau)
                     for y, gp in df_w.groupby('top'):
                         sorted_gp = gp.sort_values('x0')
                         candidates = []
                         for _, r in sorted_gp.iterrows():
                             t = r['text'].strip().upper()
-                            # Điều kiện: Chữ ngắn (<5 ký tự) và nằm ở nửa bên phải file
-                            if 1 <= len(t) <= 4 and r['x0'] > 150:
-                                if not any(x in t for x in ["TOL", "DATE", "SPEC", "PAGE"]):
-                                    candidates.append({"sz": t, "x0": r['x0']-10, "x1": r['x1']+25})
-                        if len(candidates) >= 3:
+                            # Điều kiện: Chữ ngắn hoặc số đo, nằm từ giữa trang sang phải
+                            if 1 <= len(t) <= 4 and r['x0'] > 180:
+                                if not any(x in t for x in ["TOL", "SPEC", "PAGE", "DATE"]):
+                                    candidates.append({"sz": t, "x0": r['x0']-12, "x1": r['x1']+15})
+                        if len(candidates) >= 4: # Thường có ít nhất 4 size
                             size_lanes = candidates
                             break 
 
                     if not size_lanes: continue
                     first_x = min([c['x0'] for c in size_lanes])
 
-                    # Quét dữ liệu
+                    # 2. QUÉT DỮ LIỆU DÒNG (Dùng bin 12px để gom số nguyên + phân số tầng dưới)
                     for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
                         if gp.empty: continue
                         sorted_gp = gp.sort_values('x0')
                         pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_x]['text']).strip()
-                        pom_key = clean_pom_v7(pom_raw)
+                        pom_key = clean_pom_final(pom_raw)
                         
                         if len(pom_key) >= 2:
                             for col in size_lanes:
                                 cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
-                                val = parse_value_v7(" ".join(cell['text'].values))
+                                val = parse_value_final(" ".join(cell['text'].values))
                                 if val is not None:
                                     if col['sz'] not in specs_dict: specs_dict[col['sz']] = {}
                                     specs_dict[col['sz']][pom_key] = {"orig": pom_raw, "val": val}
             return specs_dict
         except: return {}
 
-    f1 = st.file_uploader("Bản cũ (A)", type="pdf", key="f1_v7")
-    f2 = st.file_uploader("Bản mới (B)", type="pdf", key="f2_v7")
+    f1 = st.file_uploader("Bản cũ (A)", type="pdf", key="f1_final")
+    f2 = st.file_uploader("Bản mới (B)", type="pdf", key="f2_final")
 
     if f1 and f2:
-        if st.button("⚡ CHẠY SO SÁNH BIẾN ĐỘNG", use_container_width=True):
-            with st.spinner("Đang phân tích đa tầng dữ liệu..."):
-                d1, d2 = get_specs_v7(f1.getvalue()), get_specs_v7(f2.getvalue())
+        if st.button("⚡ SO SÁNH BIẾN ĐỘNG (ALL CUSTOMERS)", use_container_width=True):
+            d1, d2 = get_specs_universal(f1.getvalue()), get_specs_universal(f2.getvalue())
             
             if d1 and d2:
-                all_sz = sorted(list(set(d1.keys()) | set(d2.keys())), key=lambda x: str(x))
-                all_poms = sorted(list(set([k for s in d1 for k in d1[s]]) | set([k for s in d2 for k in d2[s]])))
+                # Lấy và sắp xếp Size theo thứ tự xuất hiện trong file
+                all_sz = sorted(list(set(d1.keys()) | set(d2.keys())), key=lambda x: str(x).zfill(3))
+                all_keys = sorted(list(set([k for s in d1 for k in d1[s]]) | set([k for s in d2 for k in d2[s]])))
 
                 rows = []
-                for k in all_poms:
+                for k in all_keys:
                     name = next((d2[s][k]['orig'] for s in d2 if k in d2[s]), next((d1[s][k]['orig'] for s in d1 if k in d1[s]), k))
                     row = {"POM Description": name}
                     for sz in all_sz:
                         v1, v2 = d1.get(sz, {}).get(k, {}).get('val'), d2.get(sz, {}).get(k, {}).get('val')
                         if v1 is not None and v2 is not None:
                             diff = round(v2 - v1, 3)
-                            # Khớp hiện giá trị | Lệch hiện A ➔ B [+/-]
                             row[sz] = f"{v2}" if abs(diff) < 0.01 else f"{v1} ➔ {v2} [{diff:+.2f}]"
                         else: row[sz] = "-"
                     rows.append(row)
 
-                df = pd.DataFrame(rows)
-                st.write("### 📊 Kết quả đối soát (Đỏ = Có thay đổi)")
-                st.dataframe(df.style.map(lambda x: 'background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(x) else ''), use_container_width=True, height=600)
+                st.dataframe(pd.DataFrame(rows).style.map(lambda x: 'background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(x) else ''), use_container_width=True, height=600)
             else:
-                st.error("❌ Không tìm thấy bảng thông số. Hãy kiểm tra lại định dạng PDF của khách hàng này.")
+                st.error("❌ Không tìm thấy bảng thông số. Hãy kiểm tra lại file PDF.")
