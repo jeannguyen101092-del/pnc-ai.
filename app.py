@@ -245,7 +245,7 @@ elif mode == "Version Control":
         except: return None
         return None
 
-    def get_specs_v13(content):
+        def get_specs_v14(content):
         specs_dict = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -254,23 +254,28 @@ elif mode == "Version Control":
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # 1. TÌM HEADER SIZE CHUẨN (Lọc cực kỹ để tránh nhảy cột)
+                    # --- 1. TÌM HEADER SIZE (Tối ưu riêng cho Express) ---
                     size_lanes = []
-                    valid_sz = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "1X", "2X", "3X", 
-                                "000", "00", "0", "2", "4", "6", "8", "10", "12", "14", "16", 
-                                "24", "26", "28", "30", "32", "34", "36", "38", "40"]
+                    # Mở rộng danh sách size số từ 0 đến 60
+                    valid_sz = [str(i) for i in range(0, 61)] + ["00", "000", "XXS", "XS", "S", "M", "L", "XL", "XXL"]
                     
                     for y, gp in df_w.groupby('top'):
-                        candidates = [w for _, w in gp.iterrows() if w['text'].strip().upper() in valid_sz and w['x0'] > 150]
+                        # Tìm tất cả các từ khớp với danh sách Size và nằm ở nửa phải trang
+                        candidates = []
+                        for _, w in gp.iterrows():
+                            t = w['text'].strip().upper()
+                            if t in valid_sz and w['x0'] > 150:
+                                candidates.append({"sz": t, "x0": w['x0']-12, "x1": w['x1']+25})
+                        
+                        # Nếu tìm thấy từ 3 cột trở lên, lấy TOÀN BỘ dãy đó làm Header
                         if len(candidates) >= 3:
-                            for s in candidates:
-                                size_lanes.append({"sz": s['text'].strip().upper(), "x0": s['x0']-10, "x1": s['x1']+25})
+                            size_lanes = candidates
                             break 
 
                     if not size_lanes: continue
                     first_sz_x = min([c['x0'] for c in size_lanes])
 
-                    # 2. QUÉT DỮ LIỆU ĐỐI CHIẾU TỌA ĐỘ CỘT
+                    # --- 2. QUÉT DỮ LIỆU ---
                     for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
                         if gp.empty: continue
                         sorted_gp = gp.sort_values('x0')
@@ -279,6 +284,7 @@ elif mode == "Version Control":
                         
                         if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["COPYRIGHT", "PAGE", "SPEC"]):
                             for col in size_lanes:
+                                # Khóa đúng tọa độ cột đã tìm thấy ở Header
                                 cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
                                 if not cell.empty:
                                     val = parse_value_universal(" ".join(cell['text'].values))
@@ -287,6 +293,7 @@ elif mode == "Version Control":
                                         specs_dict[col['sz']][pom_key] = {"orig": pom_raw, "val": val}
             return specs_dict
         except: return {}
+
 
     f1 = st.file_uploader("Old Version (A)", type="pdf", key=f"ua_{st.session_state.up_key}")
     f2 = st.file_uploader("New Version (B)", type="pdf", key=f"ub_{st.session_state.up_key}")
