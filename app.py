@@ -229,9 +229,9 @@ elif mode == "Version Control":
     def clean_pom_universal(t):
         if not t: return ""
         t = t.upper().strip()
-        # Tìm mã code (C112, W084...), nếu không có lấy 20 ký tự đầu làm khóa
+        # Tìm mã code (C112, W084...) để làm chìa khóa so sánh
         match = re.search(r'([A-Z]*\d{2,4}[A-Z]*)', t)
-        return match.group(1) if match else t[:20]
+        return match.group(1) if match else t[:25]
 
     def parse_value_universal(text):
         if not text: return None
@@ -239,14 +239,14 @@ elif mode == "Version Control":
         m = re.findall(r"(\d+)\s+(\d+)/(\d+)|(\d+)/(\d+)|(\d+\.?\d*)", text)
         if not m: return None
         try:
-            t = m[0]
-            if t[0] and t[1]: return float(t[0]) + int(t[1])/int(t[2])
-            if t[3]: return int(t[3])/int(t[4])
-            if t[5]: return float(t[5])
+            t = m[0] # Lấy kết quả đầu tiên tìm thấy
+            if t[0] and t[1]: return float(t[0]) + int(t[1])/int(t[2]) # Hỗn số
+            if t[3]: return int(t[3])/int(t[4]) # Phân số
+            if t[5]: return float(t[5]) # Số thập phân
         except: return None
         return None
 
-    def get_specs_v15(content):
+    def get_specs_v17(content):
         specs_dict = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -255,36 +255,38 @@ elif mode == "Version Control":
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # --- CẢI TIẾN: NHẬN DIỆN HEADER DIỆN RỘNG ---
-                    size_lanes = []
-                    # Danh sách các Size mục tiêu để tìm hàng Header
-                    target_sz = ["000","00","0","2","4","6","8","10","12","14","16","XXS","XS","S","M","L","XL","XXL"]
+                    # --- 1. TÌM HEADER SIZE THÔNG MINH (Chọn hàng có nhiều Size nhất) ---
+                    best_header_row = []
+                    max_size_count = 0
+                    size_patterns = ["XXS","XS","S","M","L","XL","XXL","3XL","1X","2X","3X","00","000"]
                     
                     for y, gp in df_w.groupby('top'):
                         candidates = []
-                        # Quét tất cả các từ trong hàng, không giới hạn tọa độ x0
                         for _, w in gp.iterrows():
-                            t = w['text'].strip().upper()
-                            # Chấp nhận là Size chữ trong list HOẶC là số nguyên từ 0-60
-                            if t in target_sz or (t.isdigit() and 0 <= int(t) <= 60):
-                                candidates.append({"sz": t, "x0": w['x0']-15, "x1": w['x1']+35})
+                            t = w['text'].strip().upper().replace("*", "")
+                            # Điều kiện: Phải là size chữ hoặc số đo (0-60)
+                            if (t in size_patterns) or (t.isdigit() and 0 <= int(t) <= 60):
+                                # Lọc bỏ các số quá nhỏ (1, 2, 3) nếu chúng ở rìa trái (thường là số thứ tự dòng)
+                                if t.isdigit() and int(t) < 5 and w['x0'] < 200: continue
+                                if w['x0'] > 150: # Khu vực bảng thường ở bên phải
+                                    candidates.append({"sz": t, "x0": w['x0']-12, "x1": w['x1']+28})
                         
-                        # Nếu hàng có từ 3 cột "giống size" trở lên thì chọn làm Header
-                        if len(candidates) >= 3:
-                            size_lanes = candidates
-                            break 
-
-                    if not size_lanes: continue
+                        # Cập nhật hàng header tốt nhất (có nhiều size nhất)
+                        if len(candidates) > max_size_count:
+                            max_size_count = len(candidates)
+                            best_header_row = candidates
+                    
+                    if max_size_count < 3: continue
+                    size_lanes = best_header_row
                     first_sz_x = min([c['x0'] for c in size_lanes])
 
-                    # --- QUÉT DỮ LIỆU ĐỐI CHIẾU THEO CỘT ---
+                    # --- 2. QUÉT DỮ LIỆU CHUẨN THEO TỌA ĐỘ CỘT ---
                     for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
                         if gp.empty: continue
                         sorted_gp = gp.sort_values('x0')
                         pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_sz_x]['text']).strip()
                         pom_key = clean_pom_universal(pom_raw)
-                        
-                        if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["COPYRIGHT", "PAGE", "SPEC"]):
+                        if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["PAGE", "SPEC", "COPYRIGHT"]):
                             for col in size_lanes:
                                 cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
                                 if not cell.empty:
@@ -300,16 +302,15 @@ elif mode == "Version Control":
 
     if f1 and f2:
         if st.button("⚡ RUN COMPREHENSIVE COMPARISON", use_container_width=True):
-            with st.spinner("Analyzing Techpacks..."):
-                d1 = get_specs_v15(f1.getvalue())
-                d2 = get_specs_v15(f2.getvalue())
+            with st.spinner("Analyzing files..."):
+                d1, d2 = get_specs_v17(f1.getvalue()), get_specs_v17(f2.getvalue())
             
             if d1 and d2:
-                # Sắp xếp size (ưu tiên số trước, chữ sau)
-                def sz_sort(x):
-                    if x.isdigit(): return int(x)
-                    return 999
-                all_sz = sorted(list(set(d1.keys()) | set(d2.keys())), key=sz_sort)
+                # Sắp xếp size: Số trước (tăng dần), chữ sau
+                def sz_rank(s):
+                    if s.isdigit(): return (0, int(s))
+                    return (1, s)
+                all_sz = sorted(list(set(d1.keys()) | set(d2.keys())), key=sz_rank)
                 all_keys = sorted(list(set([k for s in d1 for k in d1[s]]) | set([k for s in d2 for k in d2[s]])))
                 
                 final_rows = []
@@ -324,16 +325,19 @@ elif mode == "Version Control":
                         else: row[sz] = "-"
                     final_rows.append(row)
 
-                df_f = pd.DataFrame(final_rows)
+                df_final = pd.DataFrame(final_rows)
                 
                 # Excel Export
-                out = io.BytesIO()
-                with pd.ExcelWriter(out, engine='xlsxwriter') as wr:
-                    df_f.to_excel(wr, index=False)
-                st.download_button("📥 Download Excel Report", out.getvalue(), "Comparison_Report.xlsx")
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    df_final.to_excel(writer, index=False)
+                st.download_button("📥 Download Excel Report", output.getvalue(), "Comparison_Report.xlsx")
 
                 # Display
                 st.write("### 📊 Comparison Details")
-                st.dataframe(df_f.style.map(lambda x: 'background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(x) else ''), use_container_width=True, height=600)
+                st.dataframe(
+                    df_final.style.map(lambda x: 'background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(x) else ''),
+                    use_container_width=True, height=600
+                )
             else:
-                st.error("❌ Measurement table not found. Please ensure the PDF has a clear spec chart.")
+                st.error("❌ Valid measurement table not found. Please check the PDF content.")
