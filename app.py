@@ -246,7 +246,7 @@ elif mode == "Version Control":
         except: return None
         return None
 
-    def get_specs_v17(content):
+        def get_specs_v18(content):
         specs_dict = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -255,38 +255,37 @@ elif mode == "Version Control":
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # --- 1. TÌM HEADER SIZE THÔNG MINH (Chọn hàng có nhiều Size nhất) ---
-                    best_header_row = []
-                    max_size_count = 0
-                    size_patterns = ["XXS","XS","S","M","L","XL","XXL","3XL","1X","2X","3X","00","000"]
+                    # --- 1. TÌM HEADER VÙNG AN TOÀN (Bỏ qua số thứ tự lề trái) ---
+                    size_lanes = []
+                    valid_sz_list = ["XXS","XS","S","M","L","XL","XXL","1X","2X","3X","00","000"]
                     
                     for y, gp in df_w.groupby('top'):
                         candidates = []
                         for _, w in gp.iterrows():
-                            t = w['text'].strip().upper().replace("*", "")
-                            # Điều kiện: Phải là size chữ hoặc số đo (0-60)
-                            if (t in size_patterns) or (t.isdigit() and 0 <= int(t) <= 60):
-                                # Lọc bỏ các số quá nhỏ (1, 2, 3) nếu chúng ở rìa trái (thường là số thứ tự dòng)
-                                if t.isdigit() and int(t) < 5 and w['x0'] < 200: continue
-                                if w['x0'] > 150: # Khu vực bảng thường ở bên phải
-                                    candidates.append({"sz": t, "x0": w['x0']-12, "x1": w['x1']+28})
+                            t = w['text'].strip().upper()
+                            # ĐIỀU KIỆN GẮT: Phải ở nửa phải trang (x0 > 250) và là Size hợp lệ
+                            is_size_char = t in valid_sz_list
+                            is_size_num = t.isdigit() and (0 <= int(t) <= 60) and (int(t) % 2 == 0 or int(t) > 20)
+                            
+                            if (is_size_char or is_size_num) and w['x0'] > 250:
+                                candidates.append({"sz": t, "x0": w['x0']-12, "x1": w['x1']+25})
                         
-                        # Cập nhật hàng header tốt nhất (có nhiều size nhất)
-                        if len(candidates) > max_size_count:
-                            max_size_count = len(candidates)
-                            best_header_row = candidates
-                    
-                    if max_size_count < 3: continue
-                    size_lanes = best_header_row
+                        if len(candidates) >= 3:
+                            size_lanes = candidates
+                            break 
+
+                    if not size_lanes: continue
                     first_sz_x = min([c['x0'] for c in size_lanes])
 
-                    # --- 2. QUÉT DỮ LIỆU CHUẨN THEO TỌA ĐỘ CỘT ---
+                    # --- 2. QUÉT DỮ LIỆU KHÓA TỌA ĐỘ ---
                     for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
                         if gp.empty: continue
                         sorted_gp = gp.sort_values('x0')
+                        # POM Name nằm bên trái cột Size đầu tiên
                         pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_sz_x]['text']).strip()
                         pom_key = clean_pom_universal(pom_raw)
-                        if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["PAGE", "SPEC", "COPYRIGHT"]):
+                        
+                        if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["PAGE", "COPYRIGHT", "SPEC"]):
                             for col in size_lanes:
                                 cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
                                 if not cell.empty:
@@ -296,6 +295,7 @@ elif mode == "Version Control":
                                         specs_dict[col['sz']][pom_key] = {"orig": pom_raw, "val": val}
             return specs_dict
         except: return {}
+
 
     f1 = st.file_uploader("Old Version (A)", type="pdf", key=f"ua_{st.session_state.up_key}")
     f2 = st.file_uploader("New Version (B)", type="pdf", key=f"ub_{st.session_state.up_key}")
