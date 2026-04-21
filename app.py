@@ -274,8 +274,9 @@ elif mode == "Version Control":
     if f1 and f2:
         if st.button("⚡ CHẠY SO SÁNH CHUẨN 100%", use_container_width=True):
             with st.spinner("Đang tách Description và bóc tách từng cột Size..."):
-                dict_a = get_specs_coordinated_v3(f1.getvalue())
-                dict_b = get_specs_coordinated_v3(f2.getvalue())
+                dict_a = get_specs_v5(f1.getvalue())
+dict_b = get_specs_v5(f2.getvalue())
+
                 if dict_a and dict_b:
                     st.session_state['ver_results'] = {"a": dict_a, "b": dict_b}
                 else: st.error("❌ Không tìm thấy bảng Specs hợp lệ. Hãy kiểm tra lại file PDF.")
