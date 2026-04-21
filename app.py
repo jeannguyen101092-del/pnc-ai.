@@ -222,16 +222,19 @@ if mode == "Audit Mode":
 elif mode == "Version Control":
     st.subheader("🔄 Comprehensive Comparison")
 
+    # --- NÚT XÓA FILE & RESET ---
     if st.button("🗑️ Clear All & Reset", use_container_width=True):
         st.session_state.up_key += 1
         st.rerun()
 
+    # 1. Hàm làm sạch mã POM để đối soát
     def clean_pom_universal(t):
         if not t: return ""
         t = t.upper().strip()
         match = re.search(r'([A-Z]*\d{2,4}[A-Z]*)', t)
         return match.group(1) if match else t[:25]
 
+    # 2. Hàm xử lý số & phân số (27 1/4 -> 27.25)
     def parse_value_universal(text):
         if not text: return None
         text = text.replace("-", " ").strip()
@@ -245,7 +248,8 @@ elif mode == "Version Control":
         except: return None
         return None
 
-    def get_specs_v20(content):
+    # 3. Hàm quét xuyên trang và lọc Header thông minh
+    def get_specs_v21(content):
         specs_dict = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -254,7 +258,7 @@ elif mode == "Version Control":
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # 1. SIÊU BỘ LỌC HEADER (Chỉ lấy Size thật, bỏ qua số rác 001, 1, 2...)
+                    # TÌM HEADER SIZE: Phải có từ 4 cột size trở lên và nằm vùng an toàn (x > 150)
                     size_lanes = []
                     char_sizes = ["XXS","XS","S","M","L","XL","XXL","3XL","1X","2X","3X","00","000"]
                     for y, gp in df_w.groupby('top'):
@@ -262,19 +266,19 @@ elif mode == "Version Control":
                         for _, w in gp.iterrows():
                             t = w['text'].strip().upper().replace("*", "")
                             is_char = t in char_sizes
-                            is_num = t.isdigit() and 0 <= int(t) <= 60
-                            # Lọc bỏ số thứ tự: Nếu số < 10 mà nằm quá sát lề trái (x < 200) thì bỏ
+                            is_num = t.isdigit() and (0 <= int(t) <= 60)
+                            # Loại bỏ số thứ tự dòng: Nếu số nhỏ < 10 thì phải nằm bên phải (x > 200)
                             if is_num and int(t) < 10 and w['x0'] < 200: is_num = False 
-                            if (is_char or is_num) and w['x0'] > 120:
+                            if (is_char or is_num) and w['x0'] > 150:
                                 candidates.append({"sz": t, "x0": w['x0']-12, "x1": w['x1']+25})
-                        if len(candidates) >= 3:
+                        if len(candidates) >= 4:
                             size_lanes = candidates
                             break 
 
                     if not size_lanes: continue
+                    
+                    # QUÉT DỮ LIỆU CỦA TRANG CÓ BẢNG
                     first_sz_x = min([c['x0'] for c in size_lanes])
-
-                    # 2. QUÉT DỮ LIỆU KHÓA TỌA ĐỘ DỌC
                     for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
                         if gp.empty: continue
                         sorted_gp = gp.sort_values('x0')
@@ -291,16 +295,18 @@ elif mode == "Version Control":
             return specs_dict
         except: return {}
 
-    f1 = st.file_uploader("Old Version (A)", type="pdf", key=f"ua_{st.session_state.up_key}")
-    f2 = st.file_uploader("New Version (B)", type="pdf", key=f"ub_{st.session_state.up_key}")
+    # --- UI UPLOAD & SO SÁNH ---
+    c1, c2 = st.columns(2)
+    f1 = c1.file_uploader("Old Version (A)", type="pdf", key=f"ua_{st.session_state.up_key}")
+    f2 = c2.file_uploader("New Version (B)", type="pdf", key=f"ub_{st.session_state.up_key}")
 
     if f1 and f2:
         if st.button("⚡ RUN COMPREHENSIVE COMPARISON", use_container_width=True):
-            with st.spinner("Analyzing files..."):
-                d1, d2 = get_specs_v20(f1.getvalue()), get_specs_v20(f2.getvalue())
+            with st.spinner("Analyzing multi-page PDF..."):
+                d1, d2 = get_specs_v21(f1.getvalue()), get_specs_v21(f2.getvalue())
             
             if d1 and d2:
-                # Sắp xếp size: Số trước (tăng dần), chữ sau
+                # Sắp xếp size (Số trước tăng dần, chữ sau)
                 def sz_rank(s):
                     if s.isdigit(): return (0, int(s))
                     return (1, s)
@@ -321,12 +327,14 @@ elif mode == "Version Control":
 
                 df_f = pd.DataFrame(final_rows)
                 
+                # Nút Xuất Excel
                 out = io.BytesIO()
                 with pd.ExcelWriter(out, engine='xlsxwriter') as wr:
                     df_f.to_excel(wr, index=False)
                 st.download_button("📥 Download Excel Report", out.getvalue(), "Comparison_Report.xlsx")
 
+                # Hiển thị và bôi đỏ
                 st.write("### 📊 Comparison Details")
                 st.dataframe(df_f.style.map(lambda x: 'background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(x) else ''), use_container_width=True, height=600)
             else:
-                st.error("❌ Measurement table not found. Please check the PDF content.")
+                st.error("❌ Spec table not found in any page. Please check the PDF content.")
