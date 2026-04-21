@@ -274,38 +274,39 @@ elif mode == "Version Control":
     if f1 and f2:
         if st.button("⚡ CHẠY SO SÁNH CHUẨN 100%", use_container_width=True):
             with st.spinner("Đang tách Description và bóc tách từng cột Size..."):
-                dict_a = get_specs_v5(f1.getvalue())
-dict_b = get_specs_v5(f2.getvalue())
+                       # --- ĐOẠN GỌI HÀM VÀ HIỂN THỊ (Dán thay thế từ dòng 277) ---
+        if st.button("⚡ CHẠY SO SÁNH TỔNG HỢP", use_container_width=True):
+            dict_a = get_specs_v5(f1.getvalue())
+            dict_b = get_specs_v5(f2.getvalue())
+            
+            if dict_a and dict_b:
+                # 1. Lấy danh sách Size và POM để làm cột và hàng
+                all_sizes = sorted(list(set(dict_a.keys()) | set(dict_b.keys())), 
+                                 key=lambda x: int(re.sub(r'\D', '', x)) if re.search(r'\d', x) else 99)
+                all_poms = sorted(list(set([p for sz in dict_a for p in dict_a[sz]]) | 
+                                     set([p for sz in dict_b for p in dict_b[sz]])))
 
-                if dict_a and dict_b:
-                    st.session_state['ver_results'] = {"a": dict_a, "b": dict_b}
-                else: st.error("❌ Không tìm thấy bảng Specs hợp lệ. Hãy kiểm tra lại file PDF.")
+                final_rows = []
+                for p in all_poms:
+                    # Lấy tên POM gốc
+                    name = next((dict_b[sz][p]['orig'] for sz in dict_b if p in dict_b[sz]), 
+                               next((dict_a[sz][p]['orig'] for sz in dict_a if p in dict_a[sz]), p))
+                    row = {"POM Description": name}
+                    for sz in all_sizes:
+                        v1 = dict_a.get(sz, {}).get(p, {}).get('val')
+                        v2 = dict_b.get(sz, {}).get(p, {}).get('val')
+                        if v1 == v2:
+                            row[f"Size {sz}"] = str(v1) if v1 is not None else "-"
+                        else:
+                            row[f"Size {sz}"] = f"{v1} ➔ {v2}"
+                    final_rows.append(row)
 
-    if st.session_state.get('ver_results'):
-        vr = st.session_state['ver_results']
-        s_a, s_b = vr['a'], vr['b']
-        
-        # Sắp xếp Size chuyên nghiệp (2, 4, 6, 8...)
-        all_sz = sorted(list(set(s_a.keys()) | set(s_b.keys())), key=lambda x: int(re.sub(r'\D', '', x)) if re.search(r'\d', x) else 99)
-        tabs = st.tabs([f"Size {s}" for s in all_sz])
-        
-        for i, sz in enumerate(all_sz):
-            with tabs[i]:
-                d_a, d_b = s_a.get(sz, {}), s_b.get(sz, {})
-                all_poms_c = sorted(list(set(d_a.keys()) | set(d_b.keys())))
-                rows = []
-                for pc in all_poms_c:
-                    data_a = d_a.get(pc, {})
-                    data_b = d_b.get(pc, {})
-                    v1, v2 = data_a.get('val'), data_b.get('val')
-                    name = data_b.get('orig') or data_a.get('orig')
-                    
-                    if v1 is not None and v2 is not None:
-                        diff = round(v2 - v1, 3)
-                        status = "✅ Khớp" if abs(diff) < 0.01 else "❌ Lệch"
-                        dt_txt = f"{diff:+.3f}"
-                    else:
-                        dt_txt, status = "N/A", "⚠️ Thiếu dữ liệu"
-                        
-                    rows.append({"POM Description": name, "Bản A": v1 if v1 is not None else "-", "Bản B": v2 if v2 is not None else "-", "Lệch": dt_txt, "Kết quả": status})
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, height=600)
+                # 2. Hiển thị bảng kết quả
+                df_final = pd.DataFrame(final_rows)
+                st.write("### 📊 Kết quả so sánh (Chữ đỏ ➔ là có thay đổi)")
+                st.dataframe(
+                    df_final.style.apply(lambda x: ['color: #d73a49; font-weight: bold' if '➔' in str(v) else '' for v in x]),
+                    use_container_width=True, height=600
+                )
+            else:
+                st.error("❌ Không tìm thấy dữ liệu trong file. Hãy kiểm tra lại định dạng PDF.")
