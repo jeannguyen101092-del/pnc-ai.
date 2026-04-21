@@ -198,8 +198,8 @@ if mode == "Audit Mode":
 elif mode == "Version Control":
     st.subheader("🔄 So sánh Toàn diện (Bản A vs Bản B)")
 
-    # Đưa danh sách size ra ngoài để dùng chung cho toàn bộ logic
-    sz_list = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "2X", "3X"]
+    # Danh sách Size chuẩn để sắp xếp cột
+    sz_list = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "1X", "2X", "3X"]
 
     def clean_pom_v6(t):
         if not t: return ""
@@ -260,11 +260,13 @@ elif mode == "Version Control":
         if st.button("⚡ CHẠY SO SÁNH BIẾN ĐỘNG", use_container_width=True):
             dict_a = get_specs_v6(f1.getvalue())
             dict_b = get_specs_v6(f2.getvalue())
+            
             if dict_a and dict_b:
                 all_sizes = sorted(list(set(dict_a.keys()) | set(dict_b.keys())), 
                                  key=lambda x: sz_list.index(x) if x in sz_list else 99)
                 all_keys = sorted(list(set([k for sz in dict_a for k in dict_a[sz]]) | 
                                       set([k for sz in dict_b for k in dict_b[sz]])))
+
                 final_rows = []
                 for k in all_keys:
                     name = next((dict_b[sz][k]['orig'] for sz in dict_b if k in dict_b[sz]), 
@@ -273,11 +275,25 @@ elif mode == "Version Control":
                     for sz in all_sizes:
                         v1 = dict_a.get(sz, {}).get(k, {}).get('val')
                         v2 = dict_b.get(sz, {}).get(k, {}).get('val')
+                        
                         if v1 is not None and v2 is not None:
                             diff = round(v2 - v1, 3)
-                            row[f"Size {sz}"] = f"{v2}" if abs(diff) < 0.01 else f"{v1} ➔ {v2} ({diff:+.2f})"
-                        elif v1 is not None: row[f"Size {sz}"] = f"A:{v1}|B:-"
-                        elif v2 is not None: row[f"Size {sz}"] = f"A:-|B:{v2}"
+                            # Hiển thị Giá trị [Chênh lệch] - Luôn hiện diff theo yêu cầu
+                            if abs(diff) < 0.001:
+                                row[f"Size {sz}"] = f"{v2} [0]"
+                            else:
+                                row[f"Size {sz}"] = f"{v1} ➔ {v2} [{diff:+.2f}]"
+                        elif v1 is not None: row[f"Size {sz}"] = f"A:{v1} | B:-"
+                        elif v2 is not None: row[f"Size {sz}"] = f"A:- | B:{v2}"
                         else: row[f"Size {sz}"] = "-"
                     final_rows.append(row)
-                st.dataframe(pd.DataFrame(final_rows).style.apply(lambda x: ['background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(v) else '' for v in x], axis=1), use_container_width=True, height=600)
+
+                df_final = pd.DataFrame(final_rows)
+                st.write("### 📊 Bảng đối soát chi tiết (Khớp hiện [0], lệch hiện [+/-])")
+                
+                def highlight_diff(val):
+                    if '➔' in str(val) or ('[' in str(val) and '[0]' not in str(val)):
+                        return 'background-color: #ffcccc; color: #b91c1c; font-weight: bold'
+                    return ''
+
+                st.dataframe(df_final.style.applymap(highlight_diff), use_container_width=True, height=600)
