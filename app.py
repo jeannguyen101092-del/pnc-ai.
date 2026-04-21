@@ -229,7 +229,6 @@ elif mode == "Version Control":
     def clean_pom_universal(t):
         if not t: return ""
         t = t.upper().strip()
-        # Tìm mã code (C112, W084...), nếu không có thì lấy toàn bộ text làm khóa
         match = re.search(r'([A-Z]*\d{2,4}[A-Z]*)', t)
         return match.group(1) if match else re.sub(r'[^A-Z0-9]', '', t)
 
@@ -246,7 +245,7 @@ elif mode == "Version Control":
         except: return None
         return None
 
-        def get_specs_v13(content):
+    def get_specs_v13(content):
         specs_dict = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -255,17 +254,15 @@ elif mode == "Version Control":
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # --- 1. TÌM HEADER SIZE CHÍNH XÁC ---
+                    # 1. TÌM HEADER SIZE CHUẨN (Lọc cực kỹ để tránh nhảy cột)
                     size_lanes = []
                     valid_sz = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "1X", "2X", "3X", 
-                                "000", "00", "0", "2", "4", "6", "8", "10", "12", "14", "16", "24", "26", "28", "30", "32"]
+                                "000", "00", "0", "2", "4", "6", "8", "10", "12", "14", "16", 
+                                "24", "26", "28", "30", "32", "34", "36", "38", "40"]
                     
                     for y, gp in df_w.groupby('top'):
-                        # Điều kiện: Hàng phải chứa từ "SIZE" hoặc ít nhất 3 size chuẩn trong danh sách
-                        row_txt = " ".join(gp['text'].values).upper()
                         candidates = [w for _, w in gp.iterrows() if w['text'].strip().upper() in valid_sz and w['x0'] > 150]
-                        
-                        if len(candidates) >= 3 or "SIZE" in row_txt:
+                        if len(candidates) >= 3:
                             for s in candidates:
                                 size_lanes.append({"sz": s['text'].strip().upper(), "x0": s['x0']-10, "x1": s['x1']+25})
                             break 
@@ -273,18 +270,15 @@ elif mode == "Version Control":
                     if not size_lanes: continue
                     first_sz_x = min([c['x0'] for c in size_lanes])
 
-                    # --- 2. QUÉT DỮ LIỆU ĐỐI CHIẾU TỌA ĐỘ ---
+                    # 2. QUÉT DỮ LIỆU ĐỐI CHIẾU TỌA ĐỘ CỘT
                     for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
                         if gp.empty: continue
                         sorted_gp = gp.sort_values('x0')
-                        
-                        # POM Description: Lấy phần văn bản bên trái cột Size đầu tiên
                         pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_sz_x]['text']).strip()
                         pom_key = clean_pom_universal(pom_raw)
                         
                         if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["COPYRIGHT", "PAGE", "SPEC"]):
                             for col in size_lanes:
-                                # CHỈ lấy chữ số nằm TRONG phạm vi tọa độ x0, x1 của cột size đó
                                 cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
                                 if not cell.empty:
                                     val = parse_value_universal(" ".join(cell['text'].values))
@@ -299,8 +293,9 @@ elif mode == "Version Control":
 
     if f1 and f2:
         if st.button("⚡ RUN COMPREHENSIVE COMPARISON", use_container_width=True):
-            with st.spinner("Processing files..."):
-                d1, d2 = get_specs_v12(f1.getvalue()), get_specs_v12(f2.getvalue())
+            with st.spinner("Analyzing files..."):
+                d1 = get_specs_v13(f1.getvalue())
+                d2 = get_specs_v13(f2.getvalue())
             
             if d1 and d2:
                 all_sz = sorted(list(set(d1.keys()) | set(d2.keys())), key=lambda x: str(x).zfill(3))
