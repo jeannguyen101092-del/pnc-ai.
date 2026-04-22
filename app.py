@@ -219,25 +219,23 @@ if mode == "Audit Mode":
             else:
                 st.error("Could not extract image from the uploaded PDF.")
 
-elif mode == "Version Control":
-    st.subheader("🔄 Comprehensive Comparison")
+if mode == "Version Control":
+    st.subheader("🔄 Comprehensive Comparison (Enhanced)")
 
-    # --- NÚT XÓA FILE & RESET ---
     if st.button("🗑️ Clear All & Reset", use_container_width=True):
         st.session_state.up_key += 1
         st.rerun()
 
-    # 1. Hàm làm sạch mã POM để đối soát
     def clean_pom_universal(t):
         if not t: return ""
-        t = t.upper().strip()
-        match = re.search(r'([A-Z]*\d{2,4}[A-Z]*)', t)
-        return match.group(1) if match else t[:25]
+        # Không dùng Regex gắt để tránh mất chữ, chỉ làm sạch khoảng trắng và viết hoa
+        return t.strip().upper().replace("  ", " ")
 
-    # 2. Hàm xử lý số & phân số (27 1/4 -> 27.25)
     def parse_value_universal(text):
         if not text: return None
-        text = text.replace("-", " ").strip()
+        # Xử lý các ký tự đặc biệt thường gặp trong bản vẽ
+        text = text.replace('"', '').replace("'", "").replace("-", " ").strip()
+        # Regex hỗ trợ: số nguyên, số thập phân, và phân số (1/2, 1/4...)
         m = re.findall(r"(\d+)\s+(\d+)/(\d+)|(\d+)/(\d+)|(\d+\.?\d*)", text)
         if not m: return None
         try:
@@ -248,93 +246,128 @@ elif mode == "Version Control":
         except: return None
         return None
 
-    # 3. Hàm quét xuyên trang và lọc Header thông minh
-    def get_specs_v21(content):
+    def get_specs_v22(content):
         specs_dict = {}
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
                 for page in pdf.pages:
-                    words = page.extract_words()
+                    words = page.extract_words(x_tolerance=3, y_tolerance=3)
                     if not words: continue
                     df_w = pd.DataFrame(words)
                     
-                    # TÌM HEADER SIZE: Phải có từ 4 cột size trở lên và nằm vùng an toàn (x > 150)
+                    # 1. TÌM HEADER SIZE (Cải tiến)
                     size_lanes = []
-                    char_sizes = ["XXS","XS","S","M","L","XL","XXL","3XL","1X","2X","3X","00","000"]
-                    for y, gp in df_w.groupby('top'):
+                    # Mở rộng danh sách size phổ biến trong may mặc
+                    char_sizes = ["3XS","XXS","XS","S","M","L","XL","XXL","3XL","4XL","5XL","1X","2X","3X","FREE","OS"]
+                    
+                    # Group theo tọa độ Y (cho phép sai số 3px để bắt cùng 1 dòng)
+                    for y, gp in df_w.groupby(df_w['top'].apply(lambda x: round(x/3)*3)):
                         candidates = []
                         for _, w in gp.iterrows():
                             t = w['text'].strip().upper().replace("*", "")
+                            # Kiểm tra xem có phải cột Size không
                             is_char = t in char_sizes
-                            is_num = t.isdigit() and (0 <= int(t) <= 60)
-                            # Loại bỏ số thứ tự dòng: Nếu số nhỏ < 10 thì phải nằm bên phải (x > 200)
-                            if is_num and int(t) < 10 and w['x0'] < 200: is_num = False 
-                            if (is_char or is_num) and w['x0'] > 150:
-                                candidates.append({"sz": t, "x0": w['x0']-12, "x1": w['x1']+25})
-                        if len(candidates) >= 4:
+                            is_num = t.replace('.','').isdigit() and (0 <= float(t) <= 60)
+                            
+                            if (is_char or is_num) and w['x0'] > 100: # Hạ x0 xuống 100 để không hụt bảng rộng
+                                candidates.append({"sz": t, "x0": w['x0']-15, "x1": w['x1']+20})
+                        
+                        if len(candidates) >= 3: # Chỉ cần 3 cột size là đủ nhận diện bảng
                             size_lanes = candidates
                             break 
 
                     if not size_lanes: continue
                     
-                    # QUÉT DỮ LIỆU CỦA TRANG CÓ BẢNG
+                    # 2. QUÉT DỮ LIỆU
                     first_sz_x = min([c['x0'] for c in size_lanes])
-                    for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 12))):
+                    # Tăng độ rộng dòng (step=15) để bắt trọn các chữ có kích thước khác nhau
+                    for _, gp in df_w.groupby(pd.cut(df_w["top"], bins=np.arange(0, page.height, 15))):
                         if gp.empty: continue
                         sorted_gp = gp.sort_values('x0')
+                        
+                        # Lấy mô tả POM (nằm bên trái cột size đầu tiên)
                         pom_raw = " ".join(sorted_gp[sorted_gp['x1'] < first_sz_x]['text']).strip()
+                        if len(pom_raw) < 3 or any(x in pom_raw.upper() for x in ["PAGE", "COPYRIGHT", "SPEC", "DATE"]): 
+                            continue
+                            
                         pom_key = clean_pom_universal(pom_raw)
-                        if len(pom_key) >= 2 and not any(x in pom_raw.upper() for x in ["PAGE", "COPYRIGHT", "SPEC", "SIZE"]):
-                            for col in size_lanes:
-                                cell = sorted_gp[(sorted_gp['x0'] >= col['x0']) & (sorted_gp['x1'] <= col['x1'])]
-                                if not cell.empty:
-                                    val = parse_value_universal(" ".join(cell['text'].values))
-                                    if val is not None:
-                                        if col['sz'] not in specs_dict: specs_dict[col['sz']] = {}
-                                        specs_dict[col['sz']][pom_key] = {"orig": pom_raw, "val": val}
+                        
+                        for col in size_lanes:
+                            # Lấy các chữ nằm trong phạm vi x0, x1 của cột size
+                            cell = sorted_gp[(sorted_gp['x0'] >= col['x0'] - 5) & (sorted_gp['x1'] <= col['x1'] + 5)]
+                            if not cell.empty:
+                                val_txt = " ".join(cell['text'].values)
+                                val = parse_value_universal(val_txt)
+                                if val is not None:
+                                    if col['sz'] not in specs_dict: specs_dict[col['sz']] = {}
+                                    specs_dict[col['sz']][pom_key] = {"orig": pom_raw, "val": val}
             return specs_dict
-        except: return {}
+        except Exception as e:
+            st.error(f"Lỗi phân tích: {e}")
+            return {}
 
-    # --- UI UPLOAD & SO SÁNH ---
     c1, c2 = st.columns(2)
     f1 = c1.file_uploader("Old Version (A)", type="pdf", key=f"ua_{st.session_state.up_key}")
     f2 = c2.file_uploader("New Version (B)", type="pdf", key=f"ub_{st.session_state.up_key}")
 
     if f1 and f2:
         if st.button("⚡ RUN COMPREHENSIVE COMPARISON", use_container_width=True):
-            with st.spinner("Analyzing multi-page PDF..."):
-                d1, d2 = get_specs_v21(f1.getvalue()), get_specs_v21(f2.getvalue())
+            with st.spinner("Đang trích xuất dữ liệu từ các trang..."):
+                d1, d2 = get_specs_v22(f1.getvalue()), get_specs_v22(f2.getvalue())
             
-            if d1 and d2:
-                # Sắp xếp size (Số trước tăng dần, chữ sau)
+            if not d1 or not d2:
+                st.error("❌ Không tìm thấy bảng thông số. Hãy kiểm tra lại file PDF có phải dạng bảng (Spec Table) không.")
+                if not d1: st.warning("File A không có dữ liệu")
+                if not d2: st.warning("File B không có dữ liệu")
+            else:
+                # Sắp xếp Size
                 def sz_rank(s):
-                    if s.isdigit(): return (0, int(s))
-                    return (1, s)
+                    try: return (0, float(s))
+                    except: return (1, s)
+                
                 all_sz = sorted(list(set(d1.keys()) | set(d2.keys())), key=sz_rank)
+                # Lấy tất cả POM Key xuất hiện ở cả 2 file
                 all_keys = sorted(list(set([k for s in d1 for k in d1[s]]) | set([k for s in d2 for k in d2[s]])))
                 
                 final_rows = []
                 for k in all_keys:
-                    name = next((d2[s][k]['orig'] for s in d2 if k in d2[s]), next((d1[s][k]['orig'] for s in d1 if k in d1[s]), k))
-                    row = {"POM Description": name}
+                    # Lấy tên hiển thị gốc
+                    display_name = next((d2[s][k]['orig'] for s in d2 if k in d2[s]), 
+                                       next((d1[s][k]['orig'] for s in d1 if k in d1[s]), k))
+                    
+                    row = {"POM Description": display_name}
+                    found_diff = False
                     for sz in all_sz:
-                        v1, v2 = d1.get(sz, {}).get(k, {}).get('val'), d2.get(sz, {}).get(k, {}).get('val')
+                        v1 = d1.get(sz, {}).get(k, {}).get('val')
+                        v2 = d2.get(sz, {}).get(k, {}).get('val')
+                        
                         if v1 is not None and v2 is not None:
                             diff = round(float(v2) - float(v1), 3)
-                            row[sz] = f"{v2}" if abs(diff) < 0.01 else f"{v1} ➔ {v2} [{diff:+.2f}]"
+                            if abs(diff) > 0.001:
+                                row[sz] = f"{v1} ➔ {v2} [{diff:+.2f}]"
+                                found_diff = True
+                            else:
+                                row[sz] = f"{v1}"
+                        elif v1 is not None: row[sz] = f"{v1} (Mất)"
+                        elif v2 is not None: row[sz] = f"{v2} (Mới)"
                         else: row[sz] = "-"
+                    
                     final_rows.append(row)
 
                 df_f = pd.DataFrame(final_rows)
                 
-                # Nút Xuất Excel
+                # Hiển thị kết quả
+                st.write(f"### 📊 Kết quả đối soát: {len(all_keys)} thông số")
+                
+                def highlight_diff(val):
+                    if '➔' in str(val): return 'background-color: #ffcccc; color: #b91c1c; font-weight: bold'
+                    if '(Mất)' in str(val) or '(Mới)' in str(val): return 'background-color: #fff4e5; color: #d97706'
+                    return ''
+
+                st.dataframe(df_f.style.applymap(highlight_diff), use_container_width=True, height=600)
+                
+                # Excel
                 out = io.BytesIO()
                 with pd.ExcelWriter(out, engine='xlsxwriter') as wr:
                     df_f.to_excel(wr, index=False)
-                st.download_button("📥 Download Excel Report", out.getvalue(), "Comparison_Report.xlsx")
-
-                # Hiển thị và bôi đỏ
-                st.write("### 📊 Comparison Details")
-                st.dataframe(df_f.style.map(lambda x: 'background-color: #ffcccc; color: #b91c1c; font-weight: bold' if '➔' in str(x) else ''), use_container_width=True, height=600)
-            else:
-                st.error("❌ Spec table not found in any page. Please check the PDF content.")
+                st.download_button("📥 Tải báo cáo Excel", out.getvalue(), "So_sanh_thong_so.xlsx")
