@@ -18,29 +18,42 @@ if 'up_key' not in st.session_state: st.session_state['up_key'] = 0
 if 'ver_results' not in st.session_state: st.session_state['ver_results'] = None
 
 # ================= 2. AI CORE =================
+# ================= 2. AI CORE (UPGRADED) =================
 @st.cache_resource
 def load_model():
-    model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+    # Sử dụng EfficientNet_B0 để nhận diện cấu trúc tốt hơn ResNet
+    model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
     return torch.nn.Sequential(*(list(model.children())[:-1])).eval()
+
 model_ai = load_model()
 
 def get_vector(img_bytes):
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
         w, h = img.size
-        img = img.crop((w*0.20, h*0.12, w*0.80, h*0.50)) 
-        img = ImageOps.grayscale(img)
-        img = ImageEnhance.Contrast(img).enhance(2.5).convert('RGB')
+        
+        # FIX: Mở rộng vùng crop để lấy hết ống quần (từ 10% đến 90% chiều cao)
+        # Nếu chỉ lấy đến 0.50 như code cũ, AI sẽ không thấy ống quần dài hay ngắn
+        img = img.crop((w*0.10, h*0.10, w*0.90, h*0.90)) 
+        
+        # Tăng tương phản để làm rõ nét vẽ line-art
+        img = ImageEnhance.Contrast(img).enhance(2.0)
+        
         tf = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
+        
         with torch.no_grad():
-            vec = model_ai(tf(img).unsqueeze(0)).flatten().cpu().numpy()
+            feat = model_ai(tf(img).unsqueeze(0))
+            vec = torch.flatten(feat, 1).cpu().numpy()[0]
             norm = np.linalg.norm(vec)
-            return (vec / norm).astype(float).tolist() if norm > 0 else vec.tolist()
-    except: return None
+            return (vec / norm).tolist() if norm > 0 else vec.tolist()
+    except Exception as e:
+        st.error(f"Lỗi Vector: {e}")
+        return None
+
 
 # ================= 3. SCRAPER =================
 def parse_val(t):
@@ -178,46 +191,41 @@ if mode == "Audit Mode":
     # Đổi thông báo upload và spinner sang tiếng Anh
     target_file = st.file_uploader("Upload Target Techpack (PDF)", type=['pdf'], key=f"aud_{st.session_state['up_key']}")
     
-    if target_file:
-        with st.spinner("Searching for similar samples..."):
-            t_data = extract_full_data(target_file.getvalue())
-            
-            if t_data and t_data['img']:
-                t_vec = get_vector(t_data['img'])
-                
-                # Truy vấn dữ liệu từ Supabase
-                res = supabase.table("ai_data").select("file_name, image_url, vector").execute()
-                db_items = res.data
-                
-                if db_items and t_vec:
-                    scores = []
-                    for item in db_items:
-                        if item['vector']:
-                            # Tính toán độ tương đồng
-                            sim = cosine_similarity([t_vec], [eval(item['vector']) if isinstance(item['vector'], str) else item['vector']])
-                            scores.append({
-                                "name": item['file_name'], 
-                                "url": item['image_url'], 
-                                "score": sim[0][0]
-                            })
-                    
-                    # Lấy Top 8 mẫu giống nhất
-                    top_8 = sorted(scores, key=lambda x: x['score'], reverse=True)[:8]
-                    
-                    st.divider()
-                    st.write("### 🏆 Top Similar Matches")
-                    
-                    cols = st.columns(4)
-                    for idx, item in enumerate(top_8):
-                        with cols[idx % 4]:
-                            st.image(item['url'], use_container_width=True)
-                            st.caption(f"**{item['name']}**")
-                            # Đổi nhãn độ giống nhau sang tiếng Anh
-                            st.info(f"Similarity: {item['score']:.1%}")
-                else:
-                    st.warning("No data found in the database to compare.")
-            else:
-                st.error("Could not extract image from the uploaded PDF.")
+    # Giả sử đây là đoạn code trong Audit Mode sau khi bạn lấy dữ liệu từ Supabase
+if target_file:
+    # 1. Lấy vector của file mục tiêu
+    t_data = extract_full_data(target_file.getvalue())
+    t_vec = get_vector(t_data['img'])
+    t_name = target_file.name.lower()
+
+    # 2. Truy vấn Database
+    res = supabase.table("ai_data").select("*").execute()
+    db_items = res.data
+
+    results = []
+    for item in db_items:
+        db_vec = np.array(item['vector'])
+        # Tính toán độ tương đồng Vector (Hình ảnh)
+        sim_score = cosine_similarity([t_vec], [db_vec])[0][0]
+        
+        # --- LOGIC NÂNG CẤP: LỌC TỪ KHÓA ---
+        # Nếu cả 2 đều có chữ 'short' hoặc cả 2 đều không có, thì giữ nguyên điểm
+        # Nếu 1 cái là 'short', 1 cái là 'pant' -> Trừ điểm nặng để đẩy xuống dưới
+        is_target_short = "short" in t_name
+        is_db_short = "short" in item['file_name'].lower()
+        
+        if is_target_short != is_db_short:
+            sim_score -= 0.15  # Phạt 15% điểm nếu khác loại (Short vs Dài)
+        
+        results.append({
+            "name": item['file_name'],
+            "url": item['image_url'],
+            "score": sim_score
+        })
+
+    # Sắp xếp lại theo điểm số mới
+    results = sorted(results, key=lambda x: x['score'], reverse=True)
+
 
 elif mode == "Version Control":
     st.subheader("🔄 Comprehensive Comparison")
