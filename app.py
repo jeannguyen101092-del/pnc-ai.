@@ -99,8 +99,7 @@ def to_excel(df_list, sheet_names):
             df.to_excel(writer, index=False, sheet_name=str(name)[:31])
     return output.getvalue()
 
-# ================= 4. SIDEBAR (INCLUDES STORAGE METRIC) =================
-# ================= 4. SIDEBAR (BẢN FIX LỖI COLUMN SPECS) =================
+# ================= 4. SIDEBAR (FIXED DISPLAY) =================
 with st.sidebar:
     st.markdown("<h1 style='color: #1E3A8A; font-weight: bold;'>PPJ GROUP</h1>", unsafe_allow_html=True)
     
@@ -111,9 +110,27 @@ with st.sidebar:
         current_count = 0
     
     st.metric("Models in Repo", f"{current_count} SKUs")
+    
+    # Logic tính toán dung lượng
     storage_mb = current_count * 0.08
-    st.write(f"💾 **Storage:** {storage_mb:.1f}MB / 1024MB")
-    st.progress(min(storage_mb/1024, 1.0))
+    max_storage = 1024.0
+    usage_ratio = min(storage_mb / max_storage, 1.0)
+    
+    st.write(f"💾 **Storage:** {storage_mb:.1f}MB / {int(max_storage)}MB")
+    
+    # SỬA LỖI MÀU ĐỎ: Dùng HTML CSS để ép màu xanh khi dung lượng còn trống nhiều
+    bar_color = "#28a745" # Mặc định là xanh lá
+    if usage_ratio > 0.8:
+        bar_color = "#dc3545" # Đỏ khi dùng trên 80%
+    elif usage_ratio > 0.6:
+        bar_color = "#ffc107" # Vàng khi dùng trên 60%
+
+    st.markdown(f"""
+        <div style="width: 100%; background-color: #e0e0e0; border-radius: 5px; height: 10px;">
+            <div style="width: {usage_ratio*100}%; background-color: {bar_color}; height: 10px; border-radius: 5px;"></div>
+        </div>
+        <br>
+    """, unsafe_allow_html=True)
     
     if st.button("🔄 Làm mới số lượng"): st.rerun()
 
@@ -127,25 +144,20 @@ with st.sidebar:
         
         for i, f in enumerate(up_new):
             try:
-                # 1. Lấy ảnh trang 1
                 doc = fitz.open(stream=f.getvalue(), filetype="pdf")
                 pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 img_bytes = pix.tobytes("png")
                 doc.close()
 
-                # 2. Tạo ID và tên file duy nhất
                 unique_id = str(uuid.uuid4())[:8]
                 new_fname = f"{unique_id}_{f.name.replace(' ', '_')}.webp"
                 
-                # 3. Upload lên Storage
                 path = f"sketches/{new_fname}"
                 supabase.storage.from_(BUCKET).upload(path, img_bytes)
                 img_url = supabase.storage.from_(BUCKET).get_public_url(path)
                 
-                # 4. Tính Vector
                 vector_data = get_vector(img_bytes)
 
-                # 5. Ghi vào Database (ĐÃ BỎ CỘT 'specs' ĐỂ KHÔNG BÁO LỖI)
                 supabase.table("ai_data").insert({
                     "file_name": str(f.name),
                     "image_url": str(img_url),
@@ -162,9 +174,6 @@ with st.sidebar:
         st.session_state['up_key'] += 1
         time.sleep(1)
         st.rerun()
-
-
-
 
 # ================= 5. MAIN UI =================
 st.title("👔 AI SMART AUDITOR PRO")
